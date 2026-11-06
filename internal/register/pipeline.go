@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"deepaicode2api/internal/deepai"
@@ -65,6 +66,10 @@ type Pipeline struct {
 
 	mu        sync.Mutex
 	lastStart time.Time
+
+	// 后台验证的在途计数与完成信号（CLI 退出前要等一会儿）。
+	verifyPending atomic.Int64
+	verifyWG      sync.WaitGroup
 }
 
 // New 构造 Pipeline。
@@ -205,9 +210,17 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 			rec.Mark("register", "exists", time.Since(t))
 			p.logf("[%s] 邮箱已存在，转为登录", email)
 		default:
-			rec.Mark("register", "failed", time.Since(t))
-			rec.SetError("register", err)
-			return p.finish(rec)
+			// 上游 504 / 超时无法确定账号到底建没建成：用登录兜底一次。
+			// 建成了 → 继续（幂等）；没建成 → 登录失败，才判死。
+			lk, lerr := web.Login(ctx, email, password)
+			if lerr != nil {
+				rec.Mark("register", "failed", time.Since(t))
+				rec.SetError("register", err)
+				return p.finish(rec)
+			}
+			rec.SessionKey = lk
+			rec.Mark("register", "recovered-by-login", time.Since(t))
+			p.logf("[%s] 注册接口异常但登录成功（账号已建），继续：%v", email, err)
 		}
 
 		t = time.Now()
@@ -315,10 +328,40 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 		rec.Mark("verify", "skipped", 0)
 	} else if verifyCh != nil {
 		rec.Mark("verify", "pending", 0)
+		// WaitGroup 的 Add 必须在 go 之前：写在 goroutine 里会与 Wait 竞争。
+		p.verifyPending.Add(1)
+		p.verifyWG.Add(1)
 		go p.verifyBackfill(rec, web, verifyCh)
 	}
 
 	return p.finish(rec)
+}
+
+// PendingVerify 返回仍在后台等待验证的账号数。
+func (p *Pipeline) PendingVerify() int { return int(p.verifyPending.Load()) }
+
+// WaitVerify 最多等 d，让后台验证有机会跑完；返回是否全部完成。
+//
+// 验证已经不在关键路径上，但 CLI 是短命进程：不等一下的话，批次一结束
+// 进程退出，后台 goroutine 全被带走，号池里的 email_verified 就不准了。
+func (p *Pipeline) WaitVerify(d time.Duration) bool {
+	if p == nil || p.PendingVerify() == 0 {
+		return true
+	}
+	if d <= 0 {
+		return false
+	}
+	done := make(chan struct{})
+	go func() {
+		p.verifyWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // applyVerify 处理一次验证结果（点链接 + 打点），返回是否验证成功。
@@ -359,6 +402,8 @@ func (p *Pipeline) verifyBackfill(rec *Record, web *WebClient, ch chan verifyOut
 		return
 	}
 	defer func() {
+		p.verifyPending.Add(-1)
+		p.verifyWG.Done()
 		if r := recover(); r != nil {
 			p.logf("[%s] 后台验证异常：%v", cp.Email, r)
 		}

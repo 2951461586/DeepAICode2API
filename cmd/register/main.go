@@ -62,6 +62,7 @@ func main() {
 		timeout       = flag.Duration("timeout", 0, "等待验证邮件超时（默认 120s）")
 		interval      = flag.Duration("interval", 0, "收信轮询间隔（默认 1s）")
 		delay         = flag.Duration("delay", 0, "两次注册之间的最小间隔（默认 800ms）")
+		verifyGrace   = flag.Duration("verify-grace", 60*time.Second, "批次结束后等待后台邮箱验证的时间（0 表示不等）")
 		showVer       = flag.Bool("version", false, "打印版本后退出")
 	)
 	flag.Parse()
@@ -264,6 +265,35 @@ func main() {
 	} else {
 		fmt.Printf("开始注册 %d 个账号（并发 %d）…\n", *count, *concurrency)
 		records = pipe.RunBatch(ctx, *count, *concurrency, *email, *password)
+	}
+
+	// 验证已经不在关键路径上，但 CLI 是短命进程：不等一下的话，
+	// 批次一结束进程退出，后台验证 goroutine 全被带走，号池里的
+	// email_verified 就不准了。
+	if n := pipe.PendingVerify(); n > 0 && *verifyGrace > 0 {
+		fmt.Printf("\n等待 %d 个后台邮箱验证（最多 %s）…\n", n, verifyGrace.Round(time.Second))
+		if !pipe.WaitVerify(*verifyGrace) {
+			fmt.Printf("仍有 %d 个验证未完成（不影响入池与额度）\n", pipe.PendingVerify())
+		}
+		// 后台验证写的是记录副本，这里从台账取回最新状态，
+		// 否则汇总与交付物里的 email_verified 永远是入池那一刻的值。
+		if merged, err := ledger.Load(); err == nil && len(merged) > 0 {
+			want := make(map[string]bool, len(records))
+			for _, r := range records {
+				if r != nil {
+					want[r.Email] = true
+				}
+			}
+			refreshed := make([]*register.Record, 0, len(records))
+			for _, r := range merged {
+				if want[r.Email] {
+					refreshed = append(refreshed, r)
+				}
+			}
+			if len(refreshed) == len(records) {
+				records = refreshed
+			}
+		}
 	}
 
 	summary := register.Summarize(records)

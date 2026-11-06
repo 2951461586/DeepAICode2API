@@ -149,6 +149,21 @@ func (c *WebClient) postJSON(ctx context.Context, path string, body any) (int, [
 	return c.do(ctx, http.MethodPost, path, "application/json", bytes.NewReader(raw), 3)
 }
 
+// sleepCtx 等待 d，期间 ctx 到期则立刻返回 false。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // do 发送请求（5xx / 网络错误重试）。
 func (c *WebClient) do(ctx context.Context, method, path, contentType string, body io.Reader, attempts int) (int, []byte, error) {
 	if attempts <= 0 {
@@ -206,7 +221,11 @@ func (c *WebClient) do(ctx context.Context, method, path, contentType string, bo
 		if err != nil {
 			lastErr = err
 			if attempt < attempts-1 {
-				time.Sleep(time.Duration(attempt+1) * 700 * time.Millisecond)
+				// 退避必须可被 ctx 打断：否则 ctx 已经超时了还要把
+				// 700ms/1400ms 睡完，注册 POST 的预算形同虚设。
+				if !sleepCtx(ctx, time.Duration(attempt+1)*700*time.Millisecond) {
+					return 0, nil, fmt.Errorf("%s %s: %w", method, path, ctx.Err())
+				}
 				continue
 			}
 			return 0, nil, fmt.Errorf("%s %s: %w", method, path, err)
@@ -219,7 +238,10 @@ func (c *WebClient) do(ctx context.Context, method, path, contentType string, bo
 		}
 		if resp.StatusCode >= 500 && attempt < attempts-1 {
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
-			time.Sleep(time.Duration(attempt+1) * 700 * time.Millisecond)
+			if !sleepCtx(ctx, time.Duration(attempt+1)*700*time.Millisecond) {
+				// ctx 到期：把已拿到的状态码交回调用方，比丢掉更有用。
+				return resp.StatusCode, raw, nil
+			}
 			continue
 		}
 		return resp.StatusCode, raw, nil
@@ -265,9 +287,18 @@ func (c *WebClient) SaveSignupData(ctx context.Context) error {
 	return nil
 }
 
+// 注册 POST 的总时间预算。
+//
+// 上游偶发 60s 级的 504（Gateway Timeout）：原来 3 次内部重试 × 60s ≈ 190s
+// 才判死，一个账号就能把整批墙钟拖长两分钟。压到 45s 后快速失败，
+// 由 pipeline 用「登录兜底」判断账号是否其实已经建成。
+var registerPostBudget = 45 * time.Second
+
 // Register 注册新账号，返回会话 key。
 func (c *WebClient) Register(ctx context.Context, email, password string) (string, error) {
-	st, raw, err := c.postForm(ctx, "/daily-time-sync/registration/", map[string]string{
+	rctx, cancel := context.WithTimeout(ctx, registerPostBudget)
+	defer cancel()
+	st, raw, err := c.postForm(rctx, "/daily-time-sync/registration/", map[string]string{
 		"email":     email,
 		"username":  email,
 		"password1": password,
