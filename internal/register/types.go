@@ -48,6 +48,9 @@ type Record struct {
 	// LastError 只在“本次比历史更差”时保留原因，避免覆盖历史成功记录。
 	LastError string  `json:"last_error,omitempty"`
 	CreatedAt float64 `json:"created_at"`
+	// FinishedAt 是本次尝试结束的时间戳（秒，含小数）。
+	// 与 CreatedAt 相减即为该账号端到端耗时，用于批量压测的速率统计。
+	FinishedAt float64 `json:"finished_at,omitempty"`
 
 	Stages  map[string]string  `json:"stages,omitempty"`
 	Timings map[string]float64 `json:"timings,omitempty"`
@@ -138,6 +141,19 @@ func (r *Record) Normalize() {
 	if r.Proxy != "" && r.ProxyLabel == "" {
 		r.ProxyLabel = ProxyLabel(r.Proxy)
 	}
+}
+
+// E2ESeconds 返回该账号本次尝试的端到端耗时（秒）。
+//
+// 未结束时返回 0；负值（时钟回拨 / 补跑复用了历史 CreatedAt）也返回 0。
+func (r *Record) E2ESeconds() float64 {
+	if r == nil || r.FinishedAt <= 0 || r.CreatedAt <= 0 {
+		return 0
+	}
+	if d := r.FinishedAt - r.CreatedAt; d > 0 {
+		return d
+	}
+	return 0
 }
 
 // WorthDelivering 报告是否值得写入交付物。
@@ -298,6 +314,10 @@ func mergeRecord(dst, src *Record) {
 	}
 	if src.TheosRefreshAt != "" {
 		dst.TheosRefreshAt = src.TheosRefreshAt
+	}
+	// 完成时间取较新的一次，供端到端速率统计使用。
+	if src.FinishedAt > dst.FinishedAt {
+		dst.FinishedAt = src.FinishedAt
 	}
 	if src.MailboxProvider != "" {
 		dst.MailboxProvider = src.MailboxProvider

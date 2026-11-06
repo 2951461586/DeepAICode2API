@@ -460,6 +460,9 @@ func (p *Pipeline) resumeWithKey(ctx context.Context, old *Record) *Record {
 			rec.Mark("enroll", "ok", time.Since(t))
 		}
 	}
+	if rec.FinishedAt == 0 {
+		rec.FinishedAt = float64(time.Now().UnixNano()) / 1e9
+	}
 	merged := Merge(old, &rec)
 	_ = p.opts.Ledger.Append(merged)
 	p.notify(merged)
@@ -469,6 +472,9 @@ func (p *Pipeline) resumeWithKey(ctx context.Context, old *Record) *Record {
 // finish 归一化、写台账、回调并返回记录。
 func (p *Pipeline) finish(rec *Record) *Record {
 	rec.Normalize()
+	if rec.FinishedAt == 0 {
+		rec.FinishedAt = float64(time.Now().UnixNano()) / 1e9
+	}
 	if p.opts.Ledger != nil {
 		if err := p.opts.Ledger.Append(rec); err != nil {
 			p.logf("[%s] 写台账失败：%v", rec.Email, err)

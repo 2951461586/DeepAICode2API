@@ -511,7 +511,24 @@ curl -s -X POST http://127.0.0.1:10087/admin/api/accounts \
 | 机器指纹 | 121 个互不相同 |
 | 出口 | 12 条 |
 
-### 6.14 安全与合规
+### 6.14 单号端到端速率（第三批，含逐号埋点）
+
+`Record.FinishedAt` 起开始有逐号计时，`E2E = FinishedAt - CreatedAt`（不含排队）：
+
+| 指标 | 值 |
+| --- | --- |
+| 单号平均 E2E | **27.0s**（中位 25.3s，p90 33.3s，p95 35.0s） |
+| 平均速率 | **5.58s/号 = 10.75 号/分钟 = 645 号/小时** |
+| 并发利用率 | 4.83 / 5 = **96.6%**（worker 几乎不空转） |
+| 墙钟 | 279s（4m39s） |
+
+阶段耗时（均值）：`verify` **14.8s（54.8%）** > `exists` 3.3s > `validate` 3.1s
+> `enroll` 2.0s > `register` 1.2s > `login` 1.1s。
+
+单号时间线显示**取 Key 早于验证完成**，所以验证等待可与后续阶段并行。
+按 `docs/performance.md` 的 P0 三项改造，单号可降到约 15.5s（吞吐 +75%）。
+
+### 6.15 安全与合规
 
 - 注册能力用于管理**自己的** DeepAI 账号；请遵守上游服务条款，控制批次大小与频率；
 - 状态文件与台账权限 `0600`；但 **Windows 上 `0600` 不设 ACL**，同机其他用户仍可读，
@@ -646,6 +663,7 @@ docker run -d --name deepaicode2api \
 | `README.md` | 总览、接口、参数、压测与已知坑（本文） |
 | `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） |
 | `docs/changes.md` | 2026-11 的安全 / 正确性改造记录：根因、决策与验收 |
+| `docs/performance.md` | 压测数据与优化方案：单号 E2E、阶段分解、P0/P1/P2 收益测算 |
 | `docs/optimization-plan.md` | 首轮扫描的完整优化方案（已全部实施，保留作为设计依据） |
 | `.env.example` | 全部可配置项与说明 |
 | `Makefile` | `make build / test / test-race / lint / cover` |

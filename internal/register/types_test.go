@@ -241,3 +241,55 @@ func containsField(raw []byte, field string) bool {
 	_, ok := m[field]
 	return ok
 }
+
+func TestRecordE2ESeconds(t *testing.T) {
+	r := &Record{CreatedAt: 100, FinishedAt: 127.5}
+	if got := r.E2ESeconds(); got != 27.5 {
+		t.Fatalf("E2E = %v，期望 27.5", got)
+	}
+	// 未结束 / 时钟回拨 / 零值都返回 0，避免统计时出现负数。
+	for _, bad := range []*Record{
+		{CreatedAt: 100},
+		{CreatedAt: 0, FinishedAt: 10},
+		{CreatedAt: 200, FinishedAt: 100},
+		nil,
+	} {
+		if got := bad.E2ESeconds(); got != 0 {
+			t.Fatalf("%#v 的 E2E 应为 0，实际 %v", bad, got)
+		}
+	}
+}
+
+func TestMergeKeepsNewerFinishedAt(t *testing.T) {
+	// 补跑会重新写 FinishedAt；合并后统计要拿到较新的结束时间。
+	old := &Record{Email: "a@b.com", Key: "a@b.com", Status: StatusKeyed,
+		CreatedAt: 100, FinishedAt: 130}
+	next := &Record{Email: "a@b.com", Key: "a@b.com", Status: StatusKeyed,
+		CreatedAt: 100, FinishedAt: 160}
+	if got := Merge(old, next).FinishedAt; got != 160 {
+		t.Fatalf("FinishedAt = %v，期望取较新的 160", got)
+	}
+
+	// 旧值更新时不能被退回去。
+	earlier := &Record{Email: "a@b.com", Key: "a@b.com", Status: StatusKeyed,
+		CreatedAt: 100, FinishedAt: 120}
+	if got := Merge(next, earlier).FinishedAt; got != 160 {
+		t.Fatalf("FinishedAt 不应回退，实际 %v", got)
+	}
+}
+
+func TestMergeDoesNotAliasTimingsAcrossAttempts(t *testing.T) {
+	// 端到端统计依赖每个尝试的 Timings 不被合并污染。
+	old := &Record{Email: "a@b.com", Key: "a@b.com", Status: StatusKeyed,
+		Timings: map[string]float64{"verify": 14.8}}
+	next := &Record{Email: "a@b.com", Key: "a@b.com", Status: StatusKeyed,
+		Timings: map[string]float64{"enroll": 2.0}}
+	out := Merge(old, next)
+	if out.Timings["verify"] != 14.8 || out.Timings["enroll"] != 2.0 {
+		t.Fatalf("Timings 合并错误: %#v", out.Timings)
+	}
+	out.Timings["verify"] = 0
+	if old.Timings["verify"] != 14.8 {
+		t.Fatal("合并结果与入参共享 Timings map")
+	}
+}
