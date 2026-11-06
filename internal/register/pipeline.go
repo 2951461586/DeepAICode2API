@@ -252,12 +252,28 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 	}
 	p.logf("[%s] 取到 API Key（%s，plan=%s）", email, deepai.MaskSecret(rec.APIKey), rec.Plan)
 
-	// 5) 邮箱验证（可选，失败不阻断）：join 上面并行启动的等待
-	if verifyCh == nil {
-		rec.Mark("verify", "skipped", 0)
-	} else {
+	// 5) 验活（与验证等待并行）
+	//
+	// validate 只看 API Key，不依赖邮箱验证，所以把它放到 join 之前，
+	// 让 14s 级的收信等待被它遮住一部分。
+	up := deepai.NewClientWithFingerprint(proxy, fp.UserAgent)
+	t = time.Now()
+	validateErr := p.validate(ctx, rec, up)
+	validateElapsed := time.Since(t)
+
+	// 6) 邮箱验证（可选，失败不阻断）：join 上面并行启动的等待
+	joined := false
+	joinVerify := func() {
+		if joined {
+			return
+		}
+		joined = true
+		if verifyCh == nil {
+			rec.Mark("verify", "skipped", 0)
+			return
+		}
 		out := <-verifyCh
-		t = time.Now()
+		vt := time.Now()
 		switch {
 		case errors.Is(out.err, ErrNoInbox):
 			rec.Mark("verify", "skipped (no inbox)", 0)
@@ -267,29 +283,35 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 			p.logf("[%s] 等待验证邮件失败（继续入池）：%v", email, out.err)
 		default:
 			if err := web.VerifyEmail(ctx, out.link); err != nil {
-				rec.Mark("verify", "warning", out.waited+time.Since(t))
+				rec.Mark("verify", "warning", out.waited+time.Since(vt))
 				p.logf("[%s] 验证链接访问失败（继续入池）：%v", email, err)
 			} else {
 				rec.EmailVerified = true
 				if StatusRank(rec.Status) < StatusRank(StatusVerified) {
 					rec.Status = StatusVerified
 				}
-				rec.Mark("verify", "ok", out.waited+time.Since(t))
+				rec.Mark("verify", "ok", out.waited+time.Since(vt))
 				p.logf("[%s] 邮箱验证完成", email)
 			}
 		}
 	}
 
-	// 6) 验活
-	t = time.Now()
-	up := deepai.NewClientWithFingerprint(proxy, fp.UserAgent)
-	if err := p.validate(ctx, rec, up); err != nil {
-		rec.Mark("validate", "failed", time.Since(t))
-		rec.SetError("validate", err)
+	// 少数账号要邮箱已验证才能调上游：先用验证换个机会，再重试一次。
+	if validateErr != nil && p.opts.Verify && isUnverifiedError(validateErr) {
+		joinVerify()
+		t = time.Now()
+		validateErr = p.validate(ctx, rec, up)
+		validateElapsed += time.Since(t)
+	}
+	joinVerify()
+
+	if validateErr != nil {
+		rec.Mark("validate", "failed", validateElapsed)
+		rec.SetError("validate", validateErr)
 		return p.finish(rec)
 	}
 	rec.Status = StatusKeyed
-	rec.Mark("validate", "ok", time.Since(t))
+	rec.Mark("validate", "ok", validateElapsed)
 	p.logf("[%s] Key 验活通过（theos balance=%s granted=%s）", email, rec.TheosBalance, rec.TheosGranted)
 
 	// 7) 入池
@@ -346,6 +368,15 @@ func theosWithRetry(ctx context.Context, up *deepai.Client, acct *deepai.Account
 		}
 	}
 	return nil, err
+}
+
+// isUnverifiedError 报告错误是否因为“邮箱还没验证”。
+func isUnverifiedError(err error) bool {
+	var he *deepai.HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	return he.Code() == "email_unverified"
 }
 
 // verifyOutcome 是并行验证等待的结果。

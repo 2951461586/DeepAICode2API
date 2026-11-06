@@ -159,6 +159,8 @@ func sanitizeRegisterRecord(rec *register.Record) map[string]any {
 		"fingerprint":      rec.Fingerprint,
 		"stages":           rec.Stages,
 		"timings":          rec.Timings,
+		"created_at":       rec.CreatedAt,
+		"finished_at":      rec.FinishedAt,
 	}
 }
 
@@ -309,6 +311,8 @@ func (s *Server) runRegisterJob(ctx context.Context, job *registerJob, cfg *regi
 
 	baseDir := filepath.Dir(s.Store.Path())
 	ledger := register.NewLedger(filepath.Join(baseDir, "exports", "register-ledger.jsonl"))
+	// 缓冲写：任务结束必须刷盘并关闭句柄。
+	defer func() { _ = ledger.Close() }()
 
 	pipe := register.New(register.Options{
 		Config:   cfg,

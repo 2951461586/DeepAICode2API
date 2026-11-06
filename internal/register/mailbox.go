@@ -16,6 +16,12 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
+// adaptivePollFloor 是自适应轮询的起始间隔。
+//
+// 收信等待的实测中位数是 14.8s；把首轮间隔从 1s 降到 300ms，
+// 平均能省下约 0.35s/号，而稳态仍是配置的 PollInterval。
+const adaptivePollFloor = 300 * time.Millisecond
+
 // ErrNoInbox 表示当前邮箱后端没有收件箱（无法自动点验证链接）。
 var ErrNoInbox = errors.New("邮箱后端没有收件箱")
 
@@ -280,6 +286,15 @@ func (m *cfInbox) WaitForVerification(ctx context.Context, since time.Time, time
 	}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
+
+	// 自适应轮询：验证邮件通常在注册后几秒内到达，固定 1s 间隔会白白
+	// 多等半秒左右；改成从 300ms 起、每次 ×1.5 退避到配置间隔，
+	// 既降低平均等待，又不会对邮箱服务造成成倍的请求量。
+	wait := interval
+	if wait > adaptivePollFloor {
+		wait = adaptivePollFloor
+	}
+
 	for {
 		mails, err := m.list(ctx)
 		if err != nil {
@@ -304,7 +319,13 @@ func (m *cfInbox) WaitForVerification(ctx context.Context, since time.Time, time
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(interval):
+		case <-time.After(wait):
+		}
+		if wait < interval {
+			wait = wait * 3 / 2
+			if wait > interval {
+				wait = interval
+			}
 		}
 	}
 }

@@ -189,6 +189,8 @@ func main() {
 	}
 
 	ledger := register.NewLedger(*ledgerPath)
+	// 台账是缓冲写的，退出前必须刷盘；否则最后几条进度会丢。
+	defer func() { _ = ledger.Close() }()
 	var printMu sync.Mutex
 	opts := register.Options{
 		Config:        cfg,

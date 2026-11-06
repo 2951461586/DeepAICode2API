@@ -15,7 +15,10 @@ var errTest = errors.New("boom")
 
 func newTestLedger(t *testing.T) *Ledger {
 	t.Helper()
-	return NewLedger(filepath.Join(t.TempDir(), "exports", "register-ledger.jsonl"))
+	l := NewLedger(filepath.Join(t.TempDir(), "exports", "register-ledger.jsonl"))
+	// 台账是缓冲写的：用完必须关闭，否则 Windows 上临时目录删不掉。
+	t.Cleanup(func() { _ = l.Close() })
+	return l
 }
 
 func TestLedgerRedactsSecretsOnDisk(t *testing.T) {
@@ -30,6 +33,9 @@ func TestLedgerRedactsSecretsOnDisk(t *testing.T) {
 
 	if err := l.Append(rec); err != nil {
 		t.Fatalf("Append: %v", err)
+	}
+	if err := l.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 
 	raw, err := os.ReadFile(l.Path)
@@ -104,6 +110,9 @@ func TestLedgerWithoutSecretsCreatesNoSidecar(t *testing.T) {
 	if err := l.Append(rec); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
+	if err := l.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
 	if _, err := os.Stat(l.SecretPath()); !os.IsNotExist(err) {
 		t.Fatalf("无凭据时不应创建旁路文件: %v", err)
 	}
@@ -164,6 +173,9 @@ func TestLedgerCompact(t *testing.T) {
 		if err := l.Append(rec); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := l.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 	before, err := os.ReadFile(l.Path)
 	if err != nil {

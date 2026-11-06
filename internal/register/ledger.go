@@ -9,6 +9,18 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
+)
+
+// 台账写入策略。
+//
+// 每个账号会写 3 次台账（阶段失败 / 中间结果 / 最终结果），每次都 fsync
+// 的话 50 个账号就是 ~150 次磁盘同步，在批量场景里是明显的 IO 放大。
+// 改成缓冲写 + 按行数/时间批量 fsync：正常情况下每批 50 个账号只同步 ~5 次，
+// 崩溃时最多丢 20 行（约 1 秒的进度），对 append-only 台账是可接受的。
+const (
+	ledgerSyncEvery = 20
+	ledgerSyncAfter = 1 * time.Second
 )
 
 // Ledger 是 append-only JSONL 台账（进程内带锁）。
@@ -21,7 +33,9 @@ import (
 type Ledger struct {
 	Path string
 
-	mu sync.Mutex
+	mu   sync.Mutex
+	main *lineBuf
+	sec  *lineBuf
 }
 
 // NewLedger 构造台账（不立即创建文件）。
@@ -76,7 +90,10 @@ func (l *Ledger) Append(rec *Record) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if err := appendLine(l.Path, raw); err != nil {
+	if l.main == nil {
+		l.main = &lineBuf{path: l.Path}
+	}
+	if err := l.main.write(raw); err != nil {
 		return err
 	}
 
@@ -91,27 +108,135 @@ func (l *Ledger) Append(rec *Record) error {
 		if err != nil {
 			return err
 		}
-		if err := appendLine(l.SecretPath(), sec); err != nil {
+		if l.sec == nil {
+			l.sec = &lineBuf{path: l.SecretPath()}
+		}
+		if err := l.sec.write(sec); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// appendLine 以 0600 权限追加一行并落盘。
-func appendLine(path string, raw []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+// Flush 把缓冲内容落盘并 fsync。
+//
+// 批量结束、进程退出、以及任何"要读自己刚写的内容"之前都必须调用。
+func (l *Ledger) Flush() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.flushLocked()
+}
+
+// Close 落盘并关闭底层文件（进程退出前调用）。
+func (l *Ledger) Close() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.flushLocked(); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
+	return l.closeLocked()
+}
+
+func (l *Ledger) flushLocked() error {
+	if l.main != nil {
+		if err := l.main.flush(); err != nil {
+			return err
+		}
+	}
+	if l.sec != nil {
+		if err := l.sec.flush(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (l *Ledger) closeLocked() error {
+	if l.main != nil {
+		if err := l.main.close(); err != nil {
+			return err
+		}
+		l.main = nil
+	}
+	if l.sec != nil {
+		if err := l.sec.close(); err != nil {
+			return err
+		}
+		l.sec = nil
+	}
+	return nil
+}
+
+// lineBuf 是带批量 fsync 的追加写缓冲。
+type lineBuf struct {
+	path string
+
+	file  *os.File
+	buf   *bufio.Writer
+	lines int
+	since time.Time
+}
+
+// write 追加一行；达到行数或时间阈值时才真正落盘。
+func (b *lineBuf) write(raw []byte) error {
+	if b.file == nil {
+		if err := os.MkdirAll(filepath.Dir(b.path), 0o700); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(b.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		b.file = f
+		b.buf = bufio.NewWriterSize(f, 32*1024)
+		b.since = time.Now()
+	}
+	if _, err := b.buf.Write(raw); err != nil {
 		return err
 	}
-	defer f.Close()
-	if _, err := f.Write(append(raw, '\n')); err != nil {
+	if err := b.buf.WriteByte('\n'); err != nil {
 		return err
 	}
-	return f.Sync()
+	b.lines++
+	if b.lines >= ledgerSyncEvery || time.Since(b.since) >= ledgerSyncAfter {
+		return b.flush()
+	}
+	return nil
+}
+
+// flush 把缓冲刷到文件并 fsync。
+func (b *lineBuf) flush() error {
+	if b.file == nil {
+		return nil
+	}
+	if err := b.buf.Flush(); err != nil {
+		return err
+	}
+	if err := b.file.Sync(); err != nil {
+		return err
+	}
+	b.lines = 0
+	b.since = time.Now()
+	return nil
+}
+
+// close 刷盘并关闭。
+func (b *lineBuf) close() error {
+	if b.file == nil {
+		return nil
+	}
+	if err := b.flush(); err != nil {
+		return err
+	}
+	err := b.file.Close()
+	b.file, b.buf = nil, nil
+	return err
 }
 
 // Load 读取并合并台账（按邮箱并集合并，末次等级更高的记录胜出）。
@@ -122,6 +247,10 @@ func (l *Ledger) Load() ([]*Record, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// 缓冲写：先落盘再读，否则会读到旧的快照。
+	if err := l.flushLocked(); err != nil {
+		return nil, err
+	}
 	out, err := readRecords(l.Path)
 	if err != nil {
 		return nil, err
@@ -272,6 +401,13 @@ func (l *Ledger) Compact() error {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// rename 之后旧句柄指向被替换掉的 inode，必须先关掉再重写。
+	if l.main != nil {
+		if err := l.main.close(); err != nil {
+			return err
+		}
+		l.main = nil
+	}
 	tmp := l.Path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(buf.String()), 0o600); err != nil {
 		return err

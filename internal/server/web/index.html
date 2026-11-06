@@ -166,6 +166,7 @@
         <button class="btn primary" id="startRegister">开始注册</button>
         <span id="regStatus" class="muted">空闲</span>
       </div>
+      <div id="regStats" class="muted" style="margin-top:6px;font-size:12px"></div>
       <div class="hint">链路：创建临时邮箱 → 注册 → 登录 → 取 Session/API Key → 收信验证 → <code>/theos</code> 验活 → 写入 2API 号池（按分组轮询）。</div>
       <table style="margin-top:12px"><thead><tr>
         <th>邮箱</th><th>状态</th><th>阶段</th><th>Key</th><th>Theos</th><th>账号</th><th>代理 / 指纹</th><th>错误</th>
@@ -608,10 +609,45 @@
   // --- 批量注册 ---
   var regTimer = null, regId = null;
 
+  // 单号端到端速率与阶段耗时：批量压测的核心指标，放在记录表上方。
+  function renderRegStats(recs){
+    var el = $("#regStats");
+    if (!el) return;
+    var e2e = recs
+      .filter(function(r){ return r.finished_at && r.created_at && r.finished_at > r.created_at; })
+      .map(function(r){ return r.finished_at - r.created_at; });
+    if (!e2e.length) { el.textContent = ""; return; }
+    e2e.sort(function(a, b){ return a - b; });
+    var sum = e2e.reduce(function(a, b){ return a + b; }, 0);
+    var mean = sum / e2e.length;
+    var p50 = e2e[Math.floor((e2e.length - 1) * 0.5)];
+    var p95 = e2e[Math.floor((e2e.length - 1) * 0.95)];
+    var enrolled = recs.filter(function(r){ return r.status === "enrolled"; }).length;
+    var agg = {}, cnt = {};
+    recs.forEach(function(r){
+      var t = r.timings || {};
+      Object.keys(t).forEach(function(k){
+        if (!(t[k] > 0)) return;
+        agg[k] = (agg[k] || 0) + t[k];
+        cnt[k] = (cnt[k] || 0) + 1;
+      });
+    });
+    var stages = Object.keys(agg).map(function(k){
+      return { k: k, v: agg[k] / cnt[k] };
+    }).sort(function(a, b){ return b.v - a.v; }).slice(0, 4);
+    var text = "单号平均 " + mean.toFixed(1) + "s · p50 " + p50.toFixed(1) +
+      "s · p95 " + p95.toFixed(1) + "s · 入池 " + enrolled + "/" + recs.length;
+    if (stages.length) {
+      text += " · 阶段：" + stages.map(function(s){ return s.k + " " + s.v.toFixed(1) + "s"; }).join(" / ");
+    }
+    el.textContent = text;
+  }
+
   function renderRegister(job){
     var tb = $("#regRows");
     tb.textContent = "";
     var recs = (job && job.records) || [];
+    renderRegStats(recs);
     if (!recs.length) { tb.append(emptyRow(8, "暂无记录")); return; }
     recs.forEach(function(rec){
       var st = cell("");
