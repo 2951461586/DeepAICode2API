@@ -464,6 +464,7 @@ const (
 	actionToggle        = "toggle"
 	actionClearErrors   = "clear-errors"
 	actionAssignMachine = "assign-machine"
+	actionSetGroup      = "set-group"
 )
 
 func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
@@ -495,6 +496,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		Proxy          string `json:"proxy"`
 		Fingerprint    string `json:"fingerprint"`
 		MachineID      string `json:"machine_id"`
+		FromGroup      string `json:"from_group"`
 		UserAgent      string `json:"user_agent"`
 		AcceptLanguage string `json:"accept_language"`
 		SecCHUA        string `json:"sec_ch_ua"`
@@ -626,6 +628,30 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		// 重新探测配额，让调度能立即看到新指纹下的额度。
 		go s.probeAccounts(targets)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
+	case actionSetGroup:
+		// 把账号迁到另一个分组（例如把压测批次的账号并入日常号池）。
+		// id 为空时按 from_group 批量迁移，便于整批归位。
+		target := strings.TrimSpace(body.Group)
+		if target == "" {
+			writeErr(w, http.StatusBadRequest, "group 不能为空", "invalid_request_error")
+			return
+		}
+		moved := 0
+		for _, a := range s.Store.Accounts() {
+			if body.ID != "" && a.ID != body.ID {
+				continue
+			}
+			if body.FromGroup != "" && !strings.EqualFold(a.GroupName(), body.FromGroup) {
+				continue
+			}
+			if a.GroupName() == target {
+				continue
+			}
+			a.Group = target
+			moved++
+		}
+		_ = s.Store.Save()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "moved": moved, "group": target})
 	default:
 		writeErr(w, http.StatusBadRequest, "未知操作: "+body.Action, "invalid_request_error")
 	}
