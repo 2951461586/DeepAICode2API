@@ -514,7 +514,7 @@ docker run -d --name deepaicode2api \
 | 长响应被掐断 | 上游心跳 `: keep-alive` 被丢弃 | `streamChat` 要原样透传注释行 |
 | 工具调用参数被截断 | 同一事件多行 `data:` 未按 `\n` 拼接 | 用 `deepai.ReadSSE`，不要逐行 `json.Unmarshal` |
 | 台账里密码消失 | `Append` 走了 `redactRecord` | 这是设计；密码在 `*-credentials.jsonl` |
-| `go test -race` 链接失败 | mingw 只带 `ld.bfd.exe` | 做一个 `ld.exe` shim 并加进 PATH（见 Makefile 注释） |
+| `go test -race` 链接失败（`cannot find 'ld'`） | mingw runtime 只带 `ld.bfd.exe` | 不要求改 PATH；跑 `make race-shim` 补一个同名副本 |
 
 另：`/v1/chat/completions` 的 `reasoning_content` 是网关补的兼容字段，
 上游原生只有 `reasoning`；已存在时不会被覆盖。
