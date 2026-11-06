@@ -3,10 +3,10 @@ package register
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/parallel"
 )
 
 // errNilWebClient 表示调用补验证时没给 web 客户端。
@@ -144,32 +144,15 @@ func Reverify(ctx context.Context, opts ReverifyOptions, targets []VerifyTarget)
 		logf = func(string, ...any) {}
 	}
 
-	jobs := make(chan VerifyTarget)
-	out := make(chan ReverifyResult, len(targets))
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for t := range jobs {
-				out <- reverifyOne(ctx, cfg, inbox, opts.Marker, logf, t, wait, poll)
-			}
-		}()
-	}
-	go func() {
-		defer close(jobs)
-		for _, t := range targets {
-			select {
-			case jobs <- t:
-			case <-ctx.Done():
-				return
-			}
+	out := make([]ReverifyResult, len(targets))
+	parallel.For(ctx, workers, len(targets), func(ctx context.Context, i int) {
+		out[i] = reverifyOne(ctx, cfg, inbox, opts.Marker, logf, targets[i], wait, poll)
+	})
+	// 取消时未跑完的槽位是零值，跳过而不是下发空结果。
+	for _, r := range out {
+		if r.Email != "" || r.Err != "" {
+			results = append(results, r)
 		}
-	}()
-	wg.Wait()
-	close(out)
-	for r := range out {
-		results = append(results, r)
 	}
 	return results
 }

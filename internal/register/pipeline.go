@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/parallel"
+	"deepaicode2api/internal/retry"
 )
 
 // Enroller 把一条记录写入 2API 号池，返回账号 ID。
@@ -447,31 +449,19 @@ var theosRetryDelays = []time.Duration{time.Second, 3 * time.Second}
 
 // theosWithRetry 查询配额，瞬时错误退避重试；鉴权/参数错误直接返回。
 func theosWithRetry(ctx context.Context, up *deepai.Client, acct *deepai.Account) (*deepai.Allowance, error) {
-	al, err := up.Theos(ctx, acct)
-	if err == nil {
-		return al, nil
-	}
-	if !deepai.IsTransient(err) {
+	var al *deepai.Allowance
+	err := retry.Do(ctx, theosRetryDelays, deepai.IsTransient, func(c context.Context) error {
+		got, err := up.Theos(c, acct)
+		if err != nil {
+			return err
+		}
+		al = got
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	for i, delay := range theosRetryDelays {
-		select {
-		case <-ctx.Done():
-			return nil, err
-		case <-time.After(delay):
-		}
-		al, err = up.Theos(ctx, acct)
-		if err == nil {
-			return al, nil
-		}
-		if !deepai.IsTransient(err) {
-			return nil, err
-		}
-		if i == len(theosRetryDelays)-1 {
-			break
-		}
-	}
-	return nil, err
+	return al, nil
 }
 
 // isUnverifiedError 报告错误是否因为“邮箱还没验证”。
@@ -542,89 +532,42 @@ func (p *Pipeline) RunBatch(ctx context.Context, count, concurrency int, email, 
 	if count <= 0 {
 		count = 1
 	}
-	if concurrency <= 0 {
-		concurrency = 1
-	}
-	if concurrency > count {
-		concurrency = count
-	}
 	results := make([]*Record, count)
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	for w := 0; w < concurrency; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				p.waitTurn(ctx)
-				e, pw := "", ""
-				if count == 1 {
-					e, pw = email, password
-				}
-				results[i] = p.RunOne(ctx, e, pw)
-			}
-		}()
-	}
-	for i := 0; i < count; i++ {
-		select {
-		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
-			return results
-		case jobs <- i:
+	parallel.For(ctx, concurrency, count, func(ctx context.Context, i int) {
+		p.waitTurn(ctx)
+		e, pw := "", ""
+		if count == 1 {
+			e, pw = email, password
 		}
-	}
-	close(jobs)
-	wg.Wait()
+		results[i] = p.RunOne(ctx, e, pw)
+	})
 	return results
 }
 
 // RunRecords 对已有台账记录补跑（幂等；已入池的直接跳过）。
 func (p *Pipeline) RunRecords(ctx context.Context, records []*Record, concurrency int) []*Record {
-	if concurrency <= 0 {
-		concurrency = 1
-	}
 	results := make([]*Record, len(records))
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	for w := 0; w < concurrency; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				old := records[i]
-				if old == nil {
-					continue
-				}
-				if old.Status == StatusEnrolled && old.APIKey != "" {
-					results[i] = old
-					continue
-				}
-				p.waitTurn(ctx)
-				var rec *Record
-				if old.APIKey != "" && strings.TrimSpace(old.Password) == "" {
-					rec = p.resumeWithKey(ctx, old)
-				} else {
-					rec = p.runOne(ctx, old.Email, old.Password, old.Proxy, old.Fingerprint, old.MachineID)
-					rec = Merge(old, rec)
-					_ = p.opts.Ledger.Append(rec)
-					p.notify(rec)
-				}
-				results[i] = rec
-			}
-		}()
-	}
-	for i := range records {
-		select {
-		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
-			return results
-		case jobs <- i:
+	parallel.For(ctx, concurrency, len(records), func(ctx context.Context, i int) {
+		old := records[i]
+		if old == nil {
+			return
 		}
-	}
-	close(jobs)
-	wg.Wait()
+		if old.Status == StatusEnrolled && old.APIKey != "" {
+			results[i] = old
+			return
+		}
+		p.waitTurn(ctx)
+		var rec *Record
+		if old.APIKey != "" && strings.TrimSpace(old.Password) == "" {
+			rec = p.resumeWithKey(ctx, old)
+		} else {
+			rec = p.runOne(ctx, old.Email, old.Password, old.Proxy, old.Fingerprint, old.MachineID)
+			rec = Merge(old, rec)
+			_ = p.opts.Ledger.Append(rec)
+			p.notify(rec)
+		}
+		results[i] = rec
+	})
 	return results
 }
 

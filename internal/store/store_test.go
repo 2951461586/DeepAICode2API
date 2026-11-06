@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/pool"
 )
 
 // newStore 在临时目录里打开一个空状态文件。
@@ -210,7 +211,8 @@ func TestNextAccountSkipsFailedAndDisabled(t *testing.T) {
 	off := addAccount(t, st, "sk-off", "")
 
 	st.MarkAccountResult(bad.ID, false, "api down")
-	off.Enabled = false // 与 /admin/api/accounts 的启停一致：直接改号池里的指针
+	// 与 /admin/api/accounts 的启停一致：写路径统一走 UpdateAccount。
+	st.UpdateAccount(off.ID, func(x *deepai.Account) { x.Enabled = false })
 
 	for i := 0; i < 10; i++ {
 		if got := st.NextAccountGroup(""); got == nil || got.ID != good.ID {
@@ -503,7 +505,8 @@ func TestNextAccountUnknownQuotaIsUsable(t *testing.T) {
 func TestUpsertPreservesMachineID(t *testing.T) {
 	st := newStore(t)
 	a := addAccount(t, st, "sk-1", "")
-	a.MachineID = "machine-keep"
+	// 号池不再对外交付活指针，改字段必须走 UpdateAccount。
+	st.UpdateAccount(a.ID, func(x *deepai.Account) { x.MachineID = "machine-keep" })
 
 	// 重新导入（例如桌面端刷新了 Key）不应清掉机器指纹，
 	// 否则该账号在上游的额度归属会断掉。
@@ -575,21 +578,21 @@ func TestZeroQuotaGoesStale(t *testing.T) {
 
 	fresh := &deepai.Account{ID: "a", Enabled: true,
 		Theos: &deepai.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}}
-	if hasQuota(fresh) {
+	if pool.HasQuota(fresh) {
 		t.Fatal("刚探到的 0 额度不应算可用")
 	}
 
 	stale := &deepai.Account{ID: "b", Enabled: true,
 		Theos: &deepai.Allowance{Enabled: true, Balance: "0.00000",
-			CheckedAt: now - int64(QuotaStaleAfter/time.Second) - 60}}
-	if !hasQuota(stale) {
+			CheckedAt: now - int64(pool.QuotaStaleAfter/time.Second) - 60}}
+	if !pool.HasQuota(stale) {
 		t.Fatal("超过时限的 0 额度应视为未知（允许重探）")
 	}
 
 	// 没有探测时间戳的 0：按未知处理。
 	noStamp := &deepai.Account{ID: "c", Enabled: true,
 		Theos: &deepai.Allowance{Enabled: true, Balance: "0"}}
-	if !hasQuota(noStamp) {
+	if !pool.HasQuota(noStamp) {
 		t.Fatal("无 CheckedAt 的 0 额度应按未知处理")
 	}
 }

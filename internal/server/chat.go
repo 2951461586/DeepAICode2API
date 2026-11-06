@@ -1,11 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"deepaicode2api/internal/deepai"
@@ -55,22 +55,30 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	key := extractKey(r)
 	promptLen := estimatePromptLen(payload)
 
-	resp, acct, err := s.openModel(r.Context(), deepai.PathChat, body, affinity, group)
+	ctx := r.Context()
+	if !stream {
+		// 非流式请求加整体预算：MaxRetries × Retry-After 理论上可挂 90s 以上。
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, nonStreamBudget)
+		defer cancel()
+	}
+	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, group)
+	rl := s.newReqLog(key, acct, model.ID, "chat", stream, start, promptLen)
 	if err != nil {
-		s.record(key, acct, model.ID, "chat", stream, statusOf(err), start, promptLen, 0, Usage{}, err)
+		rl.done(0, Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if stream {
-		s.streamChat(w, resp.Body, model.ID, key, acct, start, promptLen)
+		s.streamChat(w, resp.Body, rl)
 		return
 	}
 
 	rawResp, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		s.record(key, acct, model.ID, "chat", false, http.StatusBadGateway, start, promptLen, 0, Usage{}, err)
+		rl.done(0, Usage{}, err)
 		writeErr(w, http.StatusBadGateway, "读取上游响应失败: "+err.Error(), "upstream_error")
 		return
 	}
@@ -80,7 +88,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 把响应类型与开头片段写进日志，否则只剩“不是合法 JSON”无从下手。
 		log.Printf("上游响应解析失败：account=%s status=%d ct=%q len=%d head=%q",
 			acctLabel(acct), resp.StatusCode, resp.Header.Get("Content-Type"), len(rawResp), headOf(rawResp, 160))
-		s.record(key, acct, model.ID, "chat", false, http.StatusBadGateway, start, promptLen, 0, Usage{}, err)
+		rl.done(0, Usage{}, err)
 		writeErr(w, http.StatusBadGateway, "上游响应不是合法 JSON", "upstream_error")
 		return
 	}
@@ -93,7 +101,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "响应序列化失败", "server_error")
 		return
 	}
-	s.record(key, acct, model.ID, "chat", false, http.StatusOK, start, promptLen, outLen, usage, nil)
+	rl.done(outLen, usage, nil)
 	writeRawJSON(w, http.StatusOK, encoded)
 }
 
@@ -145,7 +153,7 @@ func addReasoningContent(obj map[string]any) {
 }
 
 // streamChat 以 OpenAI SSE 格式流式转发。
-func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, publicModel, key string, acct *deepai.Account, start time.Time, promptLen int) {
+func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, rl reqLog) {
 	sw := newSSEWriter(w)
 	w.WriteHeader(http.StatusOK)
 
@@ -154,38 +162,32 @@ func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, publicModel, 
 		outLen int
 	)
 
-	streamErr := readSSELines(body, func(line string) bool {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			return true
-		}
-		if strings.HasPrefix(trimmed, ":") {
+	streamErr := forEachSSEFrame(body, func(f sseFrame) bool {
+		if f.Comment != "" {
 			// 上游心跳，原样透传以维持客户端连接。
-			_, _ = w.Write([]byte(trimmed + "\n\n"))
+			_, _ = w.Write([]byte(f.Comment + "\n\n"))
 			sw.flush()
 			return true
 		}
-		if !strings.HasPrefix(trimmed, "data:") {
-			return true
+		if f.Data == "" {
+			return true // event: 帧在 chat 场景下无意义
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-		if data == "[DONE]" {
+		if f.Data == sseDone {
 			sw.done()
 			return false
 		}
-		var chunk map[string]any
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		if f.Object == nil {
 			// 无法解析时按原文透传，避免破坏上游扩展事件。
-			_, _ = w.Write([]byte("data: " + data + "\n\n"))
+			_, _ = w.Write([]byte("data: " + f.Data + "\n\n"))
 			sw.flush()
 			return true
 		}
-		transformChatChunk(chunk, publicModel)
-		if u := parseUsage(chunk["usage"]); u.TotalTokens > 0 || u.Cost > 0 {
+		transformChatChunk(f.Object, rl.model)
+		if u := parseUsage(f.Object["usage"]); u.TotalTokens > 0 || u.Cost > 0 {
 			usage = u
 		}
-		outLen += chatTextLen(chunk)
-		if raw := jsonEvent(chunk); raw != nil {
+		outLen += chatTextLen(f.Object)
+		if raw := jsonEvent(f.Object); raw != nil {
 			sw.data(raw)
 		}
 		return true
@@ -200,7 +202,7 @@ func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, publicModel, 
 		}
 	}
 	sw.done()
-	s.record(key, acct, publicModel, "chat", true, statusOf(streamErr), start, promptLen, outLen, usage, streamErr)
+	rl.done(outLen, usage, streamErr)
 }
 
 // acctLabel 返回用于日志的账号标识（不含密钥）。

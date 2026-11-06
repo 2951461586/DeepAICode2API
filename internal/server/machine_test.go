@@ -223,19 +223,19 @@ func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 	}
 
 	// 入池瞬间应当是 0（上游如此）。
-	if a := s.Store.AccountCopy(id); a == nil || a.Theos == nil || a.Theos.Balance != "0.00000" {
+	if a := s.Store.Account(id); a == nil || a.Theos == nil || a.Theos.Balance != "0.00000" {
 		t.Fatalf("入池时应记录上游返回的 0 额度: %#v", a)
 	}
 
 	// 等复探把额度补上。
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if a := s.Store.AccountCopy(id); a != nil && a.Theos != nil && a.Theos.Balance == "200.00000" {
+		if a := s.Store.Account(id); a != nil && a.Theos != nil && a.Theos.Balance == "200.00000" {
 			return // ok
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	a := s.Store.AccountCopy(id)
+	a := s.Store.Account(id)
 	t.Fatalf("延迟复探未更新额度: %#v", a.Theos)
 }
 

@@ -41,8 +41,9 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	key := extractKey(r)
 	promptLen := estimatePromptLen(payload)
 
+	rls := s.newReqLog(key, nil, model.ID, "responses", stream, start, promptLen)
 	if model.IsResponses() {
-		s.passthroughResponses(w, r, payload, model.ID, stream, affinity, key, start, promptLen)
+		s.passthroughResponses(w, r, payload, affinity, rls)
 		return
 	}
 
@@ -52,36 +53,37 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if stream {
-		s.streamResponsesAsChat(w, r, chatPayload, model.ID, affinity, key, start, promptLen)
+		s.streamResponsesAsChat(w, r, chatPayload, affinity, rls)
 		return
 	}
-	s.blockingResponsesAsChat(w, r, chatPayload, model.ID, affinity, key, start, promptLen)
+	s.blockingResponsesAsChat(w, r, chatPayload, affinity, rls)
 }
 
 // passthroughResponses 透传上游 /responses。
-func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, payload map[string]any, publicModel string, stream bool, affinity, key string, start time.Time, promptLen int) {
+func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
 	// 同上：上游缺省 stream 时按 SSE 返回，必须显式下发。
-	payload["stream"] = stream
+	payload["stream"] = rl.stream
 	body, err := json.Marshal(payload)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")
 		return
 	}
 	resp, acct, err := s.openModel(ctx, deepai.PathResponses, body, affinity, s.requestGroup(r))
+	rl.acct = acct
 	if err != nil {
-		s.record(key, acct, publicModel, "responses", stream, statusOf(err), start, promptLen, 0, Usage{}, err)
+		rl.done(0, Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	if !stream {
+	if !rl.stream {
 		rawResp, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 		if err != nil {
-			s.record(key, acct, publicModel, "responses", false, http.StatusBadGateway, start, promptLen, 0, Usage{}, err)
+			rl.done(0, Usage{}, err)
 			writeErr(w, http.StatusBadGateway, "读取上游响应失败: "+err.Error(), "upstream_error")
 			return
 		}
@@ -90,11 +92,11 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 			writeRawJSON(w, http.StatusOK, rawResp)
 			return
 		}
-		rewriteResponsesModel(out, publicModel)
+		rewriteResponsesModel(out, rl.model)
 		usage := parseUsage(out["usage"])
 		outLen := responsesTextLen(out)
 		encoded, _ := json.Marshal(out)
-		s.record(key, acct, publicModel, "responses", false, http.StatusOK, start, promptLen, outLen, usage, nil)
+		rl.done(outLen, usage, nil)
 		writeRawJSON(w, http.StatusOK, encoded)
 		return
 	}
@@ -105,37 +107,37 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 		usage  Usage
 		outLen int
 	)
-	streamErr := readSSELines(resp.Body, func(line string) bool {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+	streamErr := forEachSSEFrame(resp.Body, func(f sseFrame) bool {
+		if f.Event != "" {
+			_, _ = w.Write([]byte("event: " + f.Event + "\n"))
 			return true
 		}
-		if strings.HasPrefix(trimmed, "event:") {
-			_, _ = w.Write([]byte(trimmed + "\n"))
+		if f.Data == "" {
 			return true
 		}
-		if !strings.HasPrefix(trimmed, "data:") {
-			return true
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-		if data == "[DONE]" {
+		if f.Data == sseDone {
 			sw.done()
 			return false
 		}
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(data), &obj); err != nil {
-			_, _ = w.Write([]byte("data: " + data + "\n\n"))
+		obj := f.Object
+		if obj == nil {
+			_, _ = w.Write([]byte("data: " + f.Data + "\n\n"))
 			sw.flush()
 			return true
 		}
-		rewriteResponsesModel(obj, publicModel)
+		rewriteResponsesModel(obj, rl.model)
 		if respObj, ok := obj["response"].(map[string]any); ok {
 			if u := parseUsage(respObj["usage"]); u.TotalTokens > 0 || u.Cost > 0 {
 				usage = u
 			}
 		}
 		outLen += responsesEventTextLen(obj)
-		_, _ = w.Write([]byte("data: " + data + "\n\n"))
+		// 必须写出改写后的对象：直接写原始 data 会把 model 改写丢掉。
+		if raw := jsonEvent(obj); raw != nil {
+			sw.data(raw)
+			return true
+		}
+		_, _ = w.Write([]byte("data: " + f.Data + "\n\n"))
 		sw.flush()
 		return true
 	})
@@ -147,30 +149,31 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 			sw.event("error", payload)
 		}
 	}
-	s.record(key, acct, publicModel, "responses", true, statusOf(streamErr), start, promptLen, outLen, usage, streamErr)
+	rl.done(outLen, usage, streamErr)
 }
 
 // blockingResponsesAsChat 用 Chat Completions 合成 Responses 响应。
-func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, publicModel, affinity, key string, start time.Time, promptLen int) {
+func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
 	out, acct, err := s.callJSON(ctx, deepai.PathChat, chatPayload, affinity, s.requestGroup(r))
+	rl.acct = acct
 	if err != nil {
-		s.record(key, acct, publicModel, "responses", false, statusOf(err), start, promptLen, 0, Usage{}, err)
+		rl.done(0, Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
-	respObj := chatToResponsesObject(out, publicModel)
+	respObj := chatToResponsesObject(out, rl.model)
 	usage := parseUsage(out["usage"])
 	outLen := responsesTextLen(respObj)
 
-	s.record(key, acct, publicModel, "responses", false, http.StatusOK, start, promptLen, outLen, usage, nil)
+	rl.done(outLen, usage, nil)
 	writeJSON(w, http.StatusOK, respObj)
 }
 
 // streamResponsesAsChat 用 Chat Completions 流合成 Responses 事件流。
-func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, publicModel, affinity, key string, start time.Time, promptLen int) {
+func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
@@ -180,8 +183,9 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, s.requestGroup(r))
+	rl.acct = acct
 	if err != nil {
-		s.record(key, acct, publicModel, "responses", true, statusOf(err), start, promptLen, 0, Usage{}, err)
+		rl.done(0, Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
@@ -189,64 +193,31 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 
 	sw := newSSEWriter(w)
 	w.WriteHeader(http.StatusOK)
-	gen := newResponsesStreamGen(sw, publicModel)
+	gen := newResponsesStreamGen(sw, rl.model)
 	gen.created()
 
 	var (
 		usage  Usage
 		outLen int
 	)
-	streamErr := readSSELines(resp.Body, func(line string) bool {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "data:") {
-			return true
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-		if data == "[DONE]" || data == "" {
-			return data != "[DONE]"
-		}
-		var chunk map[string]any
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return true
-		}
+	streamErr := forEachChatChunk(resp.Body, func(chunk map[string]any) bool {
 		if u := parseUsage(chunk["usage"]); u.TotalTokens > 0 || u.Cost > 0 {
 			usage = u
 		}
-		choices, _ := chunk["choices"].([]any)
-		if len(choices) == 0 {
-			return true
+		d, finish := chatChunkDelta(chunk)
+		if d.Reasoning != "" {
+			gen.reasoning(d.Reasoning)
+			outLen += len([]rune(d.Reasoning))
 		}
-		cm, _ := choices[0].(map[string]any)
-		if cm == nil {
-			return true
+		if d.Content != "" {
+			gen.textDelta(d.Content)
+			outLen += len([]rune(d.Content))
 		}
-		if delta, ok := cm["delta"].(map[string]any); ok {
-			if v, ok := delta["reasoning"].(string); ok && v != "" {
-				gen.reasoning(v)
-				outLen += len([]rune(v))
-			}
-			if v, ok := delta["content"].(string); ok && v != "" {
-				gen.textDelta(v)
-				outLen += len([]rune(v))
-			}
-			if tcs, ok := delta["tool_calls"].([]any); ok {
-				for _, tcv := range tcs {
-					tc, ok := tcv.(map[string]any)
-					if !ok {
-						continue
-					}
-					id, _ := tc["id"].(string)
-					name, args := "", ""
-					if fn, ok := tc["function"].(map[string]any); ok {
-						name, _ = fn["name"].(string)
-						args, _ = fn["arguments"].(string)
-					}
-					gen.toolCall(intOf(tc["index"]), id, name, args)
-				}
-			}
+		for _, tc := range d.ToolCalls {
+			gen.toolCall(tc.Index, tc.ID, tc.Name, tc.Args)
 		}
-		if fr, ok := cm["finish_reason"].(string); ok && fr != "" {
-			gen.finishReason = fr
+		if finish != "" {
+			gen.finishReason = finish
 		}
 		return true
 	})
@@ -255,7 +226,7 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 		gen.fail(streamErr)
 	}
 	gen.complete(usage)
-	s.record(key, acct, publicModel, "responses", true, statusOf(streamErr), start, promptLen, outLen, usage, streamErr)
+	rl.done(outLen, usage, streamErr)
 }
 
 // --- Responses → Chat ---

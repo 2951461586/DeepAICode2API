@@ -221,6 +221,35 @@ func Merge(old, new *Record) *Record {
 	if out.Fingerprint == "" {
 		out.Fingerprint = old.Fingerprint
 	}
+	// 指纹快照与机器指纹同样属于“已赚到”的字段：丢失会让推理侧
+	// 与注册侧特征不一致，或让上游不再按该机器发额度。
+	if out.MachineID == "" {
+		out.MachineID = old.MachineID
+	}
+	if out.UserAgent == "" {
+		out.UserAgent = old.UserAgent
+	}
+	if out.AcceptLanguage == "" {
+		out.AcceptLanguage = old.AcceptLanguage
+	}
+	if out.SecCHUA == "" {
+		out.SecCHUA = old.SecCHUA
+	}
+	if out.Platform == "" {
+		out.Platform = old.Platform
+	}
+	if out.Username == "" {
+		out.Username = old.Username
+	}
+	if out.Plan == "" {
+		out.Plan = old.Plan
+	}
+	if out.Group == "" {
+		out.Group = old.Group
+	}
+	if out.MailboxProvider == "" {
+		out.MailboxProvider = old.MailboxProvider
+	}
 	if out.Stages == nil {
 		out.Stages = map[string]string{}
 	}
@@ -333,6 +362,21 @@ func mergeRecord(dst, src *Record) {
 	}
 	if src.Group != "" {
 		dst.Group = src.Group
+	}
+	if src.MachineID != "" {
+		dst.MachineID = src.MachineID
+	}
+	if src.UserAgent != "" {
+		dst.UserAgent = src.UserAgent
+	}
+	if src.AcceptLanguage != "" {
+		dst.AcceptLanguage = src.AcceptLanguage
+	}
+	if src.SecCHUA != "" {
+		dst.SecCHUA = src.SecCHUA
+	}
+	if src.Platform != "" {
+		dst.Platform = src.Platform
 	}
 	if dst.Stages == nil {
 		dst.Stages = map[string]string{}

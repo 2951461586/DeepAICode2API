@@ -106,6 +106,15 @@ type Allowance struct {
 	CheckedAt   int64  `json:"checked_at,omitempty"`
 }
 
+// Clone 返回配额信息的副本（nil 安全）。
+func (a *Allowance) Clone() *Allowance {
+	if a == nil {
+		return nil
+	}
+	cp := *a
+	return &cp
+}
+
 // UsageSummary 是 /get_usage_summary 的返回（字段按需保留）。
 type UsageSummary struct {
 	IsPro             bool    `json:"is_pro"`
@@ -167,6 +176,67 @@ type Account struct {
 
 	// Theos 是最近一次 /theos 探测结果（只做展示，不做调度）。
 	Theos *Allowance `json:"theos,omitempty"`
+}
+
+// Clone 返回账号的深拷贝（含 Theos 指针）。
+//
+// 号池持有的是唯一可变实例；对外一律交付 Clone，避免调用方在锁外
+// 改字段与调度 / 后台探测裸竞争。
+func (a *Account) Clone() *Account {
+	if a == nil {
+		return nil
+	}
+	cp := *a
+	if a.Theos != nil {
+		theos := *a.Theos
+		cp.Theos = &theos
+	}
+	return &cp
+}
+
+// MergeFrom 把已有账号 ex 的运行态与缺失身份字段并入 a。
+//
+// 用于「同一个账号被重新导入 / 重新注册」的场景，策略有二：
+//   - 运行期状态（Failures / Status / LastErr / LastUsed / Theos）以 ex 为准：
+//     一次导入不应该抹掉故障计数与配额缓存；
+//   - 身份字段以 a 的非空值为准，空值才回落到 ex：重新导入不应清空
+//     机器指纹、代理、指纹快照这类“已赚到”的信息（清掉会断掉
+//     上游的额度归属，或让注册/推理特征不一致）。
+func (a *Account) MergeFrom(ex *Account) {
+	if a == nil || ex == nil {
+		return
+	}
+	a.ID = ex.ID
+	a.Failures = ex.Failures
+	a.LastUsed = ex.LastUsed
+	a.Status = ex.Status
+	a.LastErr = ex.LastErr
+	a.Theos = ex.Theos
+
+	fill := []struct {
+		dst *string
+		src string
+	}{
+		{&a.Name, ex.Name},
+		{&a.Email, ex.Email},
+		{&a.Password, ex.Password},
+		{&a.Group, ex.Group},
+		{&a.Proxy, ex.Proxy},
+		{&a.Fingerprint, ex.Fingerprint},
+		{&a.MachineID, ex.MachineID},
+		{&a.UserAgent, ex.UserAgent},
+		{&a.AcceptLanguage, ex.AcceptLanguage},
+		{&a.SecCHUA, ex.SecCHUA},
+		{&a.Platform, ex.Platform},
+	}
+	for _, f := range fill {
+		if *f.dst == "" {
+			*f.dst = f.src
+		}
+	}
+	if a.RegisteredAt == 0 {
+		a.RegisteredAt = ex.RegisteredAt
+	}
 }
 
 // GroupName 返回规范化后的分组名。

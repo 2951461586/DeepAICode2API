@@ -63,14 +63,15 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 60*time.Second)
 	text, err := s.clientFor(acct).Transcribe(ctx, acct, header.Filename, contentType, data)
 	cancel()
+	rl := s.newReqLog(key, acct, "whisper-1", "audio", false, start, len(data))
 	if err != nil {
 		s.Store.MarkAccountResult(acct.ID, false, err.Error())
-		s.record(key, acct, "whisper-1", "audio", false, statusOf(err), start, len(data), 0, Usage{}, err)
+		rl.done(0, Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	s.Store.MarkAccountResult(acct.ID, true, "")
-	s.record(key, acct, "whisper-1", "audio", false, http.StatusOK, start, len(data), len(text), Usage{}, nil)
+	rl.done(len(text), Usage{}, nil)
 
 	if mode == "text" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -96,6 +97,9 @@ func (s *Server) proxyExtension(w http.ResponseWriter, r *http.Request, path str
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
+	start := time.Now()
+	key := extractKey(r)
+	endpoint := strings.TrimPrefix(path, "/")
 	body, err := readBodyWithLimit(w, r)
 	if err != nil {
 		writeErr(w, http.StatusRequestEntityTooLarge, "请求体过大", "invalid_request_error")
@@ -123,12 +127,15 @@ func (s *Server) proxyExtension(w http.ResponseWriter, r *http.Request, path str
 	default:
 		err = io.ErrUnexpectedEOF
 	}
+	rl := s.newReqLog(key, acct, "-", endpoint, false, start, len(body))
 	if err != nil {
 		s.Store.MarkAccountResult(acct.ID, false, err.Error())
+		rl.done(0, Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	s.Store.MarkAccountResult(acct.ID, true, "")
+	rl.done(len(raw), Usage{}, nil)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, bytes.NewReader(raw))
@@ -136,6 +143,8 @@ func (s *Server) proxyExtension(w http.ResponseWriter, r *http.Request, path str
 
 // handleTheos 返回当前账号的 Theos 配额。
 func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	key := extractKey(r)
 	acct := s.nextAccount(r)
 	if acct == nil {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
@@ -144,12 +153,15 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 30*time.Second)
 	defer cancel()
 	al, err := s.clientFor(acct).Theos(ctx, acct)
+	rl := s.newReqLog(key, acct, "-", "theos", false, start, 0)
 	if err != nil {
 		s.Store.MarkAccountResult(acct.ID, false, err.Error())
+		rl.done(0, Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	s.Store.SetAccountAllowance(acct.ID, al, nil)
+	rl.done(0, Usage{}, nil)
 	_ = s.Store.Save()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"account":  acct.ID,
@@ -160,6 +172,8 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 
 // handleUsage 返回当前账号的订阅 / 用量摘要。
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	key := extractKey(r)
 	acct := s.nextAccount(r)
 	if acct == nil {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
@@ -168,12 +182,15 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 30*time.Second)
 	defer cancel()
 	usage, err := s.clientFor(acct).UsageSummary(ctx, acct)
+	rl := s.newReqLog(key, acct, "-", "usage", false, start, 0)
 	if err != nil {
 		s.Store.MarkAccountResult(acct.ID, false, err.Error())
+		rl.done(0, Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	s.Store.MarkAccountResult(acct.ID, true, "")
+	rl.done(0, Usage{}, nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"account":  acct.ID,
 		"username": acct.Username,

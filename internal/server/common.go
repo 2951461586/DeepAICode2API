@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"deepaicode2api/internal/deepai"
@@ -56,12 +56,19 @@ func affinityFor(r *http.Request, payload map[string]any) string {
 	return ""
 }
 
-// resolveModel 用当前目录 + 别名解析请求模型。
-func (s *Server) resolveModel(name string) deepai.Model {
+// catalog 返回当前模型目录；目录为空时回落到内置兜底模型，
+// 便于首次启动（尚未拉到上游目录）时仍能应答。
+func (s *Server) catalog() []deepai.Model {
 	catalog := s.Store.Models()
 	if len(catalog) == 0 {
-		catalog = []deepai.Model{deepai.DefaultModelEntry()}
+		return []deepai.Model{deepai.DefaultModelEntry()}
 	}
+	return catalog
+}
+
+// resolveModel 用当前目录 + 别名解析请求模型。
+func (s *Server) resolveModel(name string) deepai.Model {
+	catalog := s.catalog()
 	settings := s.Store.Settings()
 	def := s.Store.DefaultModel()
 	if settings.FallbackModel != "" {
@@ -72,6 +79,71 @@ func (s *Server) resolveModel(name string) deepai.Model {
 		}
 	}
 	return registry.Resolve(catalog, settings.ModelAliases, name, def)
+}
+
+// maxInFlightPerAccount 是单账号同时进行的上游请求上限。
+//
+// 调度只决定「这一轮选到谁」，不保证并发不会集中到少数账号；
+// 实测 12 并发时可能全落在 1~2 个号上，一碰上上游限流就是长尾。
+const maxInFlightPerAccount = 2
+
+// nonStreamBudget 是非流式请求的整体预算（选号 + 重试 + 读体）。
+//
+// 没有它时，「MaxRetries × Retry-After≤30s」理论上可挂 90s 以上。
+const nonStreamBudget = 90 * time.Second
+
+// releaseBody 在响应体关闭时归还账号的在途配额。
+//
+// 所有上游调用点都以 defer resp.Body.Close() 收尾，所以槽位会随 Body 释放：
+// 流式响应可能持续数分钟，不能在建连成功时就归还。
+type releaseBody struct {
+	io.ReadCloser
+	once    sync.Once
+	release func()
+}
+
+func (b *releaseBody) Close() error {
+	b.once.Do(b.release)
+	return b.ReadCloser.Close()
+}
+
+// acquireAccount 尝试占用一个账号的在途槽位；已满时返回 false。
+func (s *Server) acquireAccount(id string) bool {
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	if s.inflight == nil {
+		s.inflight = map[string]int{}
+	}
+	if s.inflight[id] >= maxInFlightPerAccount {
+		return false
+	}
+	s.inflight[id]++
+	return true
+}
+
+// releaseAccount 归还一个在途槽位。
+func (s *Server) releaseAccount(id string) {
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	if s.inflight[id] <= 0 {
+		delete(s.inflight, id)
+		return
+	}
+	s.inflight[id]--
+	if s.inflight[id] == 0 {
+		delete(s.inflight, id)
+	}
+}
+
+// errAllAccountsBusy 表示所有候选账号都达到了并发上限。
+//
+// 用 429 而不是 502：这是可重试的背压，客户端应稍后重试。
+func errAllAccountsBusy() error {
+	return &deepai.HTTPError{
+		Op:     "账号调度",
+		Status: http.StatusTooManyRequests,
+		Body:   []byte(`{"error":{"message":"所有账号并发已满，请稍后重试","type":"rate_limit_error"}}`),
+	}
 }
 
 // openModel 在账号池上打开一次上游推理请求。
@@ -104,10 +176,16 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		if acct == nil {
 			break
 		}
+		if !s.acquireAccount(acct.ID) {
+			// 该账号已有足够多请求在跑：换下一个号。
+			lastErr = errAllAccountsBusy()
+			continue
+		}
 		used = acct
 
 		resp, err := s.clientFor(acct).OpenModel(ctx, acct, path, body, affinity)
 		if err != nil {
+			s.releaseAccount(acct.ID)
 			lastErr = err
 			s.Store.MarkAccountResult(acct.ID, false, err.Error())
 			if ctx.Err() != nil {
@@ -118,11 +196,14 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 
 		if resp.StatusCode/100 == 2 {
 			s.Store.MarkAccountResult(acct.ID, true, "")
+			// 槽位随响应体一起释放：流式响应可能持续数分钟。
+			resp.Body = &releaseBody{ReadCloser: resp.Body, release: func() { s.releaseAccount(acct.ID) }}
 			return resp, acct, nil
 		}
 
 		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		_ = resp.Body.Close()
+		s.releaseAccount(acct.ID)
 		if readErr != nil {
 			lastErr = readErr
 			s.Store.MarkAccountResult(acct.ID, false, readErr.Error())
@@ -161,6 +242,9 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 
 // callJSON 发起一次非流式上游请求并解析 JSON。
 func (s *Server) callJSON(ctx context.Context, path string, payload map[string]any, affinity, group string) (map[string]any, *deepai.Account, error) {
+	ctx, cancel := context.WithTimeout(ctx, nonStreamBudget)
+	defer cancel()
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, nil, fmt.Errorf("请求序列化失败: %w", err)
@@ -286,28 +370,53 @@ func floatOf(v any) float64 {
 }
 
 // record 记录一次请求元信息。
-func (s *Server) record(key string, acct *deepai.Account, model, endpoint string, stream bool, status int, start time.Time, inLen, outLen int, usage Usage, err error) {
+// reqLog 是一次请求的日志上下文。
+//
+// 旧版 record() 收 11 个位置参数（key/acct/model/endpoint/stream/status/
+// start/inLen/outLen/usage/err），二十余处调用完全靠记忆参数顺序，
+// 写错编译器也不报错。现在把不变量在构造时固化，调用点只补变化的部分。
+type reqLog struct {
+	s        *Server
+	key      string
+	acct     *deepai.Account
+	model    string
+	endpoint string
+	stream   bool
+	start    time.Time
+	inLen    int
+}
+
+// newReqLog 固化一次请求的公共字段。acct 可以为 nil（尚未选到账号）。
+func (s *Server) newReqLog(key string, acct *deepai.Account, model, endpoint string, stream bool, start time.Time, inLen int) reqLog {
+	return reqLog{
+		s: s, key: key, acct: acct, model: model,
+		endpoint: endpoint, stream: stream, start: start, inLen: inLen,
+	}
+}
+
+// done 落一条请求日志；err 为 nil 视为成功（HTTP 200），否则记为 502。
+func (l reqLog) done(outLen int, usage Usage, err error) {
 	e := store.LogEntry{
 		Time:      time.Now().Unix(),
-		Key:       mask(key),
-		Model:     model,
-		Endpoint:  endpoint,
-		Stream:    stream,
-		Status:    status,
-		LatencyMS: time.Since(start).Milliseconds(),
-		PromptLen: inLen,
+		Key:       mask(l.key),
+		Model:     l.model,
+		Endpoint:  l.endpoint,
+		Stream:    l.stream,
+		Status:    statusOf(err),
+		LatencyMS: time.Since(l.start).Milliseconds(),
+		PromptLen: l.inLen,
 		OutputLen: outLen,
 		TokensIn:  usage.PromptTokens,
 		TokensOut: usage.CompletionTokens,
 		Cost:      usage.Cost,
 	}
-	if acct != nil {
-		e.Account = acct.ID
+	if l.acct != nil {
+		e.Account = l.acct.ID
 	}
 	if err != nil {
 		e.Err = err.Error()
 	}
-	s.Store.Record(e, outLen)
+	l.s.Store.Record(e, outLen)
 }
 
 // readBodyWithLimit 读取入站请求体。
@@ -406,25 +515,6 @@ func (s *sseWriter) done() {
 func (s *sseWriter) flush() {
 	if s.flusher != nil {
 		s.flusher.Flush()
-	}
-}
-
-// readSSELines 逐行读取上游 SSE；回调返回 false 时停止。
-func readSSELines(body io.Reader, fn func(line string) bool) error {
-	br := bufio.NewReaderSize(body, 64*1024)
-	for {
-		line, err := br.ReadString('\n')
-		if line != "" {
-			if !fn(line) {
-				return nil
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
 	}
 }
 

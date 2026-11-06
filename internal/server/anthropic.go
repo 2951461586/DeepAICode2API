@@ -1,10 +1,8 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -77,34 +75,36 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	key := extractKey(r)
 	promptLen := estimatePromptLen(payload)
 
+	rl := s.newReqLog(key, nil, model.ID, "messages", req.Stream, start, promptLen)
 	if req.Stream {
-		s.streamAnthropic(w, r, payload, model.ID, key, affinity, start, promptLen)
+		s.streamAnthropic(w, r, payload, affinity, rl)
 		return
 	}
-	s.blockingAnthropic(w, r, payload, model.ID, key, affinity, start, promptLen)
+	s.blockingAnthropic(w, r, payload, affinity, rl)
 }
 
 // blockingAnthropic 收集完整回复后按 Anthropic message 结构返回。
-func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, payload map[string]any, publicModel, key, affinity string, start time.Time, promptLen int) {
+func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
 	out, acct, err := s.callJSON(ctx, deepai.PathChat, payload, affinity, s.requestGroup(r))
+	rl.acct = acct
 	if err != nil {
-		s.record(key, acct, publicModel, "messages", false, statusOf(err), start, promptLen, 0, Usage{}, err)
+		rl.done(0, Usage{}, err)
 		writeAnthropicUpstreamErr(w, err)
 		return
 	}
 	usage := parseUsage(out["usage"])
-	msg := chatToAnthropicMessage(out, publicModel)
+	msg := chatToAnthropicMessage(out, rl.model)
 	outLen := anthropicTextLen(msg)
 
-	s.record(key, acct, publicModel, "messages", false, http.StatusOK, start, promptLen, outLen, usage, nil)
+	rl.done(outLen, usage, nil)
 	writeJSON(w, http.StatusOK, msg)
 }
 
 // streamAnthropic 以 Anthropic SSE 事件模型流式返回。
-func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload map[string]any, publicModel, key, affinity string, start time.Time, promptLen int) {
+func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
@@ -114,8 +114,9 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 		return
 	}
 	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, s.requestGroup(r))
+	rl.acct = acct
 	if err != nil {
-		s.record(key, acct, publicModel, "messages", true, statusOf(err), start, promptLen, 0, Usage{}, err)
+		rl.done(0, Usage{}, err)
 		writeAnthropicUpstreamErr(w, err)
 		return
 	}
@@ -134,7 +135,7 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 	send("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
-			"id": msgID, "type": "message", "role": "assistant", "model": publicModel,
+			"id": msgID, "type": "message", "role": "assistant", "model": rl.model,
 			"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
 			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
 		},
@@ -148,62 +149,24 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 		streamErr  error
 	)
 
-	streamErr = readSSELines(resp.Body, func(line string) bool {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "data:") {
-			return true
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-		if data == "[DONE]" || data == "" {
-			return data != "[DONE]"
-		}
-		var chunk map[string]any
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return true
-		}
+	streamErr = forEachChatChunk(resp.Body, func(chunk map[string]any) bool {
 		if u := parseUsage(chunk["usage"]); u.TotalTokens > 0 || u.Cost > 0 {
 			usage = u
 		}
-		choices, _ := chunk["choices"].([]any)
-		if len(choices) == 0 {
-			return true
+		d, finish := chatChunkDelta(chunk)
+		if finish != "" {
+			stopReason = anthropicStopReason(finish)
 		}
-		cm, _ := choices[0].(map[string]any)
-		if cm == nil {
-			return true
+		if d.Reasoning != "" {
+			block.thinking(d.Reasoning)
+			outLen += len([]rune(d.Reasoning))
 		}
-		if fr, ok := cm["finish_reason"].(string); ok && fr != "" {
-			stopReason = anthropicStopReason(fr)
+		if d.Content != "" {
+			block.text(d.Content)
+			outLen += len([]rune(d.Content))
 		}
-		delta, _ := cm["delta"].(map[string]any)
-		if delta == nil {
-			return true
-		}
-
-		if v, ok := delta["reasoning"].(string); ok && v != "" {
-			block.thinking(v)
-			outLen += len([]rune(v))
-		}
-		if v, ok := delta["content"].(string); ok && v != "" {
-			block.text(v)
-			outLen += len([]rune(v))
-		}
-		if tcs, ok := delta["tool_calls"].([]any); ok {
-			for _, tcv := range tcs {
-				tc, ok := tcv.(map[string]any)
-				if !ok {
-					continue
-				}
-				idx := intOf(tc["index"])
-				id, _ := tc["id"].(string)
-				name := ""
-				args := ""
-				if fn, ok := tc["function"].(map[string]any); ok {
-					name, _ = fn["name"].(string)
-					args, _ = fn["arguments"].(string)
-				}
-				block.toolCall(idx, id, name, args)
-			}
+		for _, tc := range d.ToolCalls {
+			block.toolCall(tc.Index, tc.ID, tc.Name, tc.Args)
 		}
 		return true
 	})
@@ -229,7 +192,7 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 	})
 	send("message_stop", map[string]any{"type": "message_stop"})
 
-	s.record(key, acct, publicModel, "messages", true, statusOf(streamErr), start, promptLen, outLen, usage, streamErr)
+	rl.done(outLen, usage, streamErr)
 }
 
 // handleAnthropicCountTokens 返回粗略的输入 token 估算。
@@ -753,7 +716,3 @@ func (s *Server) requestTimeout() time.Duration {
 	}
 	return time.Duration(sec) * time.Second
 }
-
-// ensure context import is used even if code changes later.
-var _ = context.Background
-var _ = io.Discard

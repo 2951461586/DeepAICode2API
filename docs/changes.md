@@ -163,3 +163,82 @@ race detector 必须走 cgo 链接，`collect2` 按名字找 `ld`，报 `cannot 
 
 **结论**：链路本身稳定，瓶颈在代理池（10 条出口、且会偶发 `No exit node`），
 不在注册或入池逻辑。下一批前应先 `-check-proxies` 掉失效出口。
+
+---
+
+## 9. 架构重构（P0/P1/P2）
+
+第二轮扫描聚焦「架构 / 冗余 / 解耦」。基线本身健康（无循环依赖、无分层违规），
+下列改动全部是等价的**搬家与收敛**，行为由既有测试 + 新增回归用例保护。
+
+### 9.1 P0：状态不变量与死代码
+
+| 改动 | 根因 | 验证 |
+| --- | --- | --- |
+| `Store.Account/Accounts` 改交付深拷贝，新增 `UpdateAccount/UpdateAccounts` | 旧实现返回号池活指针，6 处管理接口在锁外改 `Enabled/Status/MachineID`，与调度并发裸竞争；`AccountCopy` 这个「安全版」只有测试在用 | `-race`；`store_test.go` 改用 mutator API |
+| `NextAccountGroup` 同样返回快照 | 调度结果被调用方跨 goroutine 读取 | `-race` |
+| 删除 `anthropic.go` 的 `var _ = context/io` 死补丁 | 两个 import 实际都没用，靠哑变量骗过编译器 | `go vet` |
+| 新增 `safeKeyList` / `s.catalog()` | 同一段脱敏 map 字面量与模型目录兜底各重复 2–4 份 | 现有测试 |
+| `web_search/find_service/theos/usage` 补 `record()` | 这四个端点此前不进 `/admin/api/logs`，观测口径不一致 | 手工核对 |
+
+### 9.2 P1：拆分与流式管道
+
+- **`server.go` 958 → 176 行**，按职责拆为 `cors.go` / `auth.go` / `admin.go` /
+  `admin_accounts.go` / `probe.go` / `httputil.go`。纯搬迁，零逻辑改动。
+- **SSE 读帧四合一**（新 `stream.go`）：`chat`、`responses` 透传、`responses→chat`、
+  `anthropic` 原本各写一遍 `data:`/`[DONE]`/`Unmarshal` 循环（~184 行）。
+  现在统一为 `forEachSSEFrame`（保留 event:/注释帧，供透传）与
+  `forEachChatChunk`（只交付 JSON）。
+- **`chatDelta` 抽取**：`responses` 与 `anthropic` 的
+  `choices[0]→delta→reasoning/content/tool_calls` 逐字相同（~70 行）→ `chatChunkDelta`。
+- **顺手修掉一个真 bug**：`passthroughResponses` 把 `rewriteResponsesModel(obj)`
+  作用在解析后的对象上，写回客户端时却用原始 `data` 字符串，**模型名改写从未生效**。
+  现改为写出重编码后的对象；`TestResponsesPassthroughRewritesModel` 锁定。
+- **`record()` 11 个位置参数 → `reqLog`**：25 处调用点原本全靠记忆参数顺序。
+  现在构造时固化 `key/acct/model/endpoint/stream/start/inLen`，
+  调用点只写 `rl.done(outLen, usage, err)`。
+
+> `readSSELines` 刻意没有复用 `deepai.ReadSSE`：后者按规范合并多行 data，
+> 会丢掉注释帧与 `event:` 行的原始形态，而透传路径需要它们。
+
+### 9.3 P2：新包与策略外迁
+
+| 新包 | 取代 | 理由 |
+| --- | --- | --- |
+| `internal/retry` | `theosWithRetry`、`probeAccountQuota` 两套退避循环 | 「重试几次/等多久/什么错不重试」单点定义 |
+| `internal/parallel` | 6 处手写 jobs channel + WaitGroup（批量注册、台账补跑、配额探测、控制台巡检、代理检查、邮箱重验证） | 并发上限、ctx 取消、按下标回填统一 |
+| `internal/pool` | `store` 里的 `pickLocked/hasQuota/QuotaStaleAfter` | 选号是业务策略，不该住在持久化层；抽出后无需构造 `Store` 即可测调度 |
+
+顺带修掉两个缺陷：
+
+1. **`parallel.For` 的 select 竞态**：`<-ctx.Done()` 与 `jobs <- i` 同时就绪时
+   Go 等概率二选一，导致「已取消的 ctx」仍会跑掉部分任务。加前置短路，
+   `TestForSkipsEverythingWhenCanceled` 锁定。
+2. **`register.Merge` 漏合并指纹字段**：升级分支只回填 `Fingerprint`，
+   丢掉 `MachineID/UserAgent/AcceptLanguage/SecCHUA/Platform`。
+   `MachineID` 决定上游按机器发额度，丢失后额度归属会静默断开。
+   补齐并加两条回归测试。
+
+其它：
+
+- `Account.MergeFrom` 收编 `UpsertAccount` 里 50 行逐字段拷贝（**A3 以此落地**）。
+  没有按原计划把 `Account` 拆成 `Credential` + `AccountState`：
+  该结构体直接序列化进状态文件与台账，结构性拆分要动数据兼容，
+  而真正痛点是那 50 行拷贝 —— 用方法内聚即可拿到同样收益，风险低一个量级。
+- `register.loadEnvFiles` 加 `sync.Once`：`os.Setenv` 是进程级副作用，
+  重复加载会让直读 `os.Getenv` 的地方（`deepai.EnvOr`、`main`）看到
+  取决于调用顺序的结果。
+
+### 9.4 验收
+
+```text
+gofmt -l .        → 空
+go build ./...    → ok
+go vet ./...      → ok
+go test ./... -race → 11 个包全绿（新增 retry 6 / parallel 4 / pool 7 条用例）
+```
+
+新增包与测试：`internal/retry`(6)、`internal/parallel`(4)、`internal/pool`(7)；
+`server` 新增 `TestResponsesPassthroughRewritesModel`；
+`register` 新增 `TestMergeUpgradeKeepsFingerprintFields`、
+`TestMergeSameLevelTakesNewFingerprint`。

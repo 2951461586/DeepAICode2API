@@ -337,9 +337,51 @@ func (s *Server) runRegisterJob(ctx context.Context, job *registerJob, cfg *regi
 	job.finish(records)
 	log.Printf("[register] 任务 %s 完成：%d 个记录", job.ID, len(records))
 
+	// 验证邮件晚到时记录会停在 verify:pending（R2 实测 2/50）。
+	// 批次结束补一轮，避免账号长期未验证。
+	s.reverifyPending(ctx, cfg, provider, records)
+
 	if _, err := register.WriteDeliverables(filepath.Join(baseDir, "result"), records); err != nil {
 		log.Printf("[register] 写交付物失败: %v", err)
 	}
+}
+
+// reverifyPending 对批次里仍未验证的账号补一轮收信 + 点验证链接。
+//
+// 只在有未验证账号时才启动，并发与等待时间由 register.Reverify 的默认值控制
+// （上游 /verify_email 单次约 13s，并发过高会被 Passenger 打回 502）。
+func (s *Server) reverifyPending(ctx context.Context, cfg *register.Config, provider register.Provider, records []*register.Record) {
+	targets := make([]register.VerifyTarget, 0, len(records))
+	for _, rec := range records {
+		if rec == nil || rec.EmailVerified || strings.TrimSpace(rec.Email) == "" {
+			continue
+		}
+		targets = append(targets, register.VerifyTarget{
+			Email: rec.Email, Group: rec.Group,
+			Proxy: rec.Proxy, Fingerprint: rec.Fingerprint,
+		})
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	log.Printf("[register] 批次结束仍有 %d 个账号未验证，补一轮", len(targets))
+	res := register.Reverify(ctx, register.ReverifyOptions{
+		Config:   cfg,
+		Provider: provider,
+		Marker:   localEnroller{s: s},
+		Log:      func(format string, args ...any) { log.Printf("[reverify] "+format, args...) },
+	}, targets)
+
+	ok := 0
+	for _, r := range res {
+		if r.OK {
+			ok++
+			continue
+		}
+		log.Printf("[reverify] %s 失败: %s", r.Email, r.Err)
+	}
+	log.Printf("[register] 补验证完成：成功 %d / %d", ok, len(targets))
 }
 
 // localEnroller 是进程内入池器：既写入号池，也能回填验证状态。
@@ -357,26 +399,21 @@ func (e localEnroller) MarkVerified(_ context.Context, accountID, email string) 
 
 // markAccountVerified 把账号标记为邮箱已验证（按 ID 或邮箱定位）。
 func (s *Server) markAccountVerified(id, email string) error {
-	var target *deepai.Account
-	if strings.TrimSpace(id) != "" {
-		target = s.Store.Account(strings.TrimSpace(id))
+	// 幂等：重复置 true 无害。
+	mark := func(a *deepai.Account) { a.EmailVerified = true }
+
+	// 先按 ID 定位；补跑时台账里的 ID 可能已失效，再按邮箱回退。
+	if id = strings.TrimSpace(id); id != "" && s.Store.UpdateAccount(id, mark) {
+		return s.Store.Save()
 	}
-	if target == nil && strings.TrimSpace(email) != "" {
+	if want := strings.TrimSpace(email); want != "" {
 		for _, a := range s.Store.Accounts() {
-			if strings.EqualFold(a.Email, strings.TrimSpace(email)) {
-				target = a
-				break
+			if strings.EqualFold(a.Email, want) && s.Store.UpdateAccount(a.ID, mark) {
+				return s.Store.Save()
 			}
 		}
 	}
-	if target == nil {
-		return errors.New("账号不存在")
-	}
-	if target.EmailVerified {
-		return nil // 幂等
-	}
-	target.EmailVerified = true
-	return s.Store.Save()
+	return errors.New("账号不存在")
 }
 
 // enrollRecord 把注册链路的结果写入号池（服务端内进程调用）。
@@ -399,13 +436,7 @@ func (s *Server) enrollRecord(rec *register.Record) (string, error) {
 		Fingerprint:   rec.Fingerprint,
 		Source:        "register",
 	}
-	id, _, err := s.enrollRegistration(reg, &deepai.Allowance{
-		Enabled:   true,
-		Balance:   rec.TheosBalance,
-		Granted:   rec.TheosGranted,
-		RefreshAt: rec.TheosRefreshAt,
-		CheckedAt: time.Now().Unix(),
-	})
+	id, _, err := s.enrollRegistration(reg, allowanceFromEnroll(rec.TheosBalance, rec.TheosGranted, rec.TheosRefreshAt))
 	return id, err
 }
 
@@ -427,7 +458,7 @@ func (s *Server) enrollRegistration(reg deepai.Registration, al *deepai.Allowanc
 
 	isNew := s.Store.UpsertAccount(acct)
 	// Upsert 会保留旧运行态；把本次验证结果显式写回。
-	if stored := s.Store.Account(acct.ID); stored != nil {
+	s.Store.UpdateAccount(acct.ID, func(stored *deepai.Account) {
 		stored.Status = "ok"
 		stored.Failures = 0
 		stored.LastErr = ""
@@ -436,9 +467,9 @@ func (s *Server) enrollRegistration(reg deepai.Registration, al *deepai.Allowanc
 		stored.EmailVerified = reg.EmailVerified
 		stored.Plan = reg.Plan
 		if al != nil {
-			stored.Theos = al
+			stored.Theos = al.Clone()
 		}
-	}
+	})
 	if err := s.Store.Save(); err != nil {
 		return "", isNew, err
 	}
@@ -464,11 +495,28 @@ func positiveQuota(al *deepai.Allowance) bool {
 	return err == nil && v > 0
 }
 
+// allowanceFromEnroll 构造入池时携带的配额快照。
+//
+// 上游在账号刚创建时常常返回 balance=0（当日额度随后才下发）。这个 0 不是
+// 「确认耗尽」而是「未知」：按确认值缓存会让调度第一轮把它排除，最长 15 分钟
+// （R2 实测：新批入池后立刻压测，50 个号只有 12~15 个可被选中，
+// 数据面仅覆盖 19/50）。所以 0 额度时把 CheckedAt 留 0，让 pool.HasQuota
+// 按「未知」放行；真没额度时上游会拒，失败的账号会被自动降权。
+func allowanceFromEnroll(balance, granted, refreshAt string) *deepai.Allowance {
+	al := &deepai.Allowance{Enabled: true, Balance: balance, Granted: granted, RefreshAt: refreshAt}
+	if !positiveQuota(al) {
+		return al
+	}
+	al.CheckedAt = time.Now().Unix()
+	return al
+}
+
 // quotaReprobeDelays 是入池后 0 额度的复探退避序列。
 //
-// 实测新账号在注册后 3~5 分钟内会拿到当日额度，所以从 3 分钟起探，
-// 最多 3 次；拿到正额度即停止。
-var quotaReprobeDelays = []time.Duration{3 * time.Minute, 6 * time.Minute, 12 * time.Minute}
+// 实测（R2 压测）：入池瞬间 50 个新号里只有 12~15 个拿到额度；
+// 原 3/6/12 分钟序列要到第 9 分钟才集齐 47/50。改成 45s/2min/6min 后，
+// 「可调度」的空窗从 9 分钟压到 1 分钟以内；拿到正额度即停。
+var quotaReprobeDelays = []time.Duration{45 * time.Second, 2 * time.Minute, 6 * time.Minute}
 
 // scheduleQuotaReprobe 异步复探某个账号的配额（仅当它仍是 0 时）。
 //

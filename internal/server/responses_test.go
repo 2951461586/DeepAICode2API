@@ -1,10 +1,13 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+
+	"deepaicode2api/internal/deepai"
 )
 
 func TestResponsesNonStreamMapping(t *testing.T) {
@@ -281,5 +284,57 @@ func TestResponsesFunctionCallStream(t *testing.T) {
 	}
 	if fc["arguments"] != `{"a":1}` {
 		t.Fatalf("参数分片未拼接: %v", fc["arguments"])
+	}
+}
+
+// 透传路径必须把 model 改写成对外模型名。
+//
+// 历史上的实现把改写作用在解析后的对象上，但写回客户端时用的是原始 data
+// 字符串，于是改写被静默丢弃——客户端会看到上游的内部模型名。
+func TestResponsesPassthroughRewritesModel(t *testing.T) {
+	const internal = "upstream-internal-model"
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range []string{
+			`{"type":"response.created","response":{"id":"resp_1","model":"` + internal + `","status":"in_progress"}}`,
+			`{"type":"response.output_text.delta","delta":"hi"}`,
+			`{"type":"response.completed","response":{"id":"resp_1","model":"` + internal + `","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`,
+			`[DONE]`,
+		} {
+			_, _ = io.WriteString(w, "data: "+c+"\n\n")
+			w.(http.Flusher).Flush()
+		}
+	})
+	s, key := newTestServer(t, u)
+	// 目录里 api=openai-responses 的模型才会走透传分支。
+	s.Store.SetModels([]deepai.Model{{ID: "resp-model", API: "openai-responses"}}, "resp-model")
+
+	rec := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"resp-model","stream":true,"input":"hi"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if got := u.last(t).Path; got != "/deepai_code/responses" {
+		t.Fatalf("responses 模型应透传到上游 /responses，实际 %q", got)
+	}
+
+	events := sseEvents(t, rec.Body.String())
+	if len(events) == 0 {
+		t.Fatal("透传未产生任何事件")
+	}
+	for _, e := range events {
+		if e.Data == "" || e.Data == sseDone {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(e.Data), &obj); err != nil {
+			t.Fatalf("下游事件不是合法 JSON: %q", e.Data)
+		}
+		if strOf(obj["model"]) == internal {
+			t.Fatalf("顶层 model 未改写: %s", e.Data)
+		}
+		if resp, ok := obj["response"].(map[string]any); ok && strOf(resp["model"]) == internal {
+			t.Fatalf("response.model 未改写: %s", e.Data)
+		}
 	}
 }

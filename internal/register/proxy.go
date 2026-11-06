@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/parallel"
 )
 
 // ProxyPool 是线程安全的轮询代理池。
@@ -159,40 +160,28 @@ func CheckProxyPool(ctx context.Context, pool *ProxyPool, concurrency int) map[s
 	if concurrency <= 0 {
 		concurrency = 5
 	}
-	if concurrency > pool.Len() {
-		concurrency = pool.Len()
-	}
-	type item struct{ label, raw string }
-	ch := make(chan item)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for it := range ch {
-				err := CheckProxy(ctx, it.raw, 30*time.Second)
-				mu.Lock()
-				if err != nil {
-					results[it.label] = err.Error()
-				} else {
-					results[it.label] = ""
-				}
-				mu.Unlock()
-			}
-		}()
-	}
+	raws := pool.All()
+	labels := make([]string, len(raws))
 	seen := map[string]bool{}
-	for _, raw := range pool.All() {
+	for i, raw := range raws {
 		label := ProxyLabel(raw)
 		if seen[label] {
 			label = label + "#" + ProxyFingerprint(raw)[:4]
 		}
 		seen[label] = true
-		ch <- item{label: label, raw: raw}
+		labels[i] = label
 	}
-	close(ch)
-	wg.Wait()
+
+	// 按下标回填，无需共享 map + 互斥量：下标互不重叠。
+	msgs := make([]string, len(raws))
+	parallel.For(ctx, concurrency, len(raws), func(ctx context.Context, i int) {
+		if err := CheckProxy(ctx, raws[i], 30*time.Second); err != nil {
+			msgs[i] = err.Error()
+		}
+	})
+	for i, label := range labels {
+		results[label] = msgs[i]
+	}
 	return results
 }
 

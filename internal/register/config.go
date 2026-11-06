@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -112,7 +113,22 @@ func (c *Config) Validate(backend string) []string {
 }
 
 // loadEnvFiles 按优先级加载 .env；真实环境变量优先。
+// envLoadOnce 保证 .env 只加载一次。
+//
+// loadEnvFiles 通过 os.Setenv 注入变量，是进程级副作用：重复调用不仅浪费 IO，
+// 还会让 deepai.EnvOr / main 里直读 os.Getenv 的地方看到「取决于调用顺序」
+// 的结果。用 Once 固定为「首次调用时加载一次」，顺序依赖就消失了：
+// .env 永远在第一次解析配置前生效，且之后不再变化。
+var envLoadOnce sync.Once
+
+// loadEnvFiles 按优先级加载 .env，仅执行一次。
+//
+// 真实环境变量优先：loadDotEnv 会跳过已存在的键。
 func loadEnvFiles() {
+	envLoadOnce.Do(loadEnvFilesOnce)
+}
+
+func loadEnvFilesOnce() {
 	var paths []string
 	if p := strings.TrimSpace(os.Getenv("DEEPAI2API_ENV_FILE")); p != "" {
 		paths = append(paths, p)

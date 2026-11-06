@@ -1,4 +1,6 @@
-// Package store 负责网关状态的持久化与账号池调度。
+// Package store 负责网关状态的持久化（账号 / 密钥 / 设置 / 日志）。
+//
+// 选号策略在 internal/pool；本包只在持锁状态下调用它，并把结果作为快照交付。
 package store
 
 import (
@@ -8,12 +10,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/pool"
 )
 
 // APIKey 是网关对外签发的调用密钥。
@@ -68,7 +70,24 @@ type Stats struct {
 }
 
 // State 是全部持久化状态。
+//
+// Logs 与 Stats 刻意不写进主文件：它们随每个请求变动，留在里面会让 Save 的
+// “内容未变则跳过”永远失效。日志走 append-only 的 <base>-logs.jsonl，
+// 统计走 <base>-stats.json。
 type State struct {
+	Accounts      []*deepai.Account `json:"accounts"`
+	Keys          []*APIKey         `json:"keys"`
+	Settings      Settings          `json:"settings"`
+	Stats         Stats             `json:"-"`
+	Logs          []LogEntry        `json:"-"`
+	Models        []deepai.Model    `json:"models"`
+	DefaultModel  string            `json:"default_model"`
+	ModelsUpdated int64             `json:"models_updated"`
+	MachineID     string            `json:"machine_id"`
+}
+
+// legacyState 是拆分前的状态文件格式（含 logs / stats），仅用于读取迁移。
+type legacyState struct {
 	Accounts      []*deepai.Account `json:"accounts"`
 	Keys          []*APIKey         `json:"keys"`
 	Settings      Settings          `json:"settings"`
@@ -82,10 +101,15 @@ type State struct {
 
 // Store 是带锁的状态容器。
 type Store struct {
-	mu     sync.RWMutex
-	path   string
-	st     *State
-	rotate int
+	mu    sync.RWMutex
+	path  string
+	st    *State
+	sched *pool.Scheduler
+
+	// statsPath / logsPath 是由主路径派生的旁路文件。
+	statsPath string
+	logsPath  string
+	logs      *logFile
 
 	// masterKey 非空时状态文件整体加密（AES-256-GCM）。
 	masterKey []byte
@@ -93,6 +117,8 @@ type Store struct {
 	encrypted bool
 	// lastSaved 是上次落盘的明文快照，用于跳过无变化的重复写盘。
 	lastSaved []byte
+	// statsDirty 标记统计数据有变化（单独小文件，每次请求都会变）。
+	statsDirty bool
 }
 
 // DefaultSettings 返回默认设置。
@@ -120,9 +146,33 @@ func Open(path string) (*Store, error) {
 	return OpenWithKey(path, key)
 }
 
+// deriveSidePaths 由主状态文件路径派生旁路文件路径。
+func deriveSidePaths(path string) (statsPath, logsPath string) {
+	base := path
+	if trimmed, ok := strings.CutSuffix(path, ".json"); ok {
+		base = trimmed
+	}
+	return base + "-stats.json", base + "-logs.jsonl"
+}
+
 // OpenWithKey 用指定主密钥载入状态文件（key 为 nil 表示不加密）。
+//
+// 主文件之外还有两个旁路文件（由主路径派生）：
+//   - <base>-stats.json   累计统计（几百字节，每 30s 写一次）
+//   - <base>-logs.jsonl   请求日志（append-only，按大小轮转）
+//
+// 旧版本把 logs / stats 内嵌在主文件里，载入时自动迁出并重写主文件。
 func OpenWithKey(path string, key []byte) (*Store, error) {
-	s := &Store{path: path, st: &State{Settings: DefaultSettings()}, masterKey: key}
+	statsPath, logsPath := deriveSidePaths(path)
+	s := &Store{
+		path: path, statsPath: statsPath, logsPath: logsPath,
+		st: &State{Settings: DefaultSettings()}, masterKey: key, sched: pool.New(),
+	}
+
+	var (
+		seedLogs    []LogEntry
+		needMigrate bool
+	)
 	raw, err := os.ReadFile(path)
 	switch {
 	case err == nil:
@@ -131,62 +181,164 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 			return nil, uerr
 		}
 		s.encrypted = encrypted
-		if err := json.Unmarshal(plain, s.st); err != nil {
+		var legacy legacyState
+		if err := json.Unmarshal(plain, &legacy); err != nil {
 			return nil, fmt.Errorf("状态文件解析失败: %w", err)
 		}
+		s.st.Accounts = legacy.Accounts
+		s.st.Keys = legacy.Keys
+		s.st.Settings = legacy.Settings
+		s.st.Models = legacy.Models
+		s.st.DefaultModel = legacy.DefaultModel
+		s.st.ModelsUpdated = legacy.ModelsUpdated
+		s.st.MachineID = legacy.MachineID
 		// 记住原始内容，首次 Save 可直接跳过。
 		s.lastSaved = append([]byte(nil), plain...)
-		def := DefaultSettings()
-		if s.st.Settings.ModelAliases == nil {
-			s.st.Settings.ModelAliases = def.ModelAliases
-		}
-		if s.st.Settings.RequestTimeout == 0 {
-			s.st.Settings.RequestTimeout = def.RequestTimeout
-		}
-		if s.st.Settings.MaxRetries == 0 {
-			s.st.Settings.MaxRetries = def.MaxRetries
-		}
-		if s.st.Settings.LogKeep == 0 {
-			s.st.Settings.LogKeep = def.LogKeep
-		}
-		if s.st.Settings.CORSOrigin == "*" {
-			// 历史状态文件里的通配符不再生效，收紧为本机来源。
-			s.st.Settings.CORSOrigin = ""
-		}
-		if s.st.Stats.StartedAt == 0 {
-			s.st.Stats.StartedAt = time.Now().Unix()
+		// 旧格式：logs / stats 还在主文件里 → 迁出，稍后重写主文件。
+		if len(legacy.Logs) > 0 || legacy.Stats != (Stats{}) {
+			s.st.Stats = legacy.Stats
+			seedLogs = legacy.Logs
+			needMigrate = true
 		}
 	case errors.Is(err, os.ErrNotExist):
 		s.st.Stats.StartedAt = time.Now().Unix()
 	default:
 		return nil, err
 	}
+
+	s.applySettingsDefaults()
+
+	// 旁路文件比旧内嵌字段更新，优先采用。
+	if err := s.loadStats(); err != nil {
+		return nil, err
+	}
+	if s.st.Stats.StartedAt == 0 {
+		s.st.Stats.StartedAt = time.Now().Unix()
+	}
+
+	logs, err := openLogFile(logsPath, key, s.st.Settings.LogKeep)
+	if err != nil {
+		return nil, err
+	}
+	s.logs = logs
+	if len(seedLogs) > 0 && len(logs.ring) == 0 {
+		for _, e := range seedLogs {
+			if err := logs.append(e, s.st.Settings.LogKeep); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if needMigrate {
+		// 强制重写主文件：把 logs / stats 从里面捕掉。
+		s.lastSaved = nil
+		if err := s.Save(); err != nil {
+			return nil, fmt.Errorf("迁移状态文件失败: %w", err)
+		}
+	}
 	return s, nil
+}
+
+// applySettingsDefaults 补齐旧状态文件里缺失或已废弃的设置项。
+func (s *Store) applySettingsDefaults() {
+	def := DefaultSettings()
+	if s.st.Settings.ModelAliases == nil {
+		s.st.Settings.ModelAliases = def.ModelAliases
+	}
+	if s.st.Settings.RequestTimeout == 0 {
+		s.st.Settings.RequestTimeout = def.RequestTimeout
+	}
+	if s.st.Settings.MaxRetries == 0 {
+		s.st.Settings.MaxRetries = def.MaxRetries
+	}
+	if s.st.Settings.LogKeep == 0 {
+		s.st.Settings.LogKeep = def.LogKeep
+	}
+	if s.st.Settings.CORSOrigin == "*" {
+		// 历史状态文件里的通配符不再生效，收紧为本机来源。
+		s.st.Settings.CORSOrigin = ""
+	}
+}
+
+// loadStats 读取统计旁路文件；不存在时保留旧内嵌值。
+func (s *Store) loadStats() error {
+	raw, err := os.ReadFile(s.statsPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	plain, _, uerr := unseal(s.masterKey, raw)
+	if uerr != nil {
+		return fmt.Errorf("统计文件解析失败: %w", uerr)
+	}
+	var st Stats
+	if err := json.Unmarshal(plain, &st); err != nil {
+		return fmt.Errorf("统计文件解析失败: %w", err)
+	}
+	s.st.Stats = st
+	return nil
 }
 
 // Path 返回状态文件路径。
 func (s *Store) Path() string { return s.path }
 
-// Save 原子写回状态文件（配置主密钥时整文件加密）。
+// Save 原子写回状态（配置主密钥时整文件加密）。
 //
-// 内容与上次落盘一致时直接跳过：后台每 30s 调一次 Save，日志/统计没变化时
-// 没必要反复重写整个状态文件。
+// 分三部分，各自有独立的“未变化”判定：
+//  1. 主文件（账号/密钥/设置/模型）：内容未变则跳过；
+//  2. 统计旁路文件：仅在有新请求时写，只有几百字节；
+//  3. 日志：交给 logFile 的缓冲落盘。
+//
+// 日志与统计从主文件里拆出去后，这里才真正会「内容未变」。
 func (s *Store) Save() error {
 	s.mu.RLock()
 	plain, err := json.MarshalIndent(s.st, "", "  ")
 	key := s.masterKey
 	last := s.lastSaved
 	enc := s.encrypted
+	stats := s.st.Stats
+	statsDirty := s.statsDirty
+	logs := s.logs
 	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
-	// 跳过无变化写盘；但如果刚配置了主密钥且磁盘上还是明文，
-	// 必须再写一次以完成迁移。
-	if bytes.Equal(plain, last) && (len(key) == 0 || enc) {
-		return nil
+
+	// 1) 主文件。刚配置主密钥且磁盘上还是明文时必须重写一次。
+	if !bytes.Equal(plain, last) || (len(key) > 0 && !enc) {
+		if err := writeAtomicSealed(s.path, plain, key); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.lastSaved = append(s.lastSaved[:0], plain...)
+		if len(key) > 0 {
+			s.encrypted = true
+		}
+		s.mu.Unlock()
 	}
 
+	// 2) 统计。
+	if statsDirty {
+		rawStats, err := json.Marshal(stats)
+		if err != nil {
+			return err
+		}
+		if err := writeAtomicSealed(s.statsPath, rawStats, key); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.statsDirty = false
+		s.mu.Unlock()
+	}
+
+	// 3) 日志缓冲。
+	return logs.Flush()
+}
+
+// writeAtomicSealed 以 tmp + rename 原子写入，必要时整体加密。
+func writeAtomicSealed(path string, plain, key []byte) error {
 	raw := plain
 	if len(key) > 0 {
 		sealed, err := seal(key, plain)
@@ -195,24 +347,22 @@ func (s *Store) Save() error {
 		}
 		raw = sealed
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		return err
-	}
+	return os.Rename(tmp, path)
+}
 
-	s.mu.Lock()
-	s.lastSaved = append(s.lastSaved[:0], plain...)
-	if len(key) > 0 {
-		s.encrypted = true
+// Close 落盘并关闭日志句柄（进程退出前调用）。
+func (s *Store) Close() error {
+	if s.logs == nil {
+		return nil
 	}
-	s.mu.Unlock()
-	return nil
+	return s.logs.Close()
 }
 
 // Encrypted 报告磁盘上的状态文件是否为加密格式。
@@ -234,46 +384,142 @@ func (s *Store) MasterKeySet() bool {
 
 // --- 账号 ---
 
-// Accounts 返回账号快照。
+// Accounts 返回账号快照列表（每项都是深拷贝）。
 func (s *Store) Accounts() []*deepai.Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*deepai.Account, len(s.st.Accounts))
-	copy(out, s.st.Accounts)
+	for i, a := range s.st.Accounts {
+		out[i] = a.Clone()
+	}
 	return out
 }
 
-// Account 按 ID 查找账号。
+// Account 按 ID 查找账号，返回深拷贝快照。
+//
+// 不返回号池里的活指针：账号状态会被调度、后台探测、管理接口并发改写，
+// 把活指针交出去等于把加锁责任推给每个调用方。需要就地改字段时用
+// UpdateAccount / UpdateAccounts（在写锁内完成）。
 func (s *Store) Account(id string) *deepai.Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, a := range s.st.Accounts {
 		if a.ID == id {
-			return a
+			return a.Clone()
 		}
 	}
 	return nil
 }
 
-// AccountCopy 返回账号的深拷贝快照（含 Theos），可安全地跨 goroutine 读取。
+// AccountPage 是一次账号分页查询的结果。
+type AccountPage struct {
+	Items []*deepai.Account
+	Total int // 过滤后的总数（未分页）
+}
+
+// AccountCounts 返回账号总数与就绪数，不解包快照。
 //
-// Account() 返回的是号池里的活指针，适合"就地改字段"的管理操作；需要
-// 在后台任务里读（比如延迟复探、监控）时应当用这个，否则会和写方裸竞争。
-func (s *Store) AccountCopy(id string) *deepai.Account {
+// 控制台首屏需要在不同步整个账号列表的情况下展示“就绪/总”，
+// 而 Accounts() 会给每个账号做深拷贝。
+func (s *Store) AccountCounts() (total, ready int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, a := range s.st.Accounts {
-		if a.ID != id {
+		if a.Enabled && a.Status != "error" {
+			ready++
+		}
+	}
+	return len(s.st.Accounts), ready
+}
+
+// AccountPage 按分组/状态/关键词过滤后分页返回账号快照。
+//
+// 控制台一屏只渲染几十行，而全量账号快照动辄几百 KB；
+// 分页把传输量从 O(全部账号) 降到 O(单页)。
+//
+// offset<0 视为 0；limit<=0 用默认 50；limit>200 封顶 200。
+func (s *Store) AccountPage(offset, limit int, group, status, query string) AccountPage {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	group = strings.TrimSpace(group)
+	status = strings.ToLower(strings.TrimSpace(status))
+	query = strings.ToLower(strings.TrimSpace(query))
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	matched := make([]*deepai.Account, 0, len(s.st.Accounts))
+	for _, a := range s.st.Accounts {
+		if group != "" && !strings.EqualFold(a.GroupName(), group) {
 			continue
 		}
-		cp := *a
-		if a.Theos != nil {
-			theos := *a.Theos
-			cp.Theos = &theos
+		if status != "" && !strings.EqualFold(a.Status, status) {
+			continue
 		}
-		return &cp
+		if query != "" && !accountMatches(a, query) {
+			continue
+		}
+		matched = append(matched, a)
 	}
-	return nil
+
+	total := len(matched)
+	if offset >= total {
+		return AccountPage{Items: nil, Total: total}
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	items := make([]*deepai.Account, 0, end-offset)
+	for _, a := range matched[offset:end] {
+		items = append(items, a.Clone())
+	}
+	return AccountPage{Items: items, Total: total}
+}
+
+// accountMatches 在 ID / 名称 / 邮箱 / 用户名 / 分组 / 代理上做子串匹配。
+func accountMatches(a *deepai.Account, kw string) bool {
+	for _, field := range []string{a.ID, a.Name, a.Email, a.Username, a.GroupName(), a.Proxy, a.Fingerprint} {
+		if strings.Contains(strings.ToLower(field), kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// UpdateAccount 在写锁内就地修改一个账号；返回账号是否存在。
+func (s *Store) UpdateAccount(id string, fn func(*deepai.Account)) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.st.Accounts {
+		if a.ID == id {
+			fn(a)
+			return true
+		}
+	}
+	return false
+}
+
+// UpdateAccounts 在写锁内批量遍历全部账号。
+//
+// fn 返回 true 表示本次改动了该账号；返回值为改动个数。
+func (s *Store) UpdateAccounts(fn func(*deepai.Account) bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, a := range s.st.Accounts {
+		if fn(a) {
+			n++
+		}
+	}
+	return n
 }
 
 // UpsertAccount 按 API Key 指纹或邮箱去重后写入账号，返回是否为新增。
@@ -288,52 +534,12 @@ func (s *Store) UpsertAccount(a *deepai.Account) bool {
 			continue
 		}
 		a.ID = ex.ID
-		// 保留运行期状态，避免导入覆盖掉故障计数与配额缓存。
-		a.Failures = ex.Failures
-		a.LastUsed = ex.LastUsed
-		a.Status = ex.Status
-		a.LastErr = ex.LastErr
-		a.Theos = ex.Theos
-		if a.Name == "" {
-			a.Name = ex.Name
-		}
-		if a.Email == "" {
-			a.Email = ex.Email
-		}
-		if a.Password == "" {
-			a.Password = ex.Password
-		}
-		if a.Group == "" {
-			a.Group = ex.Group
-		}
-		if a.Proxy == "" {
-			a.Proxy = ex.Proxy
-		}
-		if a.Fingerprint == "" {
-			a.Fingerprint = ex.Fingerprint
-		}
-		if a.MachineID == "" {
-			a.MachineID = ex.MachineID
-		}
-		if a.UserAgent == "" {
-			a.UserAgent = ex.UserAgent
-		}
-		if a.AcceptLanguage == "" {
-			a.AcceptLanguage = ex.AcceptLanguage
-		}
-		if a.SecCHUA == "" {
-			a.SecCHUA = ex.SecCHUA
-		}
-		if a.Platform == "" {
-			a.Platform = ex.Platform
-		}
-		if a.RegisteredAt == 0 {
-			a.RegisteredAt = ex.RegisteredAt
-		}
-		s.st.Accounts[i] = a
+		// 运行态以旧值优先，身份字段以新值优先（空值回落）——见 MergeFrom。
+		a.MergeFrom(ex)
+		s.st.Accounts[i] = a.Clone()
 		return false
 	}
-	s.st.Accounts = append(s.st.Accounts, a)
+	s.st.Accounts = append(s.st.Accounts, a.Clone())
 	return true
 }
 
@@ -370,85 +576,12 @@ func (s *Store) NextAccount() *deepai.Account { return s.NextAccountGroup("") }
 func (s *Store) NextAccountGroup(group string) *deepai.Account {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n := len(s.st.Accounts)
-	if n == 0 {
+	acct := s.sched.Pick(s.st.Accounts, group)
+	if acct == nil {
 		return nil
 	}
-	group = strings.TrimSpace(group)
-	eligible := func(a *deepai.Account) bool {
-		if !a.Enabled {
-			return false
-		}
-		return group == "" || strings.EqualFold(a.GroupName(), group)
-	}
-
-	if acct := s.pickLocked(eligible, true); acct != nil {
-		return acct
-	}
-	return s.pickLocked(eligible, false)
+	return acct.Clone()
 }
-
-// pickLocked 在 eligible 里按轮询选一个账号（调用方持锁）。
-//
-// needQuota 为 true 时跳过已知额度为 0 的账号。
-func (s *Store) pickLocked(eligible func(*deepai.Account) bool, needQuota bool) *deepai.Account {
-	n := len(s.st.Accounts)
-	var best *deepai.Account
-	bestIdx := -1
-	for i := 0; i < n; i++ {
-		idx := (s.rotate + i) % n
-		a := s.st.Accounts[idx]
-		if !eligible(a) {
-			continue
-		}
-		if needQuota && !hasQuota(a) {
-			continue
-		}
-		if best == nil || a.Failures < best.Failures {
-			best = a
-			bestIdx = idx
-		}
-		if a.Failures == 0 {
-			s.rotate = (idx + 1) % n
-			return a
-		}
-	}
-	if bestIdx >= 0 {
-		s.rotate = (bestIdx + 1) % n
-	}
-	return best
-}
-
-// hasQuota 报告账号是否可能还有可用额度。
-//
-// 保守为准：只有「探测过、启用、且余额能解析为 0」的账号才算耗尽，
-// 其余（未探测 / 解析不了 / 已付费）都当作可能可用。
-func hasQuota(a *deepai.Account) bool {
-	if a == nil || a.Theos == nil || !a.Theos.Enabled {
-		return true
-	}
-	bal := strings.TrimSpace(a.Theos.Balance)
-	if bal == "" {
-		return true
-	}
-	v, err := strconv.ParseFloat(bal, 64)
-	if err != nil {
-		return true
-	}
-	if v > 0 {
-		return true
-	}
-	// 0 额度只在“刚探过”时才算数：新注册的账号在入池那一刻常常还是 0，
-	// 几分钟后才会下发当日额度（见 README §6.10 实测）。把陈旧的 0 当作
-	// 未知，避免账号被永久排除在调度之外。
-	if a.Theos.CheckedAt <= 0 {
-		return true
-	}
-	return time.Since(time.Unix(a.Theos.CheckedAt, 0)) > QuotaStaleAfter
-}
-
-// QuotaStaleAfter 是“0 额度”被判为陈旧、需要重探的时限。
-const QuotaStaleAfter = 15 * time.Minute
 
 // MarkAccountResult 记录一次账号调用结果。
 func (s *Store) MarkAccountResult(id string, ok bool, note string) {
@@ -670,20 +803,17 @@ func (s *Store) Stats() Stats {
 // Logs 返回最近的日志。
 func (s *Store) Logs(limit int) []LogEntry {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	n := len(s.st.Logs)
-	if limit <= 0 || limit > n {
-		limit = n
+	logs := s.logs
+	s.mu.RUnlock()
+	if logs == nil {
+		return nil
 	}
-	out := make([]LogEntry, limit)
-	copy(out, s.st.Logs[n-limit:])
-	return out
+	return logs.tail(limit)
 }
 
 // Record 记录一次请求结果并更新统计。
 func (s *Store) Record(e LogEntry, outChars int) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.st.Stats.TotalRequests++
 	if e.Status >= 400 || e.Err != "" {
 		s.st.Stats.FailedRequests++
@@ -692,22 +822,52 @@ func (s *Store) Record(e LogEntry, outChars int) {
 	s.st.Stats.TotalTokensIn += int64(e.TokensIn)
 	s.st.Stats.TotalTokensOut += int64(e.TokensOut)
 	s.st.Stats.TotalCost += e.Cost
-	s.st.Logs = append(s.st.Logs, e)
-	if keep := s.st.Settings.LogKeep; keep > 0 && len(s.st.Logs) > keep {
-		s.st.Logs = s.st.Logs[len(s.st.Logs)-keep:]
+	s.statsDirty = true
+	keep := s.st.Settings.LogKeep
+	logs := s.logs
+	s.mu.Unlock()
+
+	// 日志写入（含文件 IO）放在锁外：它不应该阻塞号池调度。
+	if logs != nil {
+		_ = logs.append(e, keep)
 	}
 }
 
-// ClearLogs 清空日志。
+// QueryLogs 按条件查询日志。
+//
+// 走文件扫描（最多读尾部 4MB），所以能回溯超过内存环形缓冲的历史；
+// 文件不可读时退回内存环形缓冲。limit<=0 时默认 200。
+func (s *Store) QueryLogs(f LogFilter) []LogEntry {
+	if f.Limit <= 0 {
+		f.Limit = 200
+	}
+	s.mu.RLock()
+	logs := s.logs
+	s.mu.RUnlock()
+	if logs == nil {
+		return nil
+	}
+	out, err := logs.scan(f)
+	if err != nil {
+		return logs.query(f)
+	}
+	return out
+}
+
+// ClearLogs 清空日志（内存环形缓冲与文件）。
 func (s *Store) ClearLogs() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.st.Logs = nil
+	s.mu.RLock()
+	logs := s.logs
+	s.mu.RUnlock()
+	if logs != nil {
+		_ = logs.clear()
+	}
 }
 
 // ClearStats 重置统计。
 func (s *Store) ClearStats() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.st.Stats = Stats{StartedAt: time.Now().Unix()}
+	s.statsDirty = true
+	s.mu.Unlock()
 }

@@ -293,3 +293,47 @@ func TestMergeDoesNotAliasTimingsAcrossAttempts(t *testing.T) {
 		t.Fatal("合并结果与入参共享 Timings map")
 	}
 }
+
+// 升级合并时，旧记录里的机器指纹与浏览器指纹不能被空值覆盖。
+//
+// 这些字段决定上游按机器发放额度、以及推理侧与注册侧特征是否一致。
+// 一旦在「补跑只拿到 Key、没有指纹」的升并中丢失，账号的额度归属会
+// 悄悄断开且极难排查（历史上 Upgrade 分支只回填了 Fingerprint）。
+func TestMergeUpgradeKeepsFingerprintFields(t *testing.T) {
+	old := &Record{
+		Email: "a@b.com", Status: StatusKeyed, APIKey: "sk-1",
+		MachineID: "machine-1", UserAgent: "UA/1", AcceptLanguage: "en-US",
+		SecCHUA: "chromium", Platform: "Windows", Fingerprint: "fp-7",
+	}
+	// 等级更高，但指纹字段全为空（补跑场景）。
+	next := &Record{Email: "a@b.com", Status: StatusEnrolled}
+
+	got := Merge(old, next)
+	cases := map[string]string{
+		"machine_id":      got.MachineID,
+		"user_agent":      got.UserAgent,
+		"accept_language": got.AcceptLanguage,
+		"sec_ch_ua":       got.SecCHUA,
+		"platform":        got.Platform,
+		"fingerprint":     got.Fingerprint,
+	}
+	for name, v := range cases {
+		if v == "" {
+			t.Fatalf("升级合并丢了 %s: %#v", name, got)
+		}
+	}
+	if got.MachineID != "machine-1" {
+		t.Fatalf("机器指纹被改写: %q", got.MachineID)
+	}
+}
+
+// 同级合并且新记录带了新指纹时，以新值为准（取最近一次尝试）。
+func TestMergeSameLevelTakesNewFingerprint(t *testing.T) {
+	old := &Record{Email: "a@b.com", Status: StatusKeyed, MachineID: "m-old", UserAgent: "UA/old"}
+	next := &Record{Email: "a@b.com", Status: StatusKeyed, MachineID: "m-new", UserAgent: "UA/new"}
+
+	got := Merge(old, next)
+	if got.MachineID != "m-new" || got.UserAgent != "UA/new" {
+		t.Fatalf("同级合并应采用新指纹，实际 machine=%q ua=%q", got.MachineID, got.UserAgent)
+	}
+}
