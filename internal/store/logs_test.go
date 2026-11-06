@@ -110,6 +110,22 @@ func TestMigrateLegacyState(t *testing.T) {
 	if strings.Contains(string(rewritten), `"logs"`) || strings.Contains(string(rewritten), `"stats"`) {
 		t.Fatal("迁移后主文件仍含 logs/stats")
 	}
+
+	// 统计必须真的落到旁路文件：否则只活在内存里，下次重启就丢了。
+	statsPath, _ := deriveSidePaths(path)
+	if _, err := os.Stat(statsPath); err != nil {
+		t.Fatalf("迁移后缺少统计旁路文件: %v", err)
+	}
+	again, err := Open(path)
+	if err != nil {
+		t.Fatalf("重新打开: %v", err)
+	}
+	if got := again.Stats().TotalRequests; got != 7 {
+		t.Fatalf("统计未跨重启保留: %d", got)
+	}
+	if got := len(again.Logs(0)); got != 2 {
+		t.Fatalf("日志未跨重启保留: %d", got)
+	}
 }
 
 // QueryLogs 支持 since / endpoint / status / 关键词过滤。

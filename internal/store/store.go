@@ -209,11 +209,18 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 	s.applySettingsDefaults()
 
 	// 旁路文件比旧内嵌字段更新，优先采用。
+	_, statErr := os.Stat(s.statsPath)
+	hadStatsFile := statErr == nil
 	if err := s.loadStats(); err != nil {
 		return nil, err
 	}
 	if s.st.Stats.StartedAt == 0 {
 		s.st.Stats.StartedAt = time.Now().Unix()
+	}
+	if !hadStatsFile {
+		// 首次运行或从旧格式迁移：必须把统计写到旁路文件，
+		// 否则它只活在内存里，下次重启就丢了。
+		s.statsDirty = true
 	}
 
 	logs, err := openLogFile(logsPath, key, s.st.Settings.LogKeep)
