@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -102,6 +103,58 @@ func RetryAfter(resp *http.Response, fallback time.Duration) time.Duration {
 		secs = 30
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// transientMarkers 是已知的“出口/网络抖动”错误特征。
+//
+// 有些代理会在隧道建立阶段返回自定义文案（例如 "No exit node"），
+// 它既不是 net.Error 也不包装 io.EOF，只能按文案识别。
+var transientMarkers = []string{
+	"no exit node",
+	"unexpected eof",
+	"tls handshake timeout",
+	"connection reset",
+	"connection refused",
+	"broken pipe",
+	"i/o timeout",
+	"timeout awaiting response",
+	"temporary failure in name resolution",
+}
+
+// IsTransient 报告错误是否属于“再试一次可能成功”的瞬时故障。
+//
+// 用于 /theos 验活、入池探测这类关键路径的退避重试判断：
+// 网络抖动与 5xx/429 值得重试；4xx 是请求或账号本身的问题，重试无意义。
+func IsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	// 调用方主动取消不算可重试。
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var he *HTTPError
+	if errors.As(err, &he) {
+		switch he.Status {
+		case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+			return true
+		}
+		return he.Status >= 500
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range transientMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Client 是 DeepAI 上游客户端。

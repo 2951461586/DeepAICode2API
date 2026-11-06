@@ -302,6 +302,11 @@ func (s *Server) startRegisterJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runRegisterJob(ctx context.Context, job *registerJob, cfg *register.Config, provider register.Provider, email, password string, verify bool, pool *register.ProxyPool, noFingerprint bool) {
+	if capped, ok := pool.CapConcurrency(job.Concurrency); ok {
+		log.Printf("[register] 并发 %d 超过出口数 %d，压到 %d", job.Concurrency, capped, capped)
+		job.Concurrency = capped
+	}
+
 	baseDir := filepath.Dir(s.Store.Path())
 	ledger := register.NewLedger(filepath.Join(baseDir, "exports", "register-ledger.jsonl"))
 

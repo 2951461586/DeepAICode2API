@@ -313,6 +313,41 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 	return p.finish(rec)
 }
 
+// theosRetryDelays 是 /theos 验活遇到瞬时错误时的退避序列。
+//
+// 实测批次里 4/50 的失败全是这一类：No exit node / TLS handshake timeout /
+// unexpected EOF —— 全是出口抖动，重试一两次就能救回。
+var theosRetryDelays = []time.Duration{time.Second, 3 * time.Second}
+
+// theosWithRetry 查询配额，瞬时错误退避重试；鉴权/参数错误直接返回。
+func theosWithRetry(ctx context.Context, up *deepai.Client, acct *deepai.Account) (*deepai.Allowance, error) {
+	al, err := up.Theos(ctx, acct)
+	if err == nil {
+		return al, nil
+	}
+	if !deepai.IsTransient(err) {
+		return nil, err
+	}
+	for i, delay := range theosRetryDelays {
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(delay):
+		}
+		al, err = up.Theos(ctx, acct)
+		if err == nil {
+			return al, nil
+		}
+		if !deepai.IsTransient(err) {
+			return nil, err
+		}
+		if i == len(theosRetryDelays)-1 {
+			break
+		}
+	}
+	return nil, err
+}
+
 // verifyOutcome 是并行验证等待的结果。
 type verifyOutcome struct {
 	link   string
@@ -336,7 +371,7 @@ func (p *Pipeline) validate(ctx context.Context, rec *Record, up *deepai.Client)
 		UserAgent: rec.UserAgent, AcceptLanguage: rec.AcceptLanguage,
 		SecCHUA: rec.SecCHUA, Platform: rec.Platform,
 	}
-	al, err := up.Theos(vctx, acct)
+	al, err := theosWithRetry(vctx, up, acct)
 	if err != nil {
 		return fmt.Errorf("Theos 验活失败: %w", err)
 	}

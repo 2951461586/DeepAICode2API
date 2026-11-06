@@ -73,6 +73,20 @@ func (p *ProxyPool) Len() int {
 }
 
 // Next 轮询返回一个代理。
+// CapConcurrency 把并发压到不超过出口数量。
+//
+// 并发高于出口时多出来的 worker 只会排队等代理，wall clock 不变而
+// p95 变差；返回调整后的并发与是否发生了压缩（便于调用方提示）。
+func (p *ProxyPool) CapConcurrency(n int) (int, bool) {
+	if p == nil || n <= 0 {
+		return n, false
+	}
+	if size := p.Len(); size > 0 && n > size {
+		return size, true
+	}
+	return n, false
+}
+
 func (p *ProxyPool) Next() string {
 	if p == nil || len(p.entries) == 0 {
 		return ""

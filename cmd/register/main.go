@@ -165,6 +165,10 @@ func main() {
 	if *concurrency < 1 {
 		*concurrency = 1
 	}
+	if capped, ok := pool.CapConcurrency(*concurrency); ok {
+		fmt.Fprintf(os.Stderr, "并发 %d 超过出口数 %d，已压到 %d（多出的 worker 只会排队）\n", *concurrency, capped, capped)
+		*concurrency = capped
+	}
 	if *email != "" && *count > 1 {
 		fatalf("指定 -email 时 count 必须为 1")
 	}
@@ -319,6 +323,11 @@ func printDoctor(cfg *register.Config, pool *register.ProxyPool) {
 		fmt.Println("  健康检查：通过")
 	}
 	fmt.Printf("管理密码：%s\n", boolLabel(cfg.AdminPassword != ""))
+	if pool != nil {
+		fmt.Printf("代理池：%d 条出口（并发建议不超过该数）\n", pool.Len())
+	} else {
+		fmt.Println("代理池：未配置（直连；容易触发上游风控）")
+	}
 	fmt.Println("\n环境变量：TEMPMAIL_BASE / TEMPMAIL_ADMIN_KEY / TEMPMAIL_DOMAIN，")
 	fmt.Println("          或 DEEPAI_REGISTER_DOMAIN + -mail-backend static；")
 	fmt.Println("          网关 DEEPAI2API_GATEWAY / DEEPAI2API_ADMIN_PASSWORD。")

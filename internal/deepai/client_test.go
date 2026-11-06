@@ -3,6 +3,7 @@ package deepai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -350,5 +351,37 @@ func TestJSONBodyIsVerbatim(t *testing.T) {
 	var probe map[string]any
 	if err := json.Unmarshal(got, &probe); err != nil {
 		t.Fatalf("请求体不是合法 JSON: %v", err)
+	}
+}
+
+// IsTransient 决定关键路径要不要退避重试，误判的代价是浪费一次重试
+// 或把一个本该救回的账号判死。
+func TestIsTransient(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"400 参数错误", mustErr(t, 400, `{"error":{"code":"invalid"}}`), false},
+		{"401 鉴权失败", mustErr(t, 401, `{}`), false},
+		{"403", mustErr(t, 403, `{}`), false},
+		{"404", mustErr(t, 404, `{}`), false},
+		{"429 限流", mustErr(t, 429, `{}`), true},
+		{"408", mustErr(t, 408, `{}`), true},
+		{"500", mustErr(t, 500, `{}`), true},
+		{"503", mustErr(t, 503, `{}`), true},
+		{"unexpected eof", errors.New(`Get "https://x": unexpected EOF`), true},
+		{"no exit node", errors.New(`Get "https://x": No exit node`), true},
+		{"tls handshake", errors.New("net/http: TLS handshake timeout"), true},
+		{"connection reset", errors.New("read tcp: connection reset by peer"), true},
+		{"调用方取消", context.Canceled, false},
+		{"超时", context.DeadlineExceeded, true},
+		{"未知错误", errors.New("something else"), false},
+	}
+	for _, c := range cases {
+		if got := IsTransient(c.err); got != c.want {
+			t.Errorf("%s: IsTransient=%v，期望 %v", c.name, got, c.want)
+		}
 	}
 }

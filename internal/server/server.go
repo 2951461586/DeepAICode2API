@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
-	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -841,8 +840,7 @@ func (s *Server) probeAccountQuota(acct *deepai.Account) (*deepai.Allowance, err
 			return al, nil
 		}
 		lastErr = err
-		var he *deepai.HTTPError
-		if errors.As(err, &he) && !he.Retryable() {
+		if !deepai.IsTransient(err) {
 			return nil, err // 参数 / 鉴权问题，重试无意义
 		}
 	}
