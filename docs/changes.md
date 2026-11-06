@@ -296,3 +296,28 @@ go test ./... -race → 11 个包全绿（新增 retry 6 / parallel 4 / pool 7 �
   脚本引用的每个 DOM id 必须存在、每个 `data-tab` 必须有 `#tab-*` 面板、
   `<section>` 数量必须与导航数一致（脚本用 `querySelectorAll("section")` 切页，
   多出的 section 会被误当成标签页）、外壳关键钩子（侧边栏/抽屉/收列/深链接）。
+
+---
+
+## 12. Save 并发竞态（随控制台改版一并入库）
+
+`Store.Save()` 此前没有任何串行化，高并发下有三个独立问题，已用 `-race` 复现并修复：
+
+| 问题 | 表现 |
+| --- | --- |
+| `lastSaved` 底层数组读写竞争 | `bytes.Equal(plain, last)` 读 与 `append(s.lastSaved[:0], …)` 写并发（`store.go:317` ↔ `:322`） |
+| 共享临时文件 | 固定 `<path>.tmp`：Windows 报「文件被另一个进程占用」并失败；Linux 上互相截断，`rename` 后可能留下坏 JSON |
+| 顺序错乱 | 先到者的 `rename` 覆盖晚到者 → 磁盘比内存旧；若 `lastSaved` 抢先更新，后续 Save 判定「无变化」而跳过，增量永久丢失 |
+
+触发路径不是理论：`scheduleQuotaReprobe` 每账号一个 goroutine 各自调 `Save`，
+批量入池 50 个号后会在 45s / 2m / 6m 三个时间点同时醒来；叠加后台 30s ticker
+与每个管理操作。
+
+修复：
+
+- 新增 `Store.saveMu`，`Save()` 全程持锁（同时消除竞态、tmp 冲突、乱序）；
+- `writeAtomicSealed` 改用 `os.CreateTemp(dir, "."+base+".tmp-*")` 唯一临时名；
+- 写入后 `f.Sync()` 再 `rename`（此前掉电可能留下「名字已换、内容为空」）。
+
+回归：`save_race_test.go` 断言 8×15 轮并发写入后文件仍是合法 JSON 且能重新载入；
+另有一条「同一路径两个 Store 实例并发写」的用例。
