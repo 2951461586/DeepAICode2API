@@ -223,7 +223,7 @@ print(client.chat.completions.create(
 | --- | --- | --- | --- |
 | `-host` | `DEEPAI2API_HOST` | `127.0.0.1` | 监听地址 |
 | `-port` | `DEEPAI2API_PORT` | `10087` | 监听端口 |
-| `-data` | `DEEPAI2API_DATA_PATH` | 可执行文件同目录 | 状态文件 |
+| `-data` | `DEEPAI2API_DATA_PATH` | 用户配置目录 | 状态文件 |
 | `-deepai-dir` | `DEEPAI2API_DATA_DIR` | 自动探测 | 桌面端数据目录 |
 | `-admin-password` | `DEEPAI2API_ADMIN_PASSWORD` | 空 | 管理密码 |
 | `-allow-insecure` | `DEEPAI2API_ALLOW_INSECURE` | `false` | 允许非回环监听但不设管理密码 |
@@ -237,6 +237,7 @@ print(client.chat.completions.create(
 | --- | --- |
 | `DEEPAI_API_KEY` | 直接添加一个上游账号（可选） |
 | `DEEPAI_MACHINE_ID` | 覆盖机器指纹原始 UUID（容器部署必填） |
+| `DEEPAI2API_MASTER_KEY` | 状态文件加密主密钥（64 位 hex / base64，32 字节），留空则明文 |
 | `DEEPAI_API_ORIGIN` | 覆盖上游地址（自建测试） |
 | `TEMPMAIL_BASE` / `TEMPMAIL_ADMIN_KEY` / `TEMPMAIL_DOMAIN` | CF Temp Email Worker（注册链路收信） |
 | `DEEPAI_REGISTER_DOMAIN` | 静态邮箱域名（无收件箱） |
@@ -339,11 +340,17 @@ go run ./cmd/probe -key <api-key>         # 直接验证某个 Key
 ### 6.6 台账与交付物
 
 - `exports/register-ledger.jsonl`：全部尝试（含失败），按邮箱合并；
+- `exports/register-ledger-credentials.jsonl`：**仅**密码 / Session / CSRF，供 `-resume` 使用；
 - `result/keys.txt`：`email----api_key----account_id`；
 - `result/apikeys.txt`：纯 API Key，一行一个；
-- `result/success.jsonl`：机器可读成功记录。
+- `result/success.jsonl`：机器可读成功记录（已脱敏，不含密码）。
 
-这些文件含明文凭据，权限 `0600`，已在 `.gitignore` / `.dockerignore` 中排除。
+台账与交付物写入前会过一遍 `redactRecord`：`password` / `session_key` /
+`csrf_token` 不会出现在主台账与 `success.jsonl` 里，因此台账可以直接贴进
+issue 或发给别人排查。凭据单独落在 `*-credentials.jsonl`（`0600`，读取时按
+邮箱并回），不需要补跑时可直接删掉这一个文件。
+
+这些都已在 `.gitignore` / `.dockerignore` 中排除。
 
 ### 6.7 号池分组与轮询
 
@@ -374,8 +381,10 @@ go run ./cmd/probe -key <api-key>         # 直接验证某个 Key
 ### 6.9 安全与合规
 
 - 注册能力用于管理**自己的** DeepAI 账号；请遵守上游服务条款，控制批次大小与频率；
-- 密码 / 网页 Session / API Key 会保存在状态文件与台账中（权限 `0600`），
-  不需要补跑时可删除台账或使用 `-no-enroll` / 不保存密码；
+- 状态文件与台账权限 `0600`；但 **Windows 上 `0600` 不设 ACL**，同机其他用户仍可读，
+  因此强烈建议配置 `DEEPAI2API_MASTER_KEY` 开启整文件加密（见 §七）；
+- 台账与 `success.jsonl` 不含密码；密码只在 `*-credentials.jsonl` 里，可单独删除；
+- 不需要补跑时可删除台账或使用 `-no-enroll` / 不保存密码；
 - 上游按机器发放每日免费额度，本项目不绕过该限制。
 
 ---
@@ -398,6 +407,11 @@ go run ./cmd/probe -key <api-key>         # 直接验证某个 Key
 - 写操作做同源校验，阻断 CSRF；
 - CORS 默认仅允许本机来源，不提供 `*`；
 - 状态文件权限 `0600`，控制台只展示脱敏后的 Key。
+- 配置 `DEEPAI2API_MASTER_KEY` 后状态文件整体 AES-256-GCM 加密，
+  磁盘上不再出现明文上游 Key / 账号密码；已加密的文件在缺少或错配主密钥时
+  **拒绝启动**，不会静默重置成空状态。
+- 状态文件默认落在 `os.UserConfigDir()`（Windows `%AppData%`、Unix `~/.config`），
+  避免落在 Program Files 或共享盘；旧位置已有文件时会继续沿用，不会丢号池。
 
 ---
 

@@ -23,7 +23,7 @@ func WriteDeliverables(dir string, records []*Record) (*Deliverables, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, fmt.Errorf("交付物目录为空")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
@@ -60,7 +60,8 @@ func WriteDeliverables(dir string, records []*Record) (*Deliverables, error) {
 		}
 		keys.WriteString(fmt.Sprintf("%s----%s----%s\n", email, rec.APIKey, accountID))
 		apiKeys.WriteString(rec.APIKey + "\n")
-		raw, err := json.Marshal(rec)
+		// 交付物会被打包分发，必须脱敏：密码 / Session 不进 success.jsonl。
+		raw, err := json.Marshal(redactRecord(rec))
 		if err != nil {
 			continue
 		}

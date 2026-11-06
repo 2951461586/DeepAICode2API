@@ -84,6 +84,11 @@ type Store struct {
 	path   string
 	st     *State
 	rotate int
+
+	// masterKey 非空时状态文件整体加密（AES-256-GCM）。
+	masterKey []byte
+	// encrypted 记录上次读写时文件是否已加密（用于启动日志 / 控制台提示）。
+	encrypted bool
 }
 
 // DefaultSettings 返回默认设置。
@@ -100,12 +105,29 @@ func DefaultSettings() Settings {
 }
 
 // Open 载入（或初始化）状态文件。
+//
+// 主密钥来自 DEEPAI2API_MASTER_KEY：配置后写出的状态文件会被整体加密，
+// 未配置时保持明文（并在启动日志中警告）。
 func Open(path string) (*Store, error) {
-	s := &Store{path: path, st: &State{Settings: DefaultSettings()}}
+	key, err := MasterKeyFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return OpenWithKey(path, key)
+}
+
+// OpenWithKey 用指定主密钥载入状态文件（key 为 nil 表示不加密）。
+func OpenWithKey(path string, key []byte) (*Store, error) {
+	s := &Store{path: path, st: &State{Settings: DefaultSettings()}, masterKey: key}
 	raw, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		if err := json.Unmarshal(raw, s.st); err != nil {
+		plain, encrypted, uerr := unseal(key, raw)
+		if uerr != nil {
+			return nil, uerr
+		}
+		s.encrypted = encrypted
+		if err := json.Unmarshal(plain, s.st); err != nil {
 			return nil, fmt.Errorf("状态文件解析失败: %w", err)
 		}
 		def := DefaultSettings()
@@ -139,15 +161,26 @@ func Open(path string) (*Store, error) {
 // Path 返回状态文件路径。
 func (s *Store) Path() string { return s.path }
 
-// Save 原子写回状态文件。
+// Save 原子写回状态文件（配置主密钥时整文件加密）。
 func (s *Store) Save() error {
 	s.mu.RLock()
 	raw, err := json.MarshalIndent(s.st, "", "  ")
+	key := s.masterKey
 	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if len(key) > 0 {
+		sealed, err := seal(key, raw)
+		if err != nil {
+			return err
+		}
+		raw = sealed
+		s.mu.Lock()
+		s.encrypted = true
+		s.mu.Unlock()
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
 	}
 	tmp := s.path + ".tmp"
@@ -155,6 +188,23 @@ func (s *Store) Save() error {
 		return err
 	}
 	return os.Rename(tmp, s.path)
+}
+
+// Encrypted 报告磁盘上的状态文件是否为加密格式。
+//
+// 注意：配置了主密钥但还没保存过时，磁盘上依然是明文，
+// 此时本方法返回 false（用 MasterKeySet 判断是否已配置加密）。
+func (s *Store) Encrypted() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.encrypted
+}
+
+// MasterKeySet 报告是否已配置主密钥（配置后每次 Save 都会加密）。
+func (s *Store) MasterKeySet() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.masterKey) > 0
 }
 
 // --- 账号 ---

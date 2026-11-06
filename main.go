@@ -55,6 +55,12 @@ func main() {
 		log.Fatalf("打开状态文件失败: %v", err)
 	}
 	log.Printf("状态文件: %s", st.Path())
+	if st.MasterKeySet() {
+		log.Printf("状态文件加密: 已启用（AES-256-GCM，密钥来自 %s）", store.EnvMasterKey)
+	} else {
+		log.Printf("⚠ 状态文件未加密：上游 API Key / 账号密码以明文落盘。")
+		log.Printf("  建议设置 %s=$(openssl rand -hex 32) 后重启，后续保存会自动加密。", store.EnvMasterKey)
+	}
 
 	machine := deepai.MachineID()
 	if machine != "" {
@@ -133,7 +139,7 @@ func main() {
 		if st.HasKeys() {
 			log.Printf("已签发 API 密钥，调用需携带 Authorization: Bearer sk-...")
 		} else {
-			log.Printf("尚未签发 API 密钥，当前允许无密钥调用（控制台可创建）")
+			log.Printf("尚未签发 API 密钥：仅本机回环可无密钥调用，非回环来源返回 503（请在控制台创建）")
 		}
 		if st.Settings().AdminPassword != "" {
 			log.Printf("管理接口已启用密码校验（X-Admin-Password / Bearer）")
@@ -243,13 +249,27 @@ func runImport(st *store.Store, dir string) {
 	fmt.Printf("共导入 %d 个账号（新增 %d，更新 %d）→ %s\n", len(results), added, updated, st.Path())
 }
 
-// defaultDataPath 返回默认状态文件路径（可执行文件同目录）。
+// defaultDataPath 返回默认状态文件路径。
+//
+// 优先使用用户私有配置目录（Windows 上是 %AppData%，Unix 上是 ~/.config）：
+// 状态文件含上游 Key 与账号密码，放在可执行文件同目录时往往会落在
+// 共享目录（Program Files、共享盘）里，同机任意用户都能读到。
+//
+// 为不打断既有部署：如果旧位置（可执行文件同目录）已经有状态文件，继续用它，
+// 否则号池看起来会“凭空消失”。
 func defaultDataPath() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return "deepaicode2api-data.json"
+	const name = "deepaicode2api-data.json"
+
+	if exe, err := os.Executable(); err == nil {
+		legacy := filepath.Join(filepath.Dir(exe), name)
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
 	}
-	return filepath.Join(filepath.Dir(exe), "deepaicode2api-data.json")
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		return filepath.Join(dir, "deepaicode2api", name)
+	}
+	return name
 }
 
 func envOr(key, def string) string {
