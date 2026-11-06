@@ -18,6 +18,9 @@ coverage.out
 # 运行期状态（含上游 API Key / 密码，务必不要入库）
 /deepaicode2api-data.json
 /deepaicode2api-data.json.*
+# 日志/统计旁路文件（P0 拆分后新增，同样是运行期产物）
+/deepaicode2api-data-*.json
+/deepaicode2api-data-*.jsonl
 /data/
 /gw.log
 /*.log

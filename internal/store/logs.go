@@ -11,6 +11,8 @@ import (
 )
 
 // logRotateBytes 超过该大小就轮转：当前文件改名为 .1，旧的 .1 丢弃。
+//
+// 日志只用于事后排障，轮转保留一代足够；不设无上限增长。
 const logRotateBytes = 8 << 20
 
 // logFile 是 append-only 的请求日志文件（JSONL）+ 内存环形缓冲。

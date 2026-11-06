@@ -242,3 +242,30 @@ go test ./... -race → 11 个包全绿（新增 retry 6 / parallel 4 / pool 7 �
 `server` 新增 `TestResponsesPassthroughRewritesModel`；
 `register` 新增 `TestMergeUpgradeKeepsFingerprintFields`、
 `TestMergeSameLevelTakesNewFingerprint`。
+
+---
+
+## 10. R2：状态文件拆分与控制台分页（依据 `optimization-plan-r2.md`）
+
+两批 50 号实测暴露的不是「并发不够」，而是**写放大**与**全量下发**：
+
+| 指标 | 改造前 | 改造后 |
+| --- | --- | --- |
+| 主状态文件 | 1.13MB，每 ≤30s 全量重写 | 958KB，账号/密钥/设置/模型未变即跳过 |
+| 统计 | 混在主文件里，导致「跳过未变化写盘」永不生效 | 独立 `-stats.json`（约 140B） |
+| 日志 | 内存 500 条 + 混在主文件 | append-only `-logs.jsonl`（8MB 轮转） |
+| `/admin/api/state` | 429KB @603 账号 | `/admin/api/overview` 约 2.9KB + `/admin/api/accounts` 分页 |
+| 空闲刷新 | 每次全量 | `ETag` / `304` |
+
+同时落地的行为修正：
+
+- 入池时上游返回的 `balance=0` 不再当作「刚探过的事实」（那会让新批最长 15 分钟
+  不可调度，实测 50 个号只有 12~15 个能被选中），改为「未知」放行；
+  复探序列 3/6/12 分钟 → 45s/2m/6min。
+- 单账号并发上限 2；非流式请求 90s 整体预算。
+- 批次结束自动补一轮邮箱验证（实测曾 2/50 停在 `verify:pending`）。
+- `/admin/api/logs` 支持 `since / endpoint / account / min_status / q` 过滤。
+- 控制台：服务端分页、GET 请求去重、管理密码改 `sessionStorage`。
+
+**迁移**：`Open` 时识别旧格式（`logs`/`stats` 内嵌在主文件），自动拆出并重写主文件；
+统计旁路文件缺失时标记脏位，保证首次/迁移后统计能落盘。
