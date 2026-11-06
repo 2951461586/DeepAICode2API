@@ -53,6 +53,8 @@ func (e *HTTPEnroller) Enroll(ctx context.Context, rec *Record) (string, error) 
 		"platform":        rec.Platform,
 		"theos_balance":   rec.TheosBalance,
 		"theos_granted":   rec.TheosGranted,
+		// 本链路刚刚验活过，网关不必再探一次 /theos。
+		"skip_probe": strings.TrimSpace(rec.TheosBalance) != "",
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {

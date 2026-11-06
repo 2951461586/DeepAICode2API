@@ -36,6 +36,11 @@ type Mail struct {
 type Mailbox interface {
 	Email() string
 	Provider() string
+	// Fresh 报告这个地址是否是本次新建的。
+	//
+	// 新建地址必然未注册，"邮箱是否已存在"的预检（一次网络往返，实测 ~3.3s）
+	// 可以直接跳过；补跑 / 用户指定的地址则必须预检。
+	Fresh() bool
 	// WaitForVerification 轮询等待验证邮件并返回验证链接；无收件箱时返回 ErrNoInbox。
 	WaitForVerification(ctx context.Context, since time.Time, timeout, interval time.Duration) (string, error)
 }
@@ -201,7 +206,7 @@ func (p *cfProvider) Create(ctx context.Context) (Mailbox, error) {
 	if len(out.Emails) == 0 || strings.TrimSpace(out.Emails[0]) == "" {
 		return nil, fmt.Errorf("建邮箱未返回地址: %s", truncate(string(raw), 240))
 	}
-	return &cfInbox{provider: p, email: strings.TrimSpace(out.Emails[0])}, nil
+	return &cfInbox{provider: p, email: strings.TrimSpace(out.Emails[0]), fresh: true}, nil
 }
 
 func (p *cfProvider) Inbox(email string) (Mailbox, bool) {
@@ -221,10 +226,12 @@ func (p *cfProvider) Inbox(email string) (Mailbox, bool) {
 type cfInbox struct {
 	provider *cfProvider
 	email    string
+	fresh    bool
 }
 
 func (m *cfInbox) Email() string    { return m.email }
 func (m *cfInbox) Provider() string { return "cf" }
+func (m *cfInbox) Fresh() bool      { return m.fresh }
 
 func (m *cfInbox) list(ctx context.Context) ([]Mail, error) {
 	path := "/api/inbox?" + url.Values{"email": {m.email}}.Encode()
@@ -327,7 +334,7 @@ func (p *staticProvider) Create(_ context.Context) (Mailbox, error) {
 		prefix = "dai"
 	}
 	local := prefix + deepai.RandomHex(5)
-	return &noInboxMailbox{email: local + "@" + p.domain, provider: "static"}, nil
+	return &noInboxMailbox{email: local + "@" + p.domain, provider: "static", fresh: true}, nil
 }
 
 // --- 固定邮箱后端（无收件箱） ---
@@ -345,10 +352,12 @@ func (p *noneProvider) Create(_ context.Context) (Mailbox, error) {
 type noInboxMailbox struct {
 	email    string
 	provider string
+	fresh    bool
 }
 
 func (m *noInboxMailbox) Email() string    { return m.email }
 func (m *noInboxMailbox) Provider() string { return m.provider }
+func (m *noInboxMailbox) Fresh() bool      { return m.fresh }
 func (m *noInboxMailbox) WaitForVerification(context.Context, time.Time, time.Duration, time.Duration) (string, error) {
 	return "", ErrNoInbox
 }

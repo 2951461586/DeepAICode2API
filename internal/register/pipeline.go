@@ -151,13 +151,22 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 	web := NewWebClientWithFingerprint(p.opts.Config, fp, proxy)
 
 	// 2) 预检：邮箱是否已存在（失败不阻断注册）
-	t = time.Now()
-	exists, existsErr := web.UserExists(ctx, email)
-	if existsErr != nil {
-		rec.Mark("exists", "warning", time.Since(t))
-		p.logf("[%s] 预检失败，继续尝试注册：%v", email, existsErr)
+	//
+	// 刚新建的地址必然未注册，这一步纯属浪费一次网络往返（实测 3.3s）；
+	// 只有补跑 / 用户指定地址时才需要真的查一下。
+	exists := false
+	if mb.Fresh() {
+		rec.Mark("exists", "skipped (fresh)", 0)
 	} else {
-		rec.Mark("exists", boolText(exists), time.Since(t))
+		t = time.Now()
+		var existsErr error
+		exists, existsErr = web.UserExists(ctx, email)
+		if existsErr != nil {
+			rec.Mark("exists", "warning", time.Since(t))
+			p.logf("[%s] 预检失败，继续尝试注册：%v", email, existsErr)
+		} else {
+			rec.Mark("exists", boolText(exists), time.Since(t))
+		}
 	}
 
 	// 3) 注册 / 登录
@@ -203,6 +212,25 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 		}
 	}
 
+	// 3.5) 验证邮件等待与后续阶段并行。
+	//
+	// 实测 verify 占单号 E2E 的 55%（14.8s / 27.0s），而它只是等邮件，
+	// 后面的取 Session / Key / 验活 / 入池都不依赖验证结果（日志里
+	// "取到 API Key" 早于 "邮箱验证完成"）。所以把等待丢到 goroutine 里，
+	// 主流程继续跑，最后再 join。
+	//
+	// 只在需要验证且收件箱可用时启动；等待本身不碰 web 客户端，
+	// 因此不存在与主流程的并发访问。
+	var verifyCh chan verifyOutcome
+	if p.opts.Verify {
+		verifyCh = make(chan verifyOutcome, 1)
+		go func() {
+			vt := time.Now()
+			link, verr := mb.WaitForVerification(ctx, since, p.opts.VerifyTimeout, p.opts.PollInterval)
+			verifyCh <- verifyOutcome{link: link, err: verr, waited: time.Since(vt)}
+		}()
+	}
+
 	// 4) 取 Session / 用户信息 / API Key
 	t = time.Now()
 	user, err := web.FetchUser(ctx)
@@ -224,29 +252,29 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 	}
 	p.logf("[%s] 取到 API Key（%s，plan=%s）", email, deepai.MaskSecret(rec.APIKey), rec.Plan)
 
-	// 5) 邮箱验证（可选，失败不阻断）
-	if !p.opts.Verify {
+	// 5) 邮箱验证（可选，失败不阻断）：join 上面并行启动的等待
+	if verifyCh == nil {
 		rec.Mark("verify", "skipped", 0)
 	} else {
+		out := <-verifyCh
 		t = time.Now()
-		link, err := mb.WaitForVerification(ctx, since, p.opts.VerifyTimeout, p.opts.PollInterval)
 		switch {
-		case errors.Is(err, ErrNoInbox):
-			rec.Mark("verify", "skipped (no inbox)", time.Since(t))
+		case errors.Is(out.err, ErrNoInbox):
+			rec.Mark("verify", "skipped (no inbox)", 0)
 			p.logf("[%s] 邮箱后端无收件箱，跳过邮件验证", email)
-		case err != nil:
-			rec.Mark("verify", "warning", time.Since(t))
-			p.logf("[%s] 等待验证邮件失败（继续入池）：%v", email, err)
+		case out.err != nil:
+			rec.Mark("verify", "warning", out.waited)
+			p.logf("[%s] 等待验证邮件失败（继续入池）：%v", email, out.err)
 		default:
-			if err := web.VerifyEmail(ctx, link); err != nil {
-				rec.Mark("verify", "warning", time.Since(t))
+			if err := web.VerifyEmail(ctx, out.link); err != nil {
+				rec.Mark("verify", "warning", out.waited+time.Since(t))
 				p.logf("[%s] 验证链接访问失败（继续入池）：%v", email, err)
 			} else {
 				rec.EmailVerified = true
 				if StatusRank(rec.Status) < StatusRank(StatusVerified) {
 					rec.Status = StatusVerified
 				}
-				rec.Mark("verify", "ok", time.Since(t))
+				rec.Mark("verify", "ok", out.waited+time.Since(t))
 				p.logf("[%s] 邮箱验证完成", email)
 			}
 		}
@@ -283,6 +311,13 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 	}
 
 	return p.finish(rec)
+}
+
+// verifyOutcome 是并行验证等待的结果。
+type verifyOutcome struct {
+	link   string
+	err    error
+	waited time.Duration
 }
 
 // validate 用 /theos 验证 API Key（可选再做一次最小对话探针）。

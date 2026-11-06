@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -472,22 +473,26 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Action         string `json:"action"`
-		ID             string `json:"id"`
-		Dir            string `json:"dir"`
-		APIKey         string `json:"api_key"`
-		Name           string `json:"name"`
-		Username       string `json:"username"`
-		Password       string `json:"password"`
-		Email          string `json:"email"`
-		SessionID      string `json:"session_id"`
-		CSRFToken      string `json:"csrftoken"`
-		Plan           string `json:"plan"`
-		Group          string `json:"group"`
-		UserPK         int64  `json:"user_pk"`
-		EmailVerified  bool   `json:"email_verified"`
-		TheosBalance   string `json:"theos_balance"`
-		TheosGranted   string `json:"theos_granted"`
+		Action        string `json:"action"`
+		ID            string `json:"id"`
+		Dir           string `json:"dir"`
+		APIKey        string `json:"api_key"`
+		Name          string `json:"name"`
+		Username      string `json:"username"`
+		Password      string `json:"password"`
+		Email         string `json:"email"`
+		SessionID     string `json:"session_id"`
+		CSRFToken     string `json:"csrftoken"`
+		Plan          string `json:"plan"`
+		Group         string `json:"group"`
+		UserPK        int64  `json:"user_pk"`
+		EmailVerified bool   `json:"email_verified"`
+		TheosBalance  string `json:"theos_balance"`
+		TheosGranted  string `json:"theos_granted"`
+		// SkipProbe 让调用方跳过入池时的 /theos 探测。
+		// 注册链路刚刚验活过并随请求带上了 theos_balance/granted，
+		// 再探一次既慢（~2s）又会引入全新的失败点。
+		SkipProbe      bool   `json:"skip_probe"`
 		Proxy          string `json:"proxy"`
 		Fingerprint    string `json:"fingerprint"`
 		MachineID      string `json:"machine_id"`
@@ -551,18 +556,29 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-		al, err := s.clientFor(acct).Theos(ctx, acct)
-		cancel()
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "Key 验活失败: "+err.Error(), "invalid_request_error")
-			return
-		}
-		if strings.TrimSpace(body.TheosBalance) != "" {
-			al.Balance = strings.TrimSpace(body.TheosBalance)
-		}
-		if strings.TrimSpace(body.TheosGranted) != "" {
-			al.Granted = strings.TrimSpace(body.TheosGranted)
+		// 调用方已验活并带上结果时直接采信；否则自己探（控制台手工入池走这条）。
+		var al *deepai.Allowance
+		switch {
+		case body.SkipProbe && strings.TrimSpace(body.TheosBalance) != "":
+			al = &deepai.Allowance{
+				Enabled:   true,
+				Balance:   strings.TrimSpace(body.TheosBalance),
+				Granted:   strings.TrimSpace(body.TheosGranted),
+				CheckedAt: time.Now().Unix(),
+			}
+		default:
+			probed, err := s.probeAccountQuota(acct)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, "Key 验活失败: "+err.Error(), "invalid_request_error")
+				return
+			}
+			al = probed
+			if strings.TrimSpace(body.TheosBalance) != "" {
+				al.Balance = strings.TrimSpace(body.TheosBalance)
+			}
+			if strings.TrimSpace(body.TheosGranted) != "" {
+				al.Granted = strings.TrimSpace(body.TheosGranted)
+			}
 		}
 		id, isNew, err := s.enrollRegistration(reg, al)
 		if err != nil {
@@ -806,6 +822,31 @@ func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "count": len(models), "default_model": s.Store.DefaultModel(),
 	})
+}
+
+// probeAccountQuota 探测一个账号的配额；瞬时错误重试一次。
+//
+// 入池是唯一会阻塞调用方的探测点，而 /theos 的失败几乎都是出口抖动
+// （No exit node / TLS handshake / unexpected EOF），重试一次能救回绝大多数。
+func (s *Server) probeAccountQuota(acct *deepai.Account) (*deepai.Allowance, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		al, err := s.clientFor(acct).Theos(ctx, acct)
+		cancel()
+		if err == nil {
+			return al, nil
+		}
+		lastErr = err
+		var he *deepai.HTTPError
+		if errors.As(err, &he) && !he.Retryable() {
+			return nil, err // 参数 / 鉴权问题，重试无意义
+		}
+	}
+	return nil, lastErr
 }
 
 // probeAndSave 异步探测单个账号并落盘。
