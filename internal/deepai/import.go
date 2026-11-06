@@ -152,6 +152,10 @@ func AccountFromRegistration(r Registration) (*Account, error) {
 	acct.Proxy = strings.TrimSpace(r.Proxy)
 	acct.Fingerprint = strings.TrimSpace(r.Fingerprint)
 	acct.MachineID = strings.TrimSpace(r.MachineID)
+	acct.UserAgent = strings.TrimSpace(r.UserAgent)
+	acct.AcceptLanguage = strings.TrimSpace(r.AcceptLanguage)
+	acct.SecCHUA = strings.TrimSpace(r.SecCHUA)
+	acct.Platform = strings.TrimSpace(r.Platform)
 	acct.Source = r.Source
 	if acct.Source == "" {
 		acct.Source = "register"

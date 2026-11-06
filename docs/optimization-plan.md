@@ -13,9 +13,9 @@
 | P0-3 | 测试覆盖 | ✅ 已实施 | `test: 补 6 个包的回归测试`（顺带修 `Merge` 浅拷贝 bug） |
 | P0-1 | 状态文件加密 + 台账脱敏 | ✅ 已实施 | `feat(security): 状态文件可加密 + 台账脱敏` |
 | P1-1 | 账号级机器指纹 | ✅ 已实施 | 见本文 §P1-1，含 `assign-machine` 补齐动作 |
-| P2-1 | 推理侧指纹与注册侧一致 | ⬜ 待做 | — |
-| P2-2 | 仓库与构建卫生 | 🟡 部分（git / CI / .gitattributes 已就绪） | — |
-| P2-3 | 其他可改进点 | ⬜ 待做 | — |
+| P2-1 | 推理侧指纹与注册侧一致 | ✅ 已实施 | `Account` 增 UA / Accept-Language / sec-ch-ua / platform |
+| P2-2 | 仓库与构建卫生 | ✅ 已实施 | Makefile / LICENSE / docs/recon.md |
+| P2-3 | 其他可改进点 | ✅ 已实施 | Save 跳过无变化写盘、action 常量、错误体截断、README 已知坑 |
 
 ---
 

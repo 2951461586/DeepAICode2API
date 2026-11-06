@@ -74,8 +74,13 @@ type Record struct {
 	// MachineID 是该账号专用的机器指纹（原始 UUID）。
 	// 上游按它发放每日免费额度，必须一号一个。
 	MachineID string `json:"machine_id,omitempty"`
-	Group     string `json:"group,omitempty"`
-	Source    string `json:"source,omitempty"`
+	// 浏览器指纹快照（推理侧复用，保证注册与推理特征一致）。
+	UserAgent      string `json:"user_agent,omitempty"`
+	AcceptLanguage string `json:"accept_language,omitempty"`
+	SecCHUA        string `json:"sec_ch_ua,omitempty"`
+	Platform       string `json:"platform,omitempty"`
+	Group          string `json:"group,omitempty"`
+	Source         string `json:"source,omitempty"`
 }
 
 // NewRecord 构造一条记录。

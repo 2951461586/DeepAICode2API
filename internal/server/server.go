@@ -451,31 +451,46 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 账号管理接口的 action 取值。
+const (
+	actionImport        = "import"
+	actionManual        = "manual"
+	actionEnroll        = "enroll"
+	actionRemove        = "remove"
+	actionToggle        = "toggle"
+	actionClearErrors   = "clear-errors"
+	actionAssignMachine = "assign-machine"
+)
+
 func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
 	var body struct {
-		Action        string `json:"action"`
-		ID            string `json:"id"`
-		Dir           string `json:"dir"`
-		APIKey        string `json:"api_key"`
-		Name          string `json:"name"`
-		Username      string `json:"username"`
-		Password      string `json:"password"`
-		Email         string `json:"email"`
-		SessionID     string `json:"session_id"`
-		CSRFToken     string `json:"csrftoken"`
-		Plan          string `json:"plan"`
-		Group         string `json:"group"`
-		UserPK        int64  `json:"user_pk"`
-		EmailVerified bool   `json:"email_verified"`
-		TheosBalance  string `json:"theos_balance"`
-		TheosGranted  string `json:"theos_granted"`
-		Proxy         string `json:"proxy"`
-		Fingerprint   string `json:"fingerprint"`
-		MachineID     string `json:"machine_id"`
+		Action         string `json:"action"`
+		ID             string `json:"id"`
+		Dir            string `json:"dir"`
+		APIKey         string `json:"api_key"`
+		Name           string `json:"name"`
+		Username       string `json:"username"`
+		Password       string `json:"password"`
+		Email          string `json:"email"`
+		SessionID      string `json:"session_id"`
+		CSRFToken      string `json:"csrftoken"`
+		Plan           string `json:"plan"`
+		Group          string `json:"group"`
+		UserPK         int64  `json:"user_pk"`
+		EmailVerified  bool   `json:"email_verified"`
+		TheosBalance   string `json:"theos_balance"`
+		TheosGranted   string `json:"theos_granted"`
+		Proxy          string `json:"proxy"`
+		Fingerprint    string `json:"fingerprint"`
+		MachineID      string `json:"machine_id"`
+		UserAgent      string `json:"user_agent"`
+		AcceptLanguage string `json:"accept_language"`
+		SecCHUA        string `json:"sec_ch_ua"`
+		Platform       string `json:"platform"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
@@ -483,7 +498,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch body.Action {
-	case "import":
+	case actionImport:
 		results, err := deepai.ImportAllFromDesktop(body.Dir)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "导入失败: "+err.Error(), "invalid_request_error")
@@ -499,7 +514,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.Store.Save()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(imported), "imported": imported})
-	case "manual":
+	case actionManual:
 		acct, err := deepai.AccountFromAPIKey(body.APIKey, body.Name, "manual", false)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
@@ -512,14 +527,16 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		_ = s.Store.Save()
 		go s.probeAndSave(acct)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "new": isNew, "id": acct.ID})
-	case "enroll":
+	case actionEnroll:
 		reg := deepai.Registration{
 			Email: body.Email, Password: body.Password, Username: body.Username,
 			APIKey: body.APIKey, SessionID: body.SessionID, CSRFToken: body.CSRFToken,
 			UserPK: body.UserPK, Plan: body.Plan, EmailVerified: body.EmailVerified,
 			Group: body.Group, Proxy: body.Proxy, Fingerprint: body.Fingerprint,
 			MachineID: strings.TrimSpace(body.MachineID),
-			Source:    "register",
+			UserAgent: strings.TrimSpace(body.UserAgent), AcceptLanguage: strings.TrimSpace(body.AcceptLanguage),
+			SecCHUA: strings.TrimSpace(body.SecCHUA), Platform: strings.TrimSpace(body.Platform),
+			Source: "register",
 		}
 		// 每个账号必须有独立机器指纹；否则上游的每日免费额度会与其他账号互斥。
 		if reg.MachineID == "" {
@@ -552,17 +569,17 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 			"ok": true, "id": id, "new": isNew,
 			"email_verified": body.EmailVerified, "theos": al,
 		})
-	case "remove":
+	case actionRemove:
 		ok := s.Store.RemoveAccount(body.ID)
 		_ = s.Store.Save()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": ok})
-	case "toggle":
+	case actionToggle:
 		if a := s.Store.Account(body.ID); a != nil {
 			a.Enabled = !a.Enabled
 			_ = s.Store.Save()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	case "clear-errors":
+	case actionClearErrors:
 		if a := s.Store.Account(body.ID); a != nil {
 			a.Failures = 0
 			a.Status = "unknown"
@@ -570,7 +587,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 			_ = s.Store.Save()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	case "assign-machine":
+	case actionAssignMachine:
 		// 为存量账号补一个独立机器指纹。只补空值，不覆盖已有指纹
 		// （覆盖会让该账号已被上游记住的额度归属失效）。
 		assigned := 0

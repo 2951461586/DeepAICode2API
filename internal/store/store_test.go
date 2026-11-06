@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"deepaicode2api/internal/deepai"
 )
@@ -513,5 +514,55 @@ func TestUpsertPreservesMachineID(t *testing.T) {
 	st.UpsertAccount(&deepai.Account{APIKey: "sk-1", MachineID: "machine-new"})
 	if got := st.Account(a.ID); got.MachineID != "machine-new" {
 		t.Fatalf("新指纹未生效: %q", got.MachineID)
+	}
+}
+
+func TestSaveSkipsUnchangedWrites(t *testing.T) {
+	// 后台每 30s 一次 Save；内容没变时不应反复重写整个状态文件。
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	addAccount(t, st, "sk-1", "")
+	if err := st.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	first, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 内容不变 → 跳过（mtime 不变）。
+	time.Sleep(10 * time.Millisecond)
+	if err := st.Save(); err != nil {
+		t.Fatalf("二次 Save: %v", err)
+	}
+	second, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.ModTime().Equal(second.ModTime()) {
+		t.Fatal("内容未变化时不应重写文件")
+	}
+
+	// 内容变化 → 必须落盘。
+	st.AddKey("new", "")
+	if err := st.Save(); err != nil {
+		t.Fatalf("变更后 Save: %v", err)
+	}
+	third, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.ModTime().Equal(second.ModTime()) {
+		t.Fatal("内容变化后必须重写文件")
+	}
+	back, err := Open(path)
+	if err != nil {
+		t.Fatalf("重新打开: %v", err)
+	}
+	if !back.HasKeys() {
+		t.Fatal("变更未持久化")
 	}
 }

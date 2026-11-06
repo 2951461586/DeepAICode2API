@@ -38,8 +38,8 @@ func (e *HTTPError) Error() string {
 		return fmt.Sprintf("%s: %s", e.Op, payload.Error.Message)
 	}
 	body := strings.TrimSpace(string(e.Body))
-	if len(body) > 300 {
-		body = body[:300] + "…"
+	if len(body) > 200 {
+		body = body[:200] + "…"
 	}
 	if body == "" {
 		return fmt.Sprintf("%s: HTTP %d", e.Op, e.Status)
@@ -186,8 +186,26 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 		req.Header.Set(HeaderMachine, machine)
 	}
 	req.Header.Set("Accept", "application/json")
-	if c.UserAgent != "" {
-		req.Header.Set("User-Agent", c.UserAgent)
+
+	// 指纹头也优先取账号级：注册与推理必须用同一套特征。
+	ua := c.UserAgent
+	if acct != nil && acct.UserAgent != "" {
+		ua = acct.UserAgent
+	}
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	if acct != nil {
+		if acct.AcceptLanguage != "" {
+			req.Header.Set("Accept-Language", acct.AcceptLanguage)
+		}
+		if acct.SecCHUA != "" {
+			req.Header.Set("sec-ch-ua", acct.SecCHUA)
+			req.Header.Set("sec-ch-ua-mobile", "?0")
+		}
+		if acct.Platform != "" {
+			req.Header.Set("sec-ch-ua-platform", acct.Platform)
+		}
 	}
 	if acct != nil && acct.APIKey != "" {
 		req.Header.Set(HeaderKeyName, acct.APIKey)

@@ -491,15 +491,33 @@ docker run -d --name deepaicode2api \
 
 - `X-DeepAI-Code-Machine` 缺失时上游对所有模型请求返回 426，因此无 SMBIOS 的环境必须设置 `DEEPAI_MACHINE_ID`；
 - 上游免费额度按「机器指纹 + 账号」每天发放，额度耗尽后返回 403；
+  机器指纹**每个账号一份**（见 §6.9），共用时只有第一个账号能领到；
 - `gpt-6-astra` 等 `openai-responses` 模型必须走 `/v1/responses`；用
   `/v1/chat/completions` 调用会被上游拒绝（网关会原样回传错误）；
 - 语音转写上游只接受 `audio/webm` / `audio/mp4`，其他格式请先转码；
 - `/v1/messages/count_tokens` 是字符数估算，不是上游真实 tokenizer；
-- 状态文件保存上游 API Key 明文（与桌面端一致），请确保本机文件权限与磁盘安全；
-- 注册链路会把上游 API Key、网页密码、Session 与完整代理 URL 写入本机状态文件与台账（0600）；
-- 代理 URL 含账号密码，必须只放在 `.env` / 本地台账（已 gitignore），不要提交；
-- 每日免费 Theos 按机器发放，同一机器上批量注册的后续账号 `granted` 可能为 0，
-  但仍可使用免费模型。
+- 状态文件默认明文保存上游 API Key（与桌面端一致）；配置
+  `DEEPAI2API_MASTER_KEY` 后整文件加密，请务必保证主密钥不随备份泄露；
+- 注册链路会把上游 API Key、网页密码、Session 与完整代理 URL 写入本机状态文件；
+  主台账与 `success.jsonl` 已脱敏，密码只在 `*-credentials.jsonl` 里；
+- 代理 URL 含账号密码，必须只放在 `.env` / 本地台账（已 gitignore），不要提交。
+
+### 10.1 已知坑（改动前先看）
+
+以下都是踩过的坑，`docs/recon.md` 有更完整的逆向记录：
+
+| 现象 | 原因 | 不要“修”成什么样 |
+| --- | --- | --- |
+| 无效 Key 返回 200 且是 HTML | 上游 302 到登录页 | 不要 `CheckRedirect` 跟随；`ErrUseLastResponse` 是刻意的 |
+| 上游模型目录默认模型为空 | 字段叫 `default` 不是 `default_model` | 不要加 `default_model` 兼容，会静默拿不到值 |
+| 池内账号 `granted=0` | 共用机器指纹，每日额度只发一次 | 不要去掉 `Account.MachineID` 回退逻辑 |
+| 长响应被掐断 | 上游心跳 `: keep-alive` 被丢弃 | `streamChat` 要原样透传注释行 |
+| 工具调用参数被截断 | 同一事件多行 `data:` 未按 `\n` 拼接 | 用 `deepai.ReadSSE`，不要逐行 `json.Unmarshal` |
+| 台账里密码消失 | `Append` 走了 `redactRecord` | 这是设计；密码在 `*-credentials.jsonl` |
+| `go test -race` 链接失败 | mingw 只带 `ld.bfd.exe` | 做一个 `ld.exe` shim 并加进 PATH（见 Makefile 注释） |
+
+另：`/v1/chat/completions` 的 `reasoning_content` 是网关补的兼容字段，
+上游原生只有 `reasoning`；已存在时不会被覆盖。
 
 ## 十一、License
 

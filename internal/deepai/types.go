@@ -144,6 +144,13 @@ type Account struct {
 	Proxy       string `json:"proxy,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 
+	// 浏览器指纹快照（注册时写入）。推理侧带上同一套头，否则“用 Chrome 注册、
+	// 用空 UA 推理”本身就是一个可被识别的异常信号。
+	UserAgent      string `json:"user_agent,omitempty"`
+	AcceptLanguage string `json:"accept_language,omitempty"`
+	SecCHUA        string `json:"sec_ch_ua,omitempty"`
+	Platform       string `json:"platform,omitempty"`
+
 	// MachineID 是该账号专用的机器指纹原始值（UUID）。
 	//
 	// 上游按 X-DeepAI-Code-Machine 每天发放一次免费额度；多个账号共用
@@ -176,20 +183,24 @@ func (a *Account) GroupName() string {
 
 // Registration 是网页注册链路产出的账号信息。
 type Registration struct {
-	Email         string
-	Password      string
-	Username      string
-	APIKey        string
-	SessionID     string
-	CSRFToken     string
-	UserPK        int64
-	Plan          string
-	EmailVerified bool
-	Group         string
-	Proxy         string
-	Fingerprint   string
-	MachineID     string
-	Source        string
+	Email          string
+	Password       string
+	Username       string
+	APIKey         string
+	SessionID      string
+	CSRFToken      string
+	UserPK         int64
+	Plan           string
+	EmailVerified  bool
+	Group          string
+	Proxy          string
+	Fingerprint    string
+	MachineID      string
+	UserAgent      string
+	AcceptLanguage string
+	SecCHUA        string
+	Platform       string
+	Source         string
 }
 
 // KeyID 返回 API Key 的稳定短标识（用于去重与日志，不泄露明文）。

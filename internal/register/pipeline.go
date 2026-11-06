@@ -135,6 +135,11 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 		fp = Fingerprint{ID: "off", UserAgent: p.opts.Config.UserAgent, AcceptLanguage: "en-US,en;q=0.9", Language: p.opts.Config.Language}
 	}
 	rec.Fingerprint = fp.ID
+	// 把指纹快照一并带上：推理侧要发同一套请求头。
+	rec.UserAgent = fp.UserAgent
+	rec.AcceptLanguage = fp.AcceptLanguage
+	rec.SecCHUA = fp.SecCHUA
+	rec.Platform = fp.Platform
 
 	// 机器指纹：上游按 X-DeepAI-Code-Machine 每天发一次免费额度，
 	// 所以必须一号一个；补跑时复用历史值，否则额度会重新“抽奖”。
@@ -291,7 +296,11 @@ func (p *Pipeline) validate(ctx context.Context, rec *Record, up *deepai.Client)
 	vctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	acct := &deepai.Account{APIKey: rec.APIKey, Proxy: rec.Proxy, MachineID: rec.MachineID}
+	acct := &deepai.Account{
+		APIKey: rec.APIKey, Proxy: rec.Proxy, MachineID: rec.MachineID,
+		UserAgent: rec.UserAgent, AcceptLanguage: rec.AcceptLanguage,
+		SecCHUA: rec.SecCHUA, Platform: rec.Platform,
+	}
 	al, err := up.Theos(vctx, acct)
 	if err != nil {
 		return fmt.Errorf("Theos 验活失败: %w", err)

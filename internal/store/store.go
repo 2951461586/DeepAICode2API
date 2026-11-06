@@ -2,6 +2,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,6 +91,8 @@ type Store struct {
 	masterKey []byte
 	// encrypted 记录上次读写时文件是否已加密（用于启动日志 / 控制台提示）。
 	encrypted bool
+	// lastSaved 是上次落盘的明文快照，用于跳过无变化的重复写盘。
+	lastSaved []byte
 }
 
 // DefaultSettings 返回默认设置。
@@ -131,6 +134,8 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 		if err := json.Unmarshal(plain, s.st); err != nil {
 			return nil, fmt.Errorf("状态文件解析失败: %w", err)
 		}
+		// 记住原始内容，首次 Save 可直接跳过。
+		s.lastSaved = append([]byte(nil), plain...)
 		def := DefaultSettings()
 		if s.st.Settings.ModelAliases == nil {
 			s.st.Settings.ModelAliases = def.ModelAliases
@@ -163,23 +168,32 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 func (s *Store) Path() string { return s.path }
 
 // Save 原子写回状态文件（配置主密钥时整文件加密）。
+//
+// 内容与上次落盘一致时直接跳过：后台每 30s 调一次 Save，日志/统计没变化时
+// 没必要反复重写整个状态文件。
 func (s *Store) Save() error {
 	s.mu.RLock()
-	raw, err := json.MarshalIndent(s.st, "", "  ")
+	plain, err := json.MarshalIndent(s.st, "", "  ")
 	key := s.masterKey
+	last := s.lastSaved
+	enc := s.encrypted
 	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
+	// 跳过无变化写盘；但如果刚配置了主密钥且磁盘上还是明文，
+	// 必须再写一次以完成迁移。
+	if bytes.Equal(plain, last) && (len(key) == 0 || enc) {
+		return nil
+	}
+
+	raw := plain
 	if len(key) > 0 {
-		sealed, err := seal(key, raw)
+		sealed, err := seal(key, plain)
 		if err != nil {
 			return err
 		}
 		raw = sealed
-		s.mu.Lock()
-		s.encrypted = true
-		s.mu.Unlock()
 	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
@@ -188,7 +202,17 @@ func (s *Store) Save() error {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.lastSaved = append(s.lastSaved[:0], plain...)
+	if len(key) > 0 {
+		s.encrypted = true
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // Encrypted 报告磁盘上的状态文件是否为加密格式。
@@ -269,6 +293,18 @@ func (s *Store) UpsertAccount(a *deepai.Account) bool {
 		}
 		if a.MachineID == "" {
 			a.MachineID = ex.MachineID
+		}
+		if a.UserAgent == "" {
+			a.UserAgent = ex.UserAgent
+		}
+		if a.AcceptLanguage == "" {
+			a.AcceptLanguage = ex.AcceptLanguage
+		}
+		if a.SecCHUA == "" {
+			a.SecCHUA = ex.SecCHUA
+		}
+		if a.Platform == "" {
+			a.Platform = ex.Platform
 		}
 		if a.RegisteredAt == 0 {
 			a.RegisteredAt = ex.RegisteredAt

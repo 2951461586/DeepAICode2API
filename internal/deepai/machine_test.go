@@ -142,3 +142,59 @@ func TestMachineUUIDIsStableThroughFingerprint(t *testing.T) {
 		t.Fatal("指纹不应该是 UUID 本身")
 	}
 }
+
+// 推理侧必须复用注册时的浏览器指纹，否则“Chrome 注册 + 空 UA 推理”本身就是异常信号。
+func TestClientPerAccountFingerprintHeaders(t *testing.T) {
+	var got http.Header
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = io.WriteString(w, `{}`)
+	})
+
+	acct := &Account{
+		APIKey:         "k",
+		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/156.0.0.0",
+		AcceptLanguage: "en-US,en;q=0.9",
+		SecCHUA:        `"Not:A-Brand";v="8", "Chromium";v="156"`,
+		Platform:       `"Windows"`,
+	}
+	if _, err := c.OpenModel(context.Background(), acct, PathChat, []byte(`{}`), ""); err != nil {
+		t.Fatalf("OpenModel: %v", err)
+	}
+
+	if v := got.Get("User-Agent"); v != acct.UserAgent {
+		t.Fatalf("User-Agent = %q，期望 %q", v, acct.UserAgent)
+	}
+	if v := got.Get("Accept-Language"); v != acct.AcceptLanguage {
+		t.Fatalf("Accept-Language = %q", v)
+	}
+	if v := got.Get("sec-ch-ua"); v != acct.SecCHUA {
+		t.Fatalf("sec-ch-ua = %q", v)
+	}
+	if v := got.Get("sec-ch-ua-platform"); v != acct.Platform {
+		t.Fatalf("sec-ch-ua-platform = %q", v)
+	}
+	if v := got.Get("sec-ch-ua-mobile"); v != "?0" {
+		t.Fatalf("sec-ch-ua-mobile = %q", v)
+	}
+}
+
+func TestClientFallsBackToClientFingerprint(t *testing.T) {
+	// 没有账号级指纹时（桌面端导入 / 手工添加）回退到客户端默认值。
+	var got http.Header
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = io.WriteString(w, `{}`)
+	})
+	c.UserAgent = "fallback-ua/2"
+	if _, err := c.OpenModel(context.Background(), &Account{APIKey: "k"}, PathChat, []byte(`{}`), ""); err != nil {
+		t.Fatalf("OpenModel: %v", err)
+	}
+	if v := got.Get("User-Agent"); v != "fallback-ua/2" {
+		t.Fatalf("User-Agent = %q，期望回退值", v)
+	}
+	// 账号没有指纹时不发指纹头，避免发空值。
+	if v := got.Get("Accept-Language"); v != "" {
+		t.Fatalf("无账号指纹时不应发送 Accept-Language，实际 %q", v)
+	}
+}
