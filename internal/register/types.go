@@ -149,6 +149,9 @@ func Merge(old, new *Record) *Record {
 	if new == nil {
 		return old
 	}
+	// 深拷贝入参：合并过程会就地写 Stages / Timings，浅拷贝会让调用方
+	// 手里的历史记录与合并结果共享 map（后续 Mark 会静默污染台账）。
+	old, new = cloneRecord(old), cloneRecord(new)
 	ro, rn := StatusRank(old.Status), StatusRank(new.Status)
 	if rn < ro {
 		out := *old
@@ -212,6 +215,27 @@ func Merge(old, new *Record) *Record {
 	}
 	out.Normalize()
 	return &out
+}
+
+// cloneRecord 复制一条记录及其 map 字段（不共享底层存储）。
+func cloneRecord(r *Record) *Record {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	if r.Stages != nil {
+		cp.Stages = make(map[string]string, len(r.Stages))
+		for k, v := range r.Stages {
+			cp.Stages[k] = v
+		}
+	}
+	if r.Timings != nil {
+		cp.Timings = make(map[string]float64, len(r.Timings))
+		for k, v := range r.Timings {
+			cp.Timings[k] = v
+		}
+	}
+	return &cp
 }
 
 // mergeRecord 把 src 的非零字段补进 dst（同级并集）。
