@@ -255,6 +255,27 @@ func (s *Store) Account(id string) *deepai.Account {
 	return nil
 }
 
+// AccountCopy 返回账号的深拷贝快照（含 Theos），可安全地跨 goroutine 读取。
+//
+// Account() 返回的是号池里的活指针，适合"就地改字段"的管理操作；需要
+// 在后台任务里读（比如延迟复探、监控）时应当用这个，否则会和写方裸竞争。
+func (s *Store) AccountCopy(id string) *deepai.Account {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.st.Accounts {
+		if a.ID != id {
+			continue
+		}
+		cp := *a
+		if a.Theos != nil {
+			theos := *a.Theos
+			cp.Theos = &theos
+		}
+		return &cp
+	}
+	return nil
+}
+
 // UpsertAccount 按 API Key 指纹或邮箱去重后写入账号，返回是否为新增。
 //
 // 同一账号重新登录时 API Key 可能不变，但重新注册/补跑时邮箱相同、
@@ -414,8 +435,20 @@ func hasQuota(a *deepai.Account) bool {
 	if err != nil {
 		return true
 	}
-	return v > 0
+	if v > 0 {
+		return true
+	}
+	// 0 额度只在“刚探过”时才算数：新注册的账号在入池那一刻常常还是 0，
+	// 几分钟后才会下发当日额度（见 README §6.10 实测）。把陈旧的 0 当作
+	// 未知，避免账号被永久排除在调度之外。
+	if a.Theos.CheckedAt <= 0 {
+		return true
+	}
+	return time.Since(time.Unix(a.Theos.CheckedAt, 0)) > QuotaStaleAfter
 }
+
+// QuotaStaleAfter 是“0 额度”被判为陈旧、需要重探的时限。
+const QuotaStaleAfter = 15 * time.Minute
 
 // MarkAccountResult 记录一次账号调用结果。
 func (s *Store) MarkAccountResult(id string, ok bool, note string) {

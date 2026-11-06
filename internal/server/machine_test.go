@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"deepaicode2api/internal/deepai"
 )
@@ -187,5 +189,78 @@ func TestCheckinProbesAllAccounts(t *testing.T) {
 		if m["ok"] != true {
 			t.Fatalf("探测应成功: %#v", m)
 		}
+	}
+}
+
+// 新账号入池时上游常常还没发当日额度（balance=0），几分钟后才有。
+// 入池路径必须安排一次延迟复探，否则这个 0 会被永久缓存、账号被长期跳过。
+func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
+	var mu sync.Mutex
+	probes := 0
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n := probes
+		probes++
+		mu.Unlock()
+		if n == 0 {
+			_, _ = io.WriteString(w, `{"enabled":true,"balance":"0.00000","granted":"0.00000"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"enabled":true,"balance":"200.00000","granted":"200.00000"}`)
+	})
+	s, _ := newTestServer(t, u)
+	// 测试里把 3 分钟退避压到 10ms。
+	s.quotaReprobeDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
+
+	rec := postAdmin(t, s, "/admin/api/accounts",
+		`{"action":"enroll","api_key":"sk-late-quota","email":"late@y.com"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("入池失败: %s", rec.Body.String())
+	}
+	id, _ := decodeJSON[map[string]any](t, rec.Body.Bytes())["id"].(string)
+	if id == "" {
+		t.Fatal("入池未返回 id")
+	}
+
+	// 入池瞬间应当是 0（上游如此）。
+	if a := s.Store.AccountCopy(id); a == nil || a.Theos == nil || a.Theos.Balance != "0.00000" {
+		t.Fatalf("入池时应记录上游返回的 0 额度: %#v", a)
+	}
+
+	// 等复探把额度补上。
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if a := s.Store.AccountCopy(id); a != nil && a.Theos != nil && a.Theos.Balance == "200.00000" {
+			return // ok
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	a := s.Store.AccountCopy(id)
+	t.Fatalf("延迟复探未更新额度: %#v", a.Theos)
+}
+
+// 已经拿到额度的账号不应再被安排复探。
+func TestEnrollWithQuotaSkipsReprobe(t *testing.T) {
+	var mu sync.Mutex
+	probes := 0
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		probes++
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"enabled":true,"balance":"200.00000","granted":"200.00000"}`)
+	})
+	s, _ := newTestServer(t, u)
+	s.quotaReprobeDelays = []time.Duration{10 * time.Millisecond}
+
+	if rec := postAdmin(t, s, "/admin/api/accounts",
+		`{"action":"enroll","api_key":"sk-has-quota","email":"q@y.com"}`); rec.Code != http.StatusOK {
+		t.Fatalf("入池失败: %s", rec.Body.String())
+	}
+	time.Sleep(120 * time.Millisecond)
+	mu.Lock()
+	got := probes
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("已有额度时不应再次探测，实际探测 %d 次", got)
 	}
 }

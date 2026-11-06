@@ -21,6 +21,7 @@ coverage.out
 /data/
 /gw.log
 /*.log
+/*.meta
 
 # 注册台账 / 交付物（含 API Key 与密码）
 /exports/

@@ -32,6 +32,9 @@ type Server struct {
 	refreshMu    sync.Mutex
 	proxyMu      sync.Mutex
 	proxyClients map[string]*deepai.Client
+
+	// quotaReprobeDelays 是入池后 0 额度的复探退避序列（测试可注入短值）。
+	quotaReprobeDelays []time.Duration
 }
 
 // New 构造服务。
@@ -39,6 +42,7 @@ func New(st *store.Store) *Server {
 	return &Server{
 		Store: st, Up: deepai.NewClient(), Login: newLoginSessions(),
 		Registers: newRegisterJobs(), proxyClients: map[string]*deepai.Client{},
+		quotaReprobeDelays: quotaReprobeDelays,
 	}
 }
 

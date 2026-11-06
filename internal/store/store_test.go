@@ -456,8 +456,9 @@ func TestNextAccountPrefersAccountsWithQuota(t *testing.T) {
 	st := newStore(t)
 	empty := addAccount(t, st, "sk-empty", "")
 	full := addAccount(t, st, "sk-full", "")
-	st.SetAccountAllowance(empty.ID, &deepai.Allowance{Enabled: true, Balance: "0.00000"}, nil)
-	st.SetAccountAllowance(full.ID, &deepai.Allowance{Enabled: true, Balance: "2.50000"}, nil)
+	now := time.Now().Unix()
+	st.SetAccountAllowance(empty.ID, &deepai.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}, nil)
+	st.SetAccountAllowance(full.ID, &deepai.Allowance{Enabled: true, Balance: "2.50000", CheckedAt: now}, nil)
 
 	for i := 0; i < 10; i++ {
 		got := st.NextAccountGroup("")
@@ -472,8 +473,9 @@ func TestNextAccountFallsBackToZeroQuota(t *testing.T) {
 	st := newStore(t)
 	a := addAccount(t, st, "sk-a", "")
 	b := addAccount(t, st, "sk-b", "")
-	st.SetAccountAllowance(a.ID, &deepai.Allowance{Enabled: true, Balance: "0"}, nil)
-	st.SetAccountAllowance(b.ID, &deepai.Allowance{Enabled: true, Balance: "0.0"}, nil)
+	now := time.Now().Unix()
+	st.SetAccountAllowance(a.ID, &deepai.Allowance{Enabled: true, Balance: "0", CheckedAt: now}, nil)
+	st.SetAccountAllowance(b.ID, &deepai.Allowance{Enabled: true, Balance: "0.0", CheckedAt: now}, nil)
 
 	if got := st.NextAccountGroup(""); got == nil {
 		t.Fatal("全组 0 额度时应回退，而不是返回 nil")
@@ -564,5 +566,43 @@ func TestSaveSkipsUnchangedWrites(t *testing.T) {
 	}
 	if !back.HasKeys() {
 		t.Fatal("变更未持久化")
+	}
+}
+
+func TestZeroQuotaGoesStale(t *testing.T) {
+	// 注册瞬间的 0 额度不能把账号永久判死；陈旧的 0 要重新被视为“未知”。
+	now := time.Now().Unix()
+
+	fresh := &deepai.Account{ID: "a", Enabled: true,
+		Theos: &deepai.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}}
+	if hasQuota(fresh) {
+		t.Fatal("刚探到的 0 额度不应算可用")
+	}
+
+	stale := &deepai.Account{ID: "b", Enabled: true,
+		Theos: &deepai.Allowance{Enabled: true, Balance: "0.00000",
+			CheckedAt: now - int64(QuotaStaleAfter/time.Second) - 60}}
+	if !hasQuota(stale) {
+		t.Fatal("超过时限的 0 额度应视为未知（允许重探）")
+	}
+
+	// 没有探测时间戳的 0：按未知处理。
+	noStamp := &deepai.Account{ID: "c", Enabled: true,
+		Theos: &deepai.Allowance{Enabled: true, Balance: "0"}}
+	if !hasQuota(noStamp) {
+		t.Fatal("无 CheckedAt 的 0 额度应按未知处理")
+	}
+}
+
+func TestStaleZeroQuotaIsSchedulable(t *testing.T) {
+	// 端到端：陈旧的 0 额度账号必须能被调度到。
+	st := newStore(t)
+	a := addAccount(t, st, "sk-stale", "")
+	st.SetAccountAllowance(a.ID, &deepai.Allowance{
+		Enabled: true, Balance: "0.00000",
+		CheckedAt: time.Now().Add(-time.Hour).Unix(),
+	}, nil)
+	if got := st.NextAccountGroup(""); got == nil || got.ID != a.ID {
+		t.Fatalf("陈旧的 0 额度账号应可被调度，实际 %#v", got)
 	}
 }
