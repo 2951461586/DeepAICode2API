@@ -63,6 +63,8 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
+	// 同上：上游缺省 stream 时按 SSE 返回，必须显式下发。
+	payload["stream"] = stream
 	body, err := json.Marshal(payload)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")

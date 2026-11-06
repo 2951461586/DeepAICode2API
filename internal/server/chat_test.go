@@ -123,3 +123,58 @@ func TestChatUpstreamErrorPropagates(t *testing.T) {
 		t.Fatalf("上游错误信息应被透传: %s", rec.Body.String())
 	}
 }
+
+// 上游在缺省 stream 字段时默认按 SSE 返回；OpenAI 规范里缺省等价于 false。
+// 两者不一致会让“没写 stream 的非流式请求”拿到 data: 帧而解析失败。
+func TestChatSendsExplicitStreamFalse(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	})
+	s, key := newTestServer(t, u)
+
+	// 故意不传 stream。
+	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	v, ok := u.last(t).Payload["stream"]
+	if !ok {
+		t.Fatal("上游请求必须显式带 stream 字段")
+	}
+	if b, _ := v.(bool); b {
+		t.Fatalf("stream = %v，期望 false", v)
+	}
+}
+
+func TestChatSendsExplicitStreamTrue(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\ndata: [DONE]\n\n")
+	})
+	s, key := newTestServer(t, u)
+
+	do(t, s, http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if b, _ := u.last(t).Payload["stream"].(bool); !b {
+		t.Fatal("stream=true 应原样透传")
+	}
+}
+
+// 上游回 SSE 但网关按非流式处理时，错误信息要能定位（曾只剩“不是合法 JSON”）。
+func TestChatNonJSONUpstreamIsDiagnosable(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[]}\n\n")
+	})
+	s, key := newTestServer(t, u)
+
+	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("状态码 = %d，期望 502", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "JSON") {
+		t.Fatalf("错误信息应说明是解析失败: %s", rec.Body.String())
+	}
+}

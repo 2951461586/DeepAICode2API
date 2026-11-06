@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -39,6 +40,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	model := s.resolveModel(requestModelName(payload))
 	payload["model"] = model.ID
 	stream, _ := payload["stream"].(bool)
+	// 必须显式下发 stream=false：上游在缺省该字段时默认按 SSE 返回，
+	// 而 OpenAI 规范里缺省等价于 false，两者不一致会导致非流式请求拿到
+	// `data: {...}` 无法解析。
+	payload["stream"] = stream
 	affinity := affinityFor(r, payload)
 	group := s.requestGroup(r)
 
@@ -71,6 +76,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	var out map[string]any
 	if err := json.Unmarshal(rawResp, &out); err != nil {
+		// 上游偶尔会回非 JSON（HTML 网关页、纯文本限流提示、SSE 帧等）。
+		// 把响应类型与开头片段写进日志，否则只剩“不是合法 JSON”无从下手。
+		log.Printf("上游响应解析失败：account=%s status=%d ct=%q len=%d head=%q",
+			acctLabel(acct), resp.StatusCode, resp.Header.Get("Content-Type"), len(rawResp), headOf(rawResp, 160))
 		s.record(key, acct, model.ID, "chat", false, http.StatusBadGateway, start, promptLen, 0, Usage{}, err)
 		writeErr(w, http.StatusBadGateway, "上游响应不是合法 JSON", "upstream_error")
 		return
@@ -192,4 +201,20 @@ func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, publicModel, 
 	}
 	sw.done()
 	s.record(key, acct, publicModel, "chat", true, statusOf(streamErr), start, promptLen, outLen, usage, streamErr)
+}
+
+// acctLabel 返回用于日志的账号标识（不含密钥）。
+func acctLabel(a *deepai.Account) string {
+	if a == nil {
+		return "-"
+	}
+	return a.Name
+}
+
+// headOf 截取响应开头片段用于排障。
+func headOf(raw []byte, n int) string {
+	if len(raw) <= n {
+		return string(raw)
+	}
+	return string(raw[:n]) + "…"
 }
