@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"deepaicode2api/internal/deepai"
@@ -24,7 +25,10 @@ func TestMain(m *testing.M) {
 
 // upstream 是可由测试驱动的假上游。
 type upstream struct {
-	srv      *httptest.Server
+	srv *httptest.Server
+
+	// mu 保护 requests：checkin / 并发探测会同时打进来。
+	mu       sync.Mutex
 	requests []recordedRequest
 }
 
@@ -37,6 +41,8 @@ type recordedRequest struct {
 
 func (u *upstream) last(t *testing.T) recordedRequest {
 	t.Helper()
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	if len(u.requests) == 0 {
 		t.Fatal("上游未收到任何请求")
 	}
@@ -51,9 +57,11 @@ func newUpstream(t *testing.T, handler http.HandlerFunc) *upstream {
 		raw, _ := io.ReadAll(r.Body)
 		var payload map[string]any
 		_ = json.Unmarshal(raw, &payload)
+		u.mu.Lock()
 		u.requests = append(u.requests, recordedRequest{
 			Path: r.URL.Path, Header: r.Header.Clone(), Payload: payload, Body: raw,
 		})
+		u.mu.Unlock()
 		handler(w, r)
 	}))
 	t.Cleanup(u.srv.Close)

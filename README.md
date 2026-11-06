@@ -373,10 +373,31 @@ issue 或发给别人排查。凭据单独落在 `*-credentials.jsonl`（`0600`�
 - CLI：`-check-proxies`、`-proxy-pool`、`-proxy-file`、`-proxy`、`-no-fingerprint`；
 - 控制台「注册」页可直接粘贴代理池并关闭指纹库。
 
+### 6.9 机器指纹（为什么每号一个）
+
+上游按 `X-DeepAI-Code-Machine` **每天发放一次**免费 Theos，因此：
+
+- 每个账号在注册时生成一个独立的机器 UUID（`deepai.NewMachineUUID`），
+  存入台账与号池，之后 `/theos` 与推理全程使用它（`Account.MachineID`）；
+- 没有账号级指纹时才回退到进程级 `MachineID()`（桌面端导入 / 历史账号）；
+- 共用指纹时，同一台机器上的多个账号会互相抵消额度 —— 这是旧版本
+  池内 `granted=0` 的根因；
+- 存量账号可一键补齐（只补空值，不覆盖已有指纹）：
+
+```bash
+curl -s -X POST http://127.0.0.1:10087/admin/api/accounts \
+  -H "X-Admin-Password: $DEEPAI2API_ADMIN_PASSWORD" \
+  -d '{"action":"assign-machine"}'
+# {"ok":true,"assigned":20}
+```
+
+补齐后会自动异步重探配额。调度侧也会优先挑有额度的账号（`hasQuota`），
+已知 `balance=0` 的账号只在全组都没额度时才兜底。
+
 本机 20 账号压测实测：10 个代理各承载 2 个账号，**20/20 入池**，
 19/20 邮箱验证成功（1 个验证链接超时但 Key 验活通过），总耗时 **4m33s**。
-由于每日 Theos 按机器发放，本机当天额度已被先前账号领取，20 个新账号
-`granted=0`，但免费模型调用正常。
+该批次在共用机器指纹下 `granted=0`（额度已被先前账号领取）；
+分配独立指纹后可各自获得每日额度。
 
 ### 6.9 安全与合规
 

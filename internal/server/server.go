@@ -418,6 +418,8 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 			"plan": a.Plan, "email_verified": a.EmailVerified,
 			"user_pk": a.UserPK, "group": a.GroupName(),
 			"proxy": deepai.MaskProxy(a.Proxy), "fingerprint": a.Fingerprint,
+			// 机器指纹只下发摘要：上游按它发额度，完整值没必要出网。
+			"machine": maskMachine(a.MachineID), "has_machine": a.MachineID != "",
 			"registered_at": a.RegisteredAt, "last_verified": a.LastVerified,
 			"enabled": a.Enabled, "status": a.Status, "note": a.Note,
 			"last_err": a.LastErr, "failures": a.Failures, "last_used": a.LastUsed,
@@ -473,6 +475,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		TheosGranted  string `json:"theos_granted"`
 		Proxy         string `json:"proxy"`
 		Fingerprint   string `json:"fingerprint"`
+		MachineID     string `json:"machine_id"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
@@ -515,7 +518,12 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 			APIKey: body.APIKey, SessionID: body.SessionID, CSRFToken: body.CSRFToken,
 			UserPK: body.UserPK, Plan: body.Plan, EmailVerified: body.EmailVerified,
 			Group: body.Group, Proxy: body.Proxy, Fingerprint: body.Fingerprint,
-			Source: "register",
+			MachineID: strings.TrimSpace(body.MachineID),
+			Source:    "register",
+		}
+		// 每个账号必须有独立机器指纹；否则上游的每日免费额度会与其他账号互斥。
+		if reg.MachineID == "" {
+			reg.MachineID = deepai.NewMachineUUID()
 		}
 		acct, err := deepai.AccountFromRegistration(reg)
 		if err != nil {
@@ -562,6 +570,26 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 			_ = s.Store.Save()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "assign-machine":
+		// 为存量账号补一个独立机器指纹。只补空值，不覆盖已有指纹
+		// （覆盖会让该账号已被上游记住的额度归属失效）。
+		assigned := 0
+		var targets []*deepai.Account
+		for _, a := range s.Store.Accounts() {
+			if body.ID != "" && a.ID != body.ID {
+				continue
+			}
+			if strings.TrimSpace(a.MachineID) != "" {
+				continue
+			}
+			a.MachineID = deepai.NewMachineUUID()
+			assigned++
+			targets = append(targets, a)
+		}
+		_ = s.Store.Save()
+		// 重新探测配额，让调度能立即看到新指纹下的额度。
+		go s.probeAccounts(targets)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
 	default:
 		writeErr(w, http.StatusBadRequest, "未知操作: "+body.Action, "invalid_request_error")
 	}
@@ -668,6 +696,9 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAdminCheckin 对全部（或指定）账号查询一次 Theos 配额。
+//
+// 并发度限制为 4：串行探测 20 个账号最坏要 10 分钟，全并发又容易
+// 把探针本身变成上游的风控特征。
 func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID string `json:"id"`
@@ -681,19 +712,54 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 			targets = append(targets, a)
 		}
 	}
-	results := make([]map[string]any, 0, len(targets))
-	for _, a := range targets {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		al, err := s.clientFor(a).Theos(ctx, a)
-		cancel()
-		ok := err == nil
-		note := ""
-		if err != nil {
-			note = err.Error()
+
+	const workers = 4
+	type checkinResult struct {
+		account *deepai.Account
+		theos   *deepai.Allowance
+		err     error
+	}
+	in := make(chan *deepai.Account)
+	out := make(chan checkinResult, len(targets))
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for a := range in {
+				ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+				al, err := s.clientFor(a).Theos(ctx, a)
+				cancel()
+				out <- checkinResult{account: a, theos: al, err: err}
+			}
+		}()
+	}
+	go func() {
+		defer close(in)
+		for _, a := range targets {
+			select {
+			case in <- a:
+			case <-r.Context().Done():
+				return
+			}
 		}
-		s.Store.SetAccountAllowance(a.ID, al, err)
+	}()
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+
+	results := make([]map[string]any, 0, len(targets))
+	for res := range out {
+		ok := res.err == nil
+		note := ""
+		if res.err != nil {
+			note = res.err.Error()
+		}
+		s.Store.SetAccountAllowance(res.account.ID, res.theos, res.err)
 		results = append(results, map[string]any{
-			"id": a.ID, "name": a.Name, "ok": ok, "err": note, "theos": al,
+			"id": res.account.ID, "name": res.account.Name,
+			"ok": ok, "err": note, "theos": res.theos,
 		})
 	}
 	_ = s.Store.Save()
@@ -723,10 +789,33 @@ func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
 
 // probeAndSave 异步探测单个账号并落盘。
 func (s *Server) probeAndSave(a *deepai.Account) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	al, err := s.clientFor(a).Theos(ctx, a)
-	s.Store.SetAccountAllowance(a.ID, al, err)
+	s.probeAccounts([]*deepai.Account{a})
+}
+
+// probeAccounts 以有界并发探测一批账号的配额并落盘。
+//
+// 串行探测 20 个账号最坏要 10 分钟（每个 30s 超时），所以限制到 4 并发；
+// 再高容易把探针本身变成风控特征。
+func (s *Server) probeAccounts(accts []*deepai.Account) {
+	const workers = 4
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for _, a := range accts {
+		if a == nil {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(a *deepai.Account) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			al, err := s.clientFor(a).Theos(ctx, a)
+			s.Store.SetAccountAllowance(a.ID, al, err)
+		}(a)
+	}
+	wg.Wait()
 	_ = s.Store.Save()
 }
 
@@ -763,6 +852,20 @@ func shortMachine(id string) string {
 		return id
 	}
 	return id[:12]
+}
+
+// maskMachine 返回机器指纹的可读摘要。
+//
+// 账号级 machine 是原始 UUID，完整值不上控制台（它决定上游怎么发额度）。
+func maskMachine(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if len(raw) <= 8 {
+		return raw
+	}
+	return raw[:8] + "…"
 }
 
 func contextWithTimeout(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {

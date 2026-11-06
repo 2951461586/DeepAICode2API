@@ -144,6 +144,13 @@ type Account struct {
 	Proxy       string `json:"proxy,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 
+	// MachineID 是该账号专用的机器指纹原始值（UUID）。
+	//
+	// 上游按 X-DeepAI-Code-Machine 每天发放一次免费额度；多个账号共用
+	// 一个指纹时只有第一个能拿到额度。注册时每号生成一个。
+	// 空串表示回退到进程级 MachineID()（历史账号 + 桌面端导入）。
+	MachineID string `json:"machine_id,omitempty"`
+
 	Enabled  bool   `json:"enabled"`
 	Status   string `json:"status"` // ok / error / unknown
 	Note     string `json:"note"`
@@ -181,6 +188,7 @@ type Registration struct {
 	Group         string
 	Proxy         string
 	Fingerprint   string
+	MachineID     string
 	Source        string
 }
 

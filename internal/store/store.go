@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -266,6 +267,9 @@ func (s *Store) UpsertAccount(a *deepai.Account) bool {
 		if a.Fingerprint == "" {
 			a.Fingerprint = ex.Fingerprint
 		}
+		if a.MachineID == "" {
+			a.MachineID = ex.MachineID
+		}
 		if a.RegisteredAt == 0 {
 			a.RegisteredAt = ex.RegisteredAt
 		}
@@ -302,6 +306,10 @@ func (s *Store) NextAccount() *deepai.Account { return s.NextAccountGroup("") }
 // group 为空表示全部分组。连续失败过多的账号会被跳过；全组不可用时
 // 回退到失败最少的那个，保证不会硬阻塞请求。分组不存在时返回 nil，
 // 由调用方给出“该分组没有账号”的明确错误。
+//
+// 调度分两轮：第一轮只考虑「额度未知或额度 > 0」的账号。上游按机器发放
+// 每日免费额度，池里常有 balance=0 的账号（免费额度已耗尽），先打过去只会
+// 被上游拒一次再换号；第二轮才在去重后的全集里选，保证不会硬阻塞。
 func (s *Store) NextAccountGroup(group string) *deepai.Account {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -310,29 +318,67 @@ func (s *Store) NextAccountGroup(group string) *deepai.Account {
 		return nil
 	}
 	group = strings.TrimSpace(group)
-	match := func(a *deepai.Account) bool {
-		if group == "" {
-			return true
+	eligible := func(a *deepai.Account) bool {
+		if !a.Enabled {
+			return false
 		}
-		return strings.EqualFold(a.GroupName(), group)
+		return group == "" || strings.EqualFold(a.GroupName(), group)
 	}
+
+	if acct := s.pickLocked(eligible, true); acct != nil {
+		return acct
+	}
+	return s.pickLocked(eligible, false)
+}
+
+// pickLocked 在 eligible 里按轮询选一个账号（调用方持锁）。
+//
+// needQuota 为 true 时跳过已知额度为 0 的账号。
+func (s *Store) pickLocked(eligible func(*deepai.Account) bool, needQuota bool) *deepai.Account {
+	n := len(s.st.Accounts)
 	var best *deepai.Account
+	bestIdx := -1
 	for i := 0; i < n; i++ {
 		idx := (s.rotate + i) % n
 		a := s.st.Accounts[idx]
-		if !a.Enabled || !match(a) {
+		if !eligible(a) {
+			continue
+		}
+		if needQuota && !hasQuota(a) {
 			continue
 		}
 		if best == nil || a.Failures < best.Failures {
 			best = a
+			bestIdx = idx
 		}
 		if a.Failures == 0 {
 			s.rotate = (idx + 1) % n
 			return a
 		}
 	}
-	s.rotate = (s.rotate + 1) % n
+	if bestIdx >= 0 {
+		s.rotate = (bestIdx + 1) % n
+	}
 	return best
+}
+
+// hasQuota 报告账号是否可能还有可用额度。
+//
+// 保守为准：只有「探测过、启用、且余额能解析为 0」的账号才算耗尽，
+// 其余（未探测 / 解析不了 / 已付费）都当作可能可用。
+func hasQuota(a *deepai.Account) bool {
+	if a == nil || a.Theos == nil || !a.Theos.Enabled {
+		return true
+	}
+	bal := strings.TrimSpace(a.Theos.Balance)
+	if bal == "" {
+		return true
+	}
+	v, err := strconv.ParseFloat(bal, 64)
+	if err != nil {
+		return true
+	}
+	return v > 0
 }
 
 // MarkAccountResult 记录一次账号调用结果。

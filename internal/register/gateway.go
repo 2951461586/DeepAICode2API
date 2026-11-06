@@ -46,6 +46,7 @@ func (e *HTTPEnroller) Enroll(ctx context.Context, rec *Record) (string, error) 
 		"group":          rec.Group,
 		"proxy":          rec.Proxy,
 		"fingerprint":    rec.Fingerprint,
+		"machine_id":     rec.MachineID,
 		"theos_balance":  rec.TheosBalance,
 		"theos_granted":  rec.TheosGranted,
 	}

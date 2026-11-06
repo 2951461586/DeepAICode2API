@@ -175,8 +175,15 @@ func (c *Client) SignInURL(state string, port int) string {
 // commonHeaders 写入所有上游请求的公共头。
 func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 	req.Header.Set("X-DeepAI-Code-Theos", LaneVersion)
-	if c.Machine != "" {
-		req.Header.Set(HeaderMachine, c.Machine)
+	// 机器指纹优先取账号级：上游按它发放每日免费额度，共用会互相抵消。
+	machine := c.Machine
+	if acct != nil && acct.MachineID != "" {
+		if fp := MachineFingerprint(acct.MachineID); fp != "" {
+			machine = fp
+		}
+	}
+	if machine != "" {
+		req.Header.Set(HeaderMachine, machine)
 	}
 	req.Header.Set("Accept", "application/json")
 	if c.UserAgent != "" {

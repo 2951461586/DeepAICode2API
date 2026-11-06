@@ -448,3 +448,70 @@ func TestConcurrentAccessIsRaceFree(t *testing.T) {
 		t.Fatalf("并发后 Save: %v", err)
 	}
 }
+
+func TestNextAccountPrefersAccountsWithQuota(t *testing.T) {
+	// 上游按机器发每日额度，池里常有 balance=0 的账号；
+	// 有额度的账号应被优先选中，避免每次都先被上游拒一次。
+	st := newStore(t)
+	empty := addAccount(t, st, "sk-empty", "")
+	full := addAccount(t, st, "sk-full", "")
+	st.SetAccountAllowance(empty.ID, &deepai.Allowance{Enabled: true, Balance: "0.00000"}, nil)
+	st.SetAccountAllowance(full.ID, &deepai.Allowance{Enabled: true, Balance: "2.50000"}, nil)
+
+	for i := 0; i < 10; i++ {
+		got := st.NextAccountGroup("")
+		if got == nil || got.ID != full.ID {
+			t.Fatalf("应优先选择有额度的账号，实际 %#v", got)
+		}
+	}
+}
+
+func TestNextAccountFallsBackToZeroQuota(t *testing.T) {
+	// 全组都是 0 额度时不能返回 nil，否则请求直接失败。
+	st := newStore(t)
+	a := addAccount(t, st, "sk-a", "")
+	b := addAccount(t, st, "sk-b", "")
+	st.SetAccountAllowance(a.ID, &deepai.Allowance{Enabled: true, Balance: "0"}, nil)
+	st.SetAccountAllowance(b.ID, &deepai.Allowance{Enabled: true, Balance: "0.0"}, nil)
+
+	if got := st.NextAccountGroup(""); got == nil {
+		t.Fatal("全组 0 额度时应回退，而不是返回 nil")
+	}
+}
+
+func TestNextAccountUnknownQuotaIsUsable(t *testing.T) {
+	// 未探测 / 解析不了 / 免费额度关闭，都不能算“没额度”。
+	cases := []*deepai.Allowance{
+		nil,
+		{Enabled: true, Balance: "abc"},
+		{Enabled: true, Balance: ""},
+		{Enabled: false, Balance: "0"},
+	}
+	for _, al := range cases {
+		st := newStore(t)
+		a := addAccount(t, st, "sk-1", "")
+		st.SetAccountAllowance(a.ID, al, nil)
+		if got := st.NextAccountGroup(""); got == nil || got.ID != a.ID {
+			t.Fatalf("额度状态 %#v 不应导致账号被跳过", al)
+		}
+	}
+}
+
+func TestUpsertPreservesMachineID(t *testing.T) {
+	st := newStore(t)
+	a := addAccount(t, st, "sk-1", "")
+	a.MachineID = "machine-keep"
+
+	// 重新导入（例如桌面端刷新了 Key）不应清掉机器指纹，
+	// 否则该账号在上游的额度归属会断掉。
+	st.UpsertAccount(&deepai.Account{APIKey: "sk-1", Name: "n"})
+	if got := st.Account(a.ID); got.MachineID != "machine-keep" {
+		t.Fatalf("机器指纹被清空: %q", got.MachineID)
+	}
+
+	// 新值非空时应可以覆盖。
+	st.UpsertAccount(&deepai.Account{APIKey: "sk-1", MachineID: "machine-new"})
+	if got := st.Account(a.ID); got.MachineID != "machine-new" {
+		t.Fatalf("新指纹未生效: %q", got.MachineID)
+	}
+}

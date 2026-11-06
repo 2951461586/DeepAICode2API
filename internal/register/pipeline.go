@@ -81,11 +81,11 @@ func New(opts Options) *Pipeline {
 
 // RunOne 执行一个账号的完整链路。
 func (p *Pipeline) RunOne(ctx context.Context, email, password string) *Record {
-	return p.runOne(ctx, email, password, "", "")
+	return p.runOne(ctx, email, password, "", "", "")
 }
 
-// runOne 允许补跑时复用历史代理与指纹。
-func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, fpID string) *Record {
+// runOne 允许补跑时复用历史代理、指纹与机器指纹。
+func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, fpID, machineID string) *Record {
 	rec := NewRecord(email)
 	rec.Group = p.effectiveGroup()
 	rec.Source = "register"
@@ -135,6 +135,14 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 		fp = Fingerprint{ID: "off", UserAgent: p.opts.Config.UserAgent, AcceptLanguage: "en-US,en;q=0.9", Language: p.opts.Config.Language}
 	}
 	rec.Fingerprint = fp.ID
+
+	// 机器指纹：上游按 X-DeepAI-Code-Machine 每天发一次免费额度，
+	// 所以必须一号一个；补跑时复用历史值，否则额度会重新“抽奖”。
+	rec.MachineID = strings.TrimSpace(machineID)
+	if rec.MachineID == "" {
+		rec.MachineID = deepai.NewMachineUUID()
+	}
+
 	web := NewWebClientWithFingerprint(p.opts.Config, fp, proxy)
 
 	// 2) 预检：邮箱是否已存在（失败不阻断注册）
@@ -283,7 +291,7 @@ func (p *Pipeline) validate(ctx context.Context, rec *Record, up *deepai.Client)
 	vctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	acct := &deepai.Account{APIKey: rec.APIKey, Proxy: rec.Proxy}
+	acct := &deepai.Account{APIKey: rec.APIKey, Proxy: rec.Proxy, MachineID: rec.MachineID}
 	al, err := up.Theos(vctx, acct)
 	if err != nil {
 		return fmt.Errorf("Theos 验活失败: %w", err)
@@ -383,7 +391,7 @@ func (p *Pipeline) RunRecords(ctx context.Context, records []*Record, concurrenc
 				if old.APIKey != "" && strings.TrimSpace(old.Password) == "" {
 					rec = p.resumeWithKey(ctx, old)
 				} else {
-					rec = p.runOne(ctx, old.Email, old.Password, old.Proxy, old.Fingerprint)
+					rec = p.runOne(ctx, old.Email, old.Password, old.Proxy, old.Fingerprint, old.MachineID)
 					rec = Merge(old, rec)
 					_ = p.opts.Ledger.Append(rec)
 					p.notify(rec)
@@ -417,6 +425,10 @@ func (p *Pipeline) resumeWithKey(ctx context.Context, old *Record) *Record {
 	t := time.Now()
 	fp := FingerprintByID(rec.Fingerprint)
 	up := deepai.NewClientWithFingerprint(rec.Proxy, fp.UserAgent)
+	// 历史台账里的记录可能没有机器指纹（改动之前生成的），补一个。
+	if strings.TrimSpace(rec.MachineID) == "" {
+		rec.MachineID = deepai.NewMachineUUID()
+	}
 	if err := p.validate(ctx, &rec, up); err != nil {
 		rec.Mark("validate", "failed", time.Since(t))
 		rec.Error = err.Error()

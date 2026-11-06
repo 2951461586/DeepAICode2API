@@ -151,6 +151,7 @@ func AccountFromRegistration(r Registration) (*Account, error) {
 	acct.Group = normalizeGroup(r.Group)
 	acct.Proxy = strings.TrimSpace(r.Proxy)
 	acct.Fingerprint = strings.TrimSpace(r.Fingerprint)
+	acct.MachineID = strings.TrimSpace(r.MachineID)
 	acct.Source = r.Source
 	if acct.Source == "" {
 		acct.Source = "register"

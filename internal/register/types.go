@@ -71,8 +71,11 @@ type Record struct {
 	Proxy           string `json:"proxy,omitempty"`
 	ProxyLabel      string `json:"proxy_label,omitempty"`
 	Fingerprint     string `json:"fingerprint,omitempty"`
-	Group           string `json:"group,omitempty"`
-	Source          string `json:"source,omitempty"`
+	// MachineID 是该账号专用的机器指纹（原始 UUID）。
+	// 上游按它发放每日免费额度，必须一号一个。
+	MachineID string `json:"machine_id,omitempty"`
+	Group     string `json:"group,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 // NewRecord 构造一条记录。
