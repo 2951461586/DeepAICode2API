@@ -135,19 +135,19 @@ func TestQueryLogsFilters(t *testing.T) {
 	st.Record(LogEntry{Time: 200, Endpoint: "chat", Status: 502, Err: "upstream boom"}, 0)
 	st.Record(LogEntry{Time: 300, Endpoint: "audio", Status: 200, Model: "whisper"}, 0)
 
-	if got := st.QueryLogs(LogFilter{Endpoint: "chat"}); len(got) != 2 {
+	if got := st.QueryLogs(QueryFilter{Endpoint: "chat"}); len(got) != 2 {
 		t.Fatalf("endpoint 过滤: got %d", len(got))
 	}
-	if got := st.QueryLogs(LogFilter{MinStatus: 400}); len(got) != 1 || got[0].Status != 502 {
+	if got := st.QueryLogs(QueryFilter{MinStatus: 400}); len(got) != 1 || got[0].Status != 502 {
 		t.Fatalf("状态码过滤: %#v", got)
 	}
-	if got := st.QueryLogs(LogFilter{Keyword: "boom"}); len(got) != 1 {
+	if got := st.QueryLogs(QueryFilter{Keyword: "boom"}); len(got) != 1 {
 		t.Fatalf("关键词过滤: %#v", got)
 	}
-	if got := st.QueryLogs(LogFilter{Since: 250}); len(got) != 1 || got[0].Time != 300 {
+	if got := st.QueryLogs(QueryFilter{Since: 250}); len(got) != 1 || got[0].Time != 300 {
 		t.Fatalf("since 过滤: %#v", got)
 	}
-	if got := st.QueryLogs(LogFilter{Limit: 1}); len(got) != 1 {
+	if got := st.QueryLogs(QueryFilter{Limit: 1}); len(got) != 1 {
 		t.Fatalf("limit 未生效: %d", len(got))
 	}
 }

@@ -87,12 +87,12 @@ func (s *Server) handleAdminAccountsPage(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// logFilterFromQuery 把查询参数解析成 store.LogFilter。
+// logFilterFromQuery 把查询参数解析成 store.QueryFilter。
 //
 // 支持：limit / since / endpoint / account / min_status / q。
-func logFilterFromQuery(r *http.Request) store.LogFilter {
+func logFilterFromQuery(r *http.Request) store.QueryFilter {
 	q := r.URL.Query()
-	f := store.LogFilter{
+	f := store.QueryFilter{
 		Endpoint: strings.TrimSpace(q.Get("endpoint")),
 		Account:  strings.TrimSpace(q.Get("account")),
 		Keyword:  strings.TrimSpace(q.Get("q")),

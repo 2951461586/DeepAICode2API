@@ -109,7 +109,7 @@ type Store struct {
 	// statsPath / logsPath 是由主路径派生的旁路文件。
 	statsPath string
 	logsPath  string
-	logs      *logFile
+	logs      *logStore
 
 	// masterKey 非空时状态文件整体加密（AES-256-GCM）。
 	masterKey []byte
@@ -223,7 +223,7 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 		s.statsDirty = true
 	}
 
-	logs, err := openLogFile(logsPath, key, s.st.Settings.LogKeep)
+	logs, err := openLogStore(logsPath, key, s.st.Settings.LogKeep)
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +296,7 @@ func (s *Store) Path() string { return s.path }
 // 分三部分，各自有独立的“未变化”判定：
 //  1. 主文件（账号/密钥/设置/模型）：内容未变则跳过；
 //  2. 统计旁路文件：仅在有新请求时写，只有几百字节；
-//  3. 日志：交给 logFile 的缓冲落盘。
+//  3. 日志：交给 logStore 的缓冲落盘。
 //
 // 日志与统计从主文件里拆出去后，这里才真正会「内容未变」。
 func (s *Store) Save() error {
@@ -844,7 +844,7 @@ func (s *Store) Record(e LogEntry, outChars int) {
 //
 // 走文件扫描（最多读尾部 4MB），所以能回溯超过内存环形缓冲的历史；
 // 文件不可读时退回内存环形缓冲。limit<=0 时默认 200。
-func (s *Store) QueryLogs(f LogFilter) []LogEntry {
+func (s *Store) QueryLogs(f QueryFilter) []LogEntry {
 	if f.Limit <= 0 {
 		f.Limit = 200
 	}
