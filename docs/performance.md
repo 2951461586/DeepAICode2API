@@ -358,8 +358,12 @@ POST https://api.deepai.org/daily-time-sync/registration/ → 504 Gateway Timeou
 `Incomplete response received from application`）。因此必须限流（当前：全局 2 并发，
 退避 2s/10s/60s），并且**不要把它放进关键路径**（P0-4 已经移出）。
 
-补齐能力：`register -reverify -group <分组>`，从收件箱重取链接 → 限流点击 →
-回填 `email_verified`。`stress-50i` 实测 50/50 补齐。
+补齐能力：`register -reverify [-group <分组>]`，从收件箱重取链接 → 限流点击 →
+回填 `email_verified`。`stress-50i` / `stress-50j` / `stress-50k` 均实测补齐到 100%。
+
+**边界**：临时邮箱里的验证邮件只保留很短时间。批次结束几分钟内补还行，
+几小时后收件箱已空 —— 第七批 39 个未验证账号事后补验证全部超时（25s 内无邮件）。
+所以正确做法是**批次内完成验证**（限流就是为此），而不是事后补救。
 
 ## 12. 批次稳定性观察（第 6–8 批）
 
@@ -369,6 +373,7 @@ POST https://api.deepai.org/daily-time-sync/registration/ → 504 Gateway Timeou
 | 7 | 10 | 82s | 50/50 | 11.7s | 19.1s | 修复后基线 |
 | 8 | 10 | 228s | 50/50 | **11.9s** | 89.2s | 上游整体变慢（verify 端点故障） |
 | 9 | 10 | 126s | 50/50 | **8.9s** | 13.4s | 验证限流后，验证/额度均 50/50 |
+| 10 | 10 | 124s | 50/50 | **10.3s** | 13.8s | 配置未变，稳定复现 |
 
 结论：
 

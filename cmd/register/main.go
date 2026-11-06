@@ -86,7 +86,9 @@ func main() {
 	if *backend != "" {
 		cfg.MailBackend = *backend
 	}
-	if *group == "" {
+	// 注册链路默认落到配置分组；-reverify 不带 -group 时表示「全部账号」，
+	// 不能被 DEEPAI_REGISTER_GROUP 的默认值挡住。
+	if *group == "" && !*reverify {
 		*group = cfg.DefaultGroup
 	}
 	if *timeout > 0 {
