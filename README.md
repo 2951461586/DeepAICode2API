@@ -77,7 +77,8 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 
 ## 二、支持的模型
 
-模型目录**完全由上游下发**（14 个），网关只做缓存与别名。默认免费模型：
+模型目录**完全由上游下发**（当前 14 个，下表是 2026-11-06 的快照），
+网关只做缓存与别名，上游新增模型无需改代码。默认免费模型：
 
 | ID | 名称 | 上下文 | 最大输出 | 说明 |
 | --- | --- | ---: | ---: | --- |
@@ -161,11 +162,11 @@ export ANTHROPIC_MODEL=glm-5.3-flash
 ## 四、快速开始
 
 ```bash
-# 1) 编译
-go build -o deepaicode2api.exe .
+# 1) 编译（产物在 bin/；也可直接 go build -o deepaicode2api.exe .）
+make build
 
 # 2) 直接启动（会自动导入桌面端凭据 + 拉取模型目录）
-./deepaicode2api.exe
+./bin/deepaicode2api
 
 # 3) 打开控制台
 #    http://127.0.0.1:10087/
@@ -176,9 +177,12 @@ go build -o register.exe ./cmd/register
 ./register.exe -doctor          # 检查邮箱后端 / 网关 / 机器指纹
 ./register.exe -count 1         # 注册 1 个账号 → 验证 → 验活 → 入池
 ./register.exe -count 3 -concurrency 2 -group batch-a
-./register.exe -check-proxies   # 检查代理池 → 上游连通性
-./register.exe -resume          # 补跑台账里未入池的账号
+./bin/register -check-proxies   # 检查代理池 → 上游连通性
+./bin/register -resume          # 补跑台账里未入池的账号
 ```
+
+> 首次部署建议先设置 `DEEPAI2API_MASTER_KEY`（`openssl rand -hex 32`）：
+> 状态文件里是上游 API Key 与账号密码，Windows 上 `0600` 不设 ACL。
 
 启动日志示例：
 
@@ -519,8 +523,15 @@ internal/server/            HTTP 路由、协议转换、控制台
   └─ web/index.html         单页控制台
 ```
 
-设计上刻意对齐参考项目 **Doubao2API**：同样的 store / registry / server 分层，
-同样的账号池与失败换号语义，同样的控制台交互与安全策略。
+分层原则：
+
+- **`deepai`** 只关心上游协议（路径、请求头、错误语义、SSE），不知道号池存在；
+- **`store`** 只负责状态与调度（持久化、分组、失败换号、配额判定），不发网络请求；
+- **`server`** 只做协议转换与鉴权，账号选择一律通过 `Store`；
+- **`register`** 是独立的客户端：它通过管理接口入池，不直接改状态文件。
+
+这样上游协议变动只影响 `deepai`，调度策略变动只影响 `store`，
+测试可以分别对着假上游和临时状态文件跑。
 
 ---
 
@@ -578,6 +589,17 @@ docker run -d --name deepaicode2api \
 另：`/v1/chat/completions` 的 `reasoning_content` 是网关补的兼容字段，
 上游原生只有 `reasoning`；已存在时不会被覆盖。
 
-## 十一、License
+## 十一、文档索引
+
+| 文件 | 内容 |
+| --- | --- |
+| `README.md` | 总览、接口、参数、压测与已知坑（本文） |
+| `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） |
+| `docs/changes.md` | 2026-11 的安全 / 正确性改造记录：根因、决策与验收 |
+| `docs/optimization-plan.md` | 首轮扫描的完整优化方案（已全部实施，保留作为设计依据） |
+| `.env.example` | 全部可配置项与说明 |
+| `Makefile` | `make build / test / test-race / lint / cover` |
+
+## 十二、License
 
 MIT。本项目仅复刻本机已登录客户端的调用链路，请遵守 DeepAI 的服务条款。

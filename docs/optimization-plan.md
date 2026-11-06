@@ -1,4 +1,9 @@
-# 优化方案
+# 优化方案（施工前计划）
+
+> **状态：已全部实施。** 本文是施工前的计划原文，保留作为设计依据与验收标准；
+> 实际的根因、决策与验证记录见 [`changes.md`](changes.md)，当前行为以 README 为准。
+> 文中出现的行号 / 文件名是当时的快照（例如 `store/seal.go` 后来更名为
+> `store/state_seal.go`），不作为现状参考。
 
 针对首轮代码扫描暴露的 6 类问题，按优先级给出可落地的改造方案。
 每条都标注了**涉及的现有文件/行**、**根因**与**验收标准**，可直接拆成 issue。
@@ -16,6 +21,9 @@
 | P2-1 | 推理侧指纹与注册侧一致 | ✅ 已实施 | `Account` 增 UA / Accept-Language / sec-ch-ua / platform |
 | P2-2 | 仓库与构建卫生 | ✅ 已实施 | Makefile / LICENSE / docs/recon.md |
 | P2-3 | 其他可改进点 | ✅ 已实施 | Save 跳过无变化写盘、action 常量、错误体截断、README 已知坑 |
+| 计划外 | 非流式请求显式 `stream=false` | ✅ 已修复 | `fix(chat)`：上游缺省 `stream` 时默认返回 SSE |
+| 计划外 | 入池 0 额度延迟复探 | ✅ 已修复 | `fix(enroll)`：3/6/12 分钟退避 + 15 分钟陈旧判定 |
+| 计划外 | Windows `go test -race` 链接失败 | ✅ 已修复 | `scripts/race-shim.sh` 补 `ld.exe` |
 
 ---
 
@@ -28,8 +36,8 @@
 | 上游 API Key | `deepaicode2api-data.json` | `0o600`（`store.go:154`） | 明文；Windows 上 `os.WriteFile` 的 mode 位**基本无效**，同机任意用户可读 |
 | 网页账号密码 | 同上 `Account.Password` | 同上 | 明文，且 `/admin/api/state` 会回传给控制台 |
 | 代理账密 | `.env` `PROXY_POOL` | 默认 | 明文 |
-| 注册台账 | `exports/register-ledger.jsonl`（`ledger.go:41`） | `0o600` | 明文密码 + API Key，append-only 永不过期 |
-| 交付物 | `result/{keys,apikeys}.txt`、`success.jsonl`（`deliver.go:71-77`） | `0o600` | 明文 API Key |
+| 注册台账 | `exports/register-ledger.jsonl`（`ledger.go` 的 `appendLine`） | `0o600` | 明文密码 + API Key，append-only 永不过期 |
+| 交付物 | `result/{keys,apikeys}.txt`、`success.jsonl`（`deliver.go`） | `0o600` | 明文 API Key |
 
 `.gitignore` 已排除以上全部路径（本次已校验），**泄露风险不在 git，而在磁盘与备份**。
 
@@ -37,7 +45,7 @@
 
 #### A. 状态文件加密封装（约 90 行，stdlib only）
 
-新增 `internal/store/seal.go`：
+新增 `internal/store/state_seal.go`（原 `seal.go`）：
 
 ```go
 // 文件格式 v2：{"v":2,"alg":"aes-256-gcm","nonce":"b64","ct":"b64"}
