@@ -1,10 +1,23 @@
 # DeepAICode2API
 
+[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 把本机 **DeepAI Code 桌面端**的上游模型服务，逆向复刻成一个
 **OpenAI / Anthropic 双协议兼容的 Go 网关**。
 
 复用桌面端登录后写入的 API Key，无需另申请密钥；纯 Go 标准库实现，
 单文件约 10 MB，零外部依赖。
+
+| 能力 | 说明 |
+| --- | --- |
+| 双协议 | OpenAI `/v1/chat/completions`、`/v1/responses`；Anthropic `/v1/messages` |
+| 号池治理 | 分组轮询、失败换号、容量退避、按账号配额调度 |
+| 账号注册 | 邮箱注册 → 登录 → 取 Key → 验活 → 入池，CF 临时邮箱 + 代理池 |
+| 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 注册 / 设置 |
+| 安全 | 密钥鉴权、管理口令、同源写保护、状态文件 AES-256-GCM 可选加密 |
+| 可回归 | 3.8k 行测试，`go test -race` + CI 覆盖 5 个包 |
 
 ```text
 ┌──────────────┐  /v1/chat/completions   ┌────────────────┐   Api-Key + Theos 头   ┌─────────────────────────────┐
@@ -188,8 +201,8 @@ go build -o register.exe ./cmd/register
 
 ```text
 状态文件: …/deepaicode2api-data.json
-机器指纹: 8751f711d837…（用于上游按天发放免费 Theos）
-已导入账号 epsoft-…（~/.deepai-code/userdata/secrets/deepai-account.bin）
+机器指纹: a1b2c3d4e5f6…（用于上游按天发放免费 Theos）
+已导入账号 desktop-…（~/.deepai-code/userdata/secrets/deepai-account.bin）
 模型目录已更新：14 个模型，默认 glm-5.3-flash
 DeepAICode2API dev 已启动: http://127.0.0.1:10087/
 ```
@@ -317,7 +330,7 @@ go run ./cmd/probe -key <api-key>         # 直接验证某个 Key
 ./register.exe -email a@b.com -password '...'   # 复用已有邮箱（count=1）
 ./register.exe -resume                     # 补跑台账里未入池的账号
 ./register.exe -no-enroll                  # 只注册/验活，不写号池
-./register.exe -mail-backend static -domain liziai.cloud  # 无收件箱，跳过验证
+./register.exe -mail-backend static -domain example.com   # 无收件箱，跳过验证
 ```
 
 常用参数：`-gateway`、`-admin-password`、`-ledger`、`-result-dir`、
@@ -411,7 +424,7 @@ curl -s -X POST http://127.0.0.1:10087/admin/api/accounts \
 | 配额刷新 | — | `refresh_at=2026-11-07T04:03:03Z`（次日 UTC 04:03） |
 | 连续 8 次真实推理 | — | **8/8 HTTP 200**，落在 **8 个不同账号** |
 
-唯一 `balance=0` 的是桌面端导入的 `epsoft-*`（`source=desktop`，单独在
+唯一 `balance=0` 的是桌面端导入的账号（`source=desktop`，单独在
 `default` 分组）——它当天在原机器指纹下的额度已被先前使用消耗。
 
 这说明此前的 `granted=0` 不是上游策略收紧，就是**共用机器指纹**导致的：
@@ -458,7 +471,7 @@ curl -s -X POST http://127.0.0.1:10087/admin/api/accounts \
 复探日志示例：
 
 ```
-[quota] oai-a255742f967b4fa7 复探拿到额度: balance=200.00000 granted=200.00000
+[quota] oai-1a2b3c4d5e6f7890 复探拿到额度: balance=200.00000 granted=200.00000
 ```
 
 ### 6.12 安全与合规
