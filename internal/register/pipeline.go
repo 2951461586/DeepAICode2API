@@ -375,7 +375,7 @@ func (p *Pipeline) applyVerify(ctx context.Context, rec *Record, web *WebClient,
 		rec.Mark("verify", "warning", out.waited)
 		p.logf("[%s] 等待验证邮件失败：%v", rec.Email, out.err)
 	default:
-		if err := web.VerifyEmail(ctx, out.link); err != nil {
+		if err := verifyEmailThrottled(ctx, web, out.link); err != nil {
 			rec.Mark("verify", "warning", out.waited+time.Since(vt))
 			p.logf("[%s] 验证链接访问失败：%v", rec.Email, err)
 			return false

@@ -249,6 +249,30 @@ func (c *WebClient) do(ctx context.Context, method, path, contentType string, bo
 	return 0, nil, lastErr
 }
 
+// verifyLinkAllowed 只放行「本客户端 Origin 下 /verify_email 路径」的链接。
+//
+// 历史上这里硬编码 api.deepai.org；改成跟随 c.Origin 后，指向自建/测试后端的
+// 客户端也能验证，同时仍然挡住被当成开放代请求器的情况（路径与域名双重限制）。
+func (c *WebClient) verifyLinkAllowed(link string) bool {
+	u, err := url.Parse(link)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return false
+	}
+	if !strings.HasPrefix(u.Path, "/verify_email") {
+		return false
+	}
+	allowed := "api.deepai.org"
+	if c.Origin != "" {
+		if o, err := url.Parse(c.Origin); err == nil && o.Host != "" {
+			allowed = o.Host
+		}
+	}
+	return strings.EqualFold(u.Host, allowed)
+}
+
 // UserExists 查询邮箱是否已注册。
 func (c *WebClient) UserExists(ctx context.Context, email string) (bool, error) {
 	st, raw, err := c.postForm(ctx, "/get_user_login_type", map[string]string{"email": email})
@@ -355,11 +379,11 @@ func (c *WebClient) FetchUser(ctx context.Context) (*WebUser, error) {
 // VerifyEmail 访问验证链接。
 func (c *WebClient) VerifyEmail(ctx context.Context, link string) error {
 	link = strings.TrimSpace(link)
-	if !strings.HasPrefix(link, "https://api.deepai.org/verify_email") &&
-		!strings.HasPrefix(link, "http://api.deepai.org/verify_email") {
+	if !c.verifyLinkAllowed(link) {
 		return errors.New("验证链接域名不合法")
 	}
-	st, raw, err := c.do(ctx, http.MethodGet, link, "", nil, 3)
+	// 单次尝试：重试与退避统一由 verifyEmailThrottled 负责（限并发 + 长退避）。
+	st, raw, err := c.do(ctx, http.MethodGet, link, "", nil, 1)
 	if err != nil {
 		return err
 	}

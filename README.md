@@ -191,6 +191,7 @@ go build -o register.exe ./cmd/register
 ./register.exe -count 1         # 注册 1 个账号 → 验证 → 验活 → 入池
 ./register.exe -count 3 -concurrency 2 -group batch-a
 ./bin/register -check-proxies   # 检查代理池 → 上游连通性
+./bin/register -reverify -group <分组>  # 给未验证账号补点验证链接（限流）
 ./bin/register -resume          # 补跑台账里未入池的账号
 ```
 
@@ -387,7 +388,8 @@ issue 或发给别人排查。凭据单独落在 `*-credentials.jsonl`（`0600`�
   `host:port`，不泄露代理凭据；
 - 指纹库内置 6 套自洽的 `User-Agent` / `Sec-CH-UA` / 平台 / `Accept-Language`，
   按邮箱稳定分配（同一账号补跑得到同一套请求头）；
-- CLI：`-check-proxies`、`-proxy-pool`、`-proxy-file`、`-proxy`、`-no-fingerprint`；
+- CLI：`-check-proxies`、`-proxy-pool`、`-proxy-file`、`-proxy`、`-no-fingerprint`、
+  `-reverify`（补点验证链接，见 §6.20）；
 - 控制台「注册」页可直接粘贴代理池并关闭指纹库。
 
 ### 6.9 机器指纹（为什么每号一个）
@@ -470,7 +472,7 @@ curl -s -X POST http://127.0.0.1:10087/admin/api/accounts \
 
 复探日志示例：
 
-```
+```text
 [quota] oai-1a2b3c4d5e6f7890 复探拿到额度: balance=200.00000 granted=200.00000
 ```
 
@@ -670,6 +672,39 @@ grace 等待的独立验证（5 号小批，并发 5）：`等待 5 个后台邮
 （直连与走代理各一次）仍然是 curl code 28（20s 无响应），说明**上游该端点当时
 在故障**。代码侧无需改动：`VerifyEmail` 已有 3 次重试，且验证不在关键路径上，
 额度也不依赖它（本批 47/50 当场拿到 200，随后补齐）。
+
+### 6.19.1 验证点击限流（修复第八批 0/50）
+
+HAR 实测（`deepai.org-2.har`，2026-11-06 17:07 本地）：
+
+```text
+GET https://api.deepai.org/verify_email?key=…  →  200 text/html
+timings: wait 13.2s + ssl/connect 0.37s + receive 0.33s = 13.9s
+```
+
+**端点可用，但每次要占上游 Passenger worker 约 13 秒。** 第八批 10 个后台
+goroutine 同时点，把 worker 池打满，于是出现 `502 Incomplete response received
+from application` / `unexpected EOF` / 60s 超时 —— 0/50 是**自己把上游打限流了**，
+不是端点坏了（同时段的浏览器注册 `201 / 4.8s` 完全正常）。
+
+改动：
+
+- 验证点击加**全局并发闸门 2**（`verifyClickSlots`），退避等待期间不占名额；
+- 重试序列改为 **2s / 10s / 60s**（原来只有 `do()` 的 700ms/1400ms，对 13s 级
+  的重端点没意义），4xx 不重试；
+- `VerifyEmail` 改为单次尝试，重试统一由外层负责，避免嵌套；
+- 链接校验从「硬编码 api.deepai.org」改为「跟随客户端 Origin + `/verify_email`
+  路径」，既支持自建后端，也不会被当成开放代请求器；
+- 新增 `register -reverify -group <分组>`：从 CF 收件箱重新取链接 → 限流点击 →
+  回填 `email_verified`。
+
+实测补齐 `stress-50i`（50 个账号，2 并发）：
+
+| 轮次 | 成功 | 失败 | 耗时 |
+| --- | ---: | ---: | ---: |
+| 第一轮 | **49 / 50** | 1（上游 500，瞬时） | 8m04s |
+| 第二轮（重试失败项） | **1 / 1** | 0 | <1m |
+| **合计** | **50 / 50** | 0 | — |
 
 ### 6.20 安全与合规
 

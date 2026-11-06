@@ -63,6 +63,7 @@ func main() {
 		interval      = flag.Duration("interval", 0, "收信轮询间隔（默认 1s）")
 		delay         = flag.Duration("delay", 0, "两次注册之间的最小间隔（默认 800ms）")
 		verifyGrace   = flag.Duration("verify-grace", 60*time.Second, "批次结束后等待后台邮箱验证的时间（0 表示不等）")
+		reverify      = flag.Bool("reverify", false, "为号池里未验证的账号重新收信并点击验证链接（配合 -group）")
 		showVer       = flag.Bool("version", false, "打印版本后退出")
 	)
 	flag.Parse()
@@ -157,6 +158,11 @@ func main() {
 
 	if *doctor {
 		printDoctor(cfg, pool)
+		return
+	}
+
+	if *reverify {
+		runReverify(cfg, *group, *concurrency)
 		return
 	}
 
@@ -312,6 +318,69 @@ func main() {
 	if summary.WithKey == 0 {
 		os.Exit(1)
 	}
+}
+
+// runReverify 为号池里「拿到过验证链接但没点成功」的账号补验证。
+//
+// 上游 /verify_email 单次服务端耗时约 13s（见 HAR 实测），并发点会把
+// Passenger worker 打满并触发 502，所以这里默认 2 并发放到全局闸门里。
+func runReverify(cfg *register.Config, group string, workers int) {
+	ctx := context.Background()
+	backend := cfg.AutoBackend()
+	if missing := cfg.Validate(backend); len(missing) > 0 {
+		fatalf("邮箱后端 %s 缺少配置：%s", backend, strings.Join(missing, ", "))
+	}
+	provider, err := register.NewProvider(cfg, backend, cfg.DefaultDomain, "")
+	if err != nil {
+		fatalf("初始化邮箱后端失败: %v", err)
+	}
+	if _, ok := provider.(register.InboxProvider); !ok {
+		fatalf("后端 %s 没有收件箱，无法补验证", backend)
+	}
+
+	enroller := register.NewHTTPEnroller(cfg.Gateway, cfg.AdminPassword)
+	targets, err := enroller.PendingVerification(ctx, group)
+	if err != nil {
+		fatalf("读取号池失败: %v", err)
+	}
+	if len(targets) == 0 {
+		fmt.Printf("分组 %q 下没有待补验证的账号。\n", orAll(group))
+		return
+	}
+	if workers < 1 {
+		workers = 2
+	}
+	if workers > 4 {
+		workers = 4 // 再高只会把上游 worker 打满
+	}
+	fmt.Printf("待补验证 %d 个账号（分组 %s，并发 %d）…\n", len(targets), orAll(group), workers)
+
+	ok := 0
+	failed := 0
+	results := register.Reverify(ctx, register.ReverifyOptions{
+		Config:   cfg,
+		Provider: provider,
+		Marker:   enroller,
+		Workers:  workers,
+		WaitFor:  25 * time.Second,
+		Log:      func(f string, a ...any) { fmt.Printf(f+"\n", a...) },
+	}, targets)
+	for _, r := range results {
+		if r.OK {
+			ok++
+			continue
+		}
+		failed++
+		fmt.Printf("  ✗ %s：%s\n", r.Email, r.Err)
+	}
+	fmt.Printf("\n补验证完成：成功 %d，失败 %d，共 %d\n", ok, failed, len(results))
+}
+
+func orAll(group string) string {
+	if strings.TrimSpace(group) == "" {
+		return "全部"
+	}
+	return group
 }
 
 func printDoctor(cfg *register.Config, pool *register.ProxyPool) {

@@ -338,7 +338,30 @@ POST https://api.deepai.org/daily-time-sync/registration/ → 504 Gateway Timeou
   —— 用`email_verified` 的比例做告警即可提前发现；
 - 后台验证需要幂等：同号重复点链接无副作用，回填按邮箱去重。
 
-## 11. 批次稳定性观察（第 6–8 批）
+## 11. 验证点击的上游成本（HAR 实测）
+
+`deepai.org-2.har`（17:07 本地，浏览器手动验证一次）给出端点画像：
+
+| 指标 | 值 |
+| --- | --- |
+| 请求 | `GET https://api.deepai.org/verify_email?key=<uuid>` |
+| 响应 | `200 text/html`，server `nginx + Phusion Passenger` |
+| `wait`（服务端处理） | **13.2 s** |
+| ssl/connect / receive | 0.37 s / 0.33 s |
+| 合计 | **13.9 s** |
+
+同文件里 `/daily-time-sync/user/` 的字段只有
+`pk / username / email / userprofile.api_key / userprofile2.plan / …`，
+**没有 email-verified 字段** —— 上游不提供可轮询的验证状态。
+
+结论：这个端点「能用但很贵」，并发点必然触发 Passenger worker 超时（502
+`Incomplete response received from application`）。因此必须限流（当前：全局 2 并发，
+退避 2s/10s/60s），并且**不要把它放进关键路径**（P0-4 已经移出）。
+
+补齐能力：`register -reverify -group <分组>`，从收件箱重取链接 → 限流点击 →
+回填 `email_verified`。`stress-50i` 实测 50/50 补齐。
+
+## 12. 批次稳定性观察（第 6–8 批）
 
 | 批次 | 并发 | 墙钟 | 入池 | E2E 中位 | p90 | 备注 |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |

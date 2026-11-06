@@ -127,6 +127,60 @@ func (e *HTTPEnroller) MarkVerified(ctx context.Context, accountID, email string
 	return nil
 }
 
+// PendingVerification 从网关号池里筛出「还没标记为已验证」的账号。
+//
+// group 为空表示全部；只取有邮箱的账号（手工 Key 没有邮箱，无从补验证）。
+func (e *HTTPEnroller) PendingVerification(ctx context.Context, group string) ([]VerifyTarget, error) {
+	if e == nil || e.BaseURL == "" {
+		return nil, fmt.Errorf("未配置 2API 网关地址")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.BaseURL+"/admin/api/state", nil)
+	if err != nil {
+		return nil, err
+	}
+	if e.AdminPassword != "" {
+		req.Header.Set("X-Admin-Password", e.AdminPassword)
+	}
+	resp, err := e.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("连接 2API 网关失败: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("读取号池失败 HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))
+	}
+	var out struct {
+		Accounts []struct {
+			Email         string `json:"email"`
+			Group         string `json:"group"`
+			Proxy         string `json:"proxy"`
+			Fingerprint   string `json:"fingerprint"`
+			EmailVerified bool   `json:"email_verified"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("号池响应解析失败: %w", err)
+	}
+	want := strings.TrimSpace(group)
+	targets := make([]VerifyTarget, 0, len(out.Accounts))
+	for _, a := range out.Accounts {
+		if a.Email == "" || a.EmailVerified {
+			continue
+		}
+		if want != "" && !strings.EqualFold(a.Group, want) {
+			continue
+		}
+		targets = append(targets, VerifyTarget{
+			Email:       a.Email,
+			Group:       a.Group,
+			Proxy:       a.Proxy,
+			Fingerprint: a.Fingerprint,
+		})
+	}
+	return targets, nil
+}
+
 // Health 检查网关是否可达（doctor 用）。
 func (e *HTTPEnroller) Health(ctx context.Context) error {
 	if e == nil || e.BaseURL == "" {
