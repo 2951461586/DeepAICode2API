@@ -1,6 +1,7 @@
 package server
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -69,5 +70,80 @@ func TestConsoleDefaultPageSize(t *testing.T) {
 	}
 	if strings.Contains(block, `value="200"`) {
 		t.Error("分页选择框不应有 200 选项")
+	}
+}
+
+// 脚本引用的每个 DOM id 都必须在标记里存在。
+//
+// 这是最容易静默回归的一类改动：改标记时漏一个 id，控制台不报错，
+// 只是某个功能永远不生效（按钮点了没反应、渲染函数写进 null）。
+func TestConsoleScriptIDsExist(t *testing.T) {
+	html := string(consoleHTML)
+	defined := map[string]bool{}
+	for _, m := range regexp.MustCompile(`id="([A-Za-z0-9_-]+)"`).FindAllStringSubmatch(html, -1) {
+		defined[m[1]] = true
+	}
+
+	idx := strings.Index(html, "<script>")
+	if idx < 0 {
+		t.Fatal("找不到 <script>")
+	}
+	script := html[idx:]
+
+	refs := map[string]bool{}
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`\$\("#([A-Za-z0-9_-]+)"\)`),
+		regexp.MustCompile(`getElementById\("([A-Za-z0-9_-]+)"\)`),
+		regexp.MustCompile(`querySelector\("#([A-Za-z0-9_-]+)"\)`),
+	} {
+		for _, m := range re.FindAllStringSubmatch(script, -1) {
+			refs[m[1]] = true
+		}
+	}
+	if len(refs) < 30 {
+		t.Fatalf("只解析到 %d 个 id 引用，正则可能已失效", len(refs))
+	}
+	for id := range refs {
+		if !defined[id] {
+			t.Errorf("脚本引用了不存在的 id：%s", id)
+		}
+	}
+}
+
+// 每个 data-tab 必须有对应的 #tab-xxx 面板，且 <section> 数量与之相等。
+//
+// 脚本用 querySelectorAll("section") 切页：多出来的 <section>（比如把卡片
+// 写成 section）会被当成标签页，切页时被摘掉 .on 而一起隐藏。
+func TestConsoleTabsHavePanels(t *testing.T) {
+	html := string(consoleHTML)
+	tabs := regexp.MustCompile(`data-tab="([A-Za-z0-9_-]+)"`).FindAllStringSubmatch(html, -1)
+	if len(tabs) == 0 {
+		t.Fatal("没有导航按钮")
+	}
+	for _, m := range tabs {
+		if !strings.Contains(html, `id="tab-`+m[1]+`"`) {
+			t.Errorf("导航按钮 %s 缺少对应面板", m[1])
+		}
+	}
+	if got := strings.Count(html, "<section"); got != len(tabs) {
+		t.Errorf("<section> 数量 %d 与导航按钮 %d 不一致", got, len(tabs))
+	}
+}
+
+// 外壳布局与响应式收列的关键钩子。
+func TestConsoleShellHooks(t *testing.T) {
+	html := string(consoleHTML)
+	for name, needle := range map[string]string{
+		"侧边栏":      `class="sidebar"`,
+		"移动端开关":    `id="navToggle"`,
+		"抽屉遮罩":     `id="scrim"`,
+		"开关只在窄屏出现": `button.icon-btn.only-mobile{display:none}`,
+		"账号表收列":    `#acctTable`,
+		"日志表收列":    `#logTable`,
+		"深链接":      `location.hash`,
+	} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("外壳缺少%s：%s", name, needle)
+		}
 	}
 }

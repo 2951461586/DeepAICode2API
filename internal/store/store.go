@@ -119,6 +119,16 @@ type Store struct {
 	lastSaved []byte
 	// statsDirty 标记统计数据有变化（单独小文件，每次请求都会变）。
 	statsDirty bool
+
+	// saveMu 串行化落盘。
+	//
+	// Save 会被多个 goroutine 调用：后台 30s 周期保存、每个管理操作，
+	// 以及批量入池后「每账号一个」的配额复探 goroutine。没有它时（实测）：
+	//   - 两个 Save 共用 <path>.tmp，互相截断，rename 后可能落下坏文件；
+	//     Windows 上更直接：报「文件被另一个进程占用」而失败；
+	//   - 先到者的 rename 晚到者覆盖，磁盘可能比内存旧；
+	//   - lastSaved 底层数组读写竞争（-race 可复现）。
+	saveMu sync.Mutex
 }
 
 // DefaultSettings 返回默认设置。
@@ -300,6 +310,9 @@ func (s *Store) Path() string { return s.path }
 //
 // 日志与统计从主文件里拆出去后，这里才真正会「内容未变」。
 func (s *Store) Save() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
 	s.mu.RLock()
 	plain, err := json.MarshalIndent(s.st, "", "  ")
 	key := s.masterKey
@@ -344,7 +357,7 @@ func (s *Store) Save() error {
 	return logs.Flush()
 }
 
-// writeAtomicSealed 以 tmp + rename 原子写入，必要时整体加密。
+// writeAtomicSealed 以「唯一临时文件 + fsync + rename」原子写入，必要时整体加密。
 func writeAtomicSealed(path string, plain, key []byte) error {
 	raw := plain
 	if len(key) > 0 {
@@ -354,11 +367,29 @@ func writeAtomicSealed(path string, plain, key []byte) error {
 		}
 		raw = sealed
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	// 临时文件名必须唯一：早期实现固定用 <path>.tmp，两个写入方
+	// （并发 Save，或误起的第二个网关实例）会互相截断。
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }() // rename 成功后是 no-op
+
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		return err
+	}
+	// 先 fsync 再 rename：否则掉电可能留下「名字已换、内容为空」的文件。
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
