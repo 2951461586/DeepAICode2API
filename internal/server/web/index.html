@@ -671,7 +671,12 @@
     "配额刷新完成：":"Quota refresh done: ",
     "请在右上角填写管理密码":"Enter the admin password at top right",
     "登录成功：":"Signed in: ", "运行中…":"Running…",
-    "🌙 深色":"🌙 Dark", "☀️ 浅色":"☀️ Light"
+    "🌙 深色":"🌙 Dark", "☀️ 浅色":"☀️ Light",
+    // KPI 标签
+    "总请求":"Total requests", "失败请求":"Failed requests", "输出字符":"Output chars",
+    "Token 入 / 出":"Tokens in / out", "上游成本":"Upstream cost",
+    "账号（就绪/总）":"Accounts (ready/total)", "启动时间":"Started at",
+    "更新于 {t} · 默认模型 {m}":"Updated {t} · default {m}"
   };
 
   var lang = "zh";
@@ -997,7 +1002,8 @@
       box.appendChild(c);
     });
 
-    $("#modelsMeta").textContent = "更新于 " + fmtTime(d.models_updated) + " · 默认模型 " + (d.default_model || "-");
+    $("#modelsMeta").textContent = t("更新于 {t} · 默认模型 {m}",
+      {t: fmtTime(d.models_updated), m: d.default_model || "-"});
     var tb = $("#models");
     tb.textContent = "";
     var models = sortCopy(d.models || [], sortState.models, {
@@ -1017,7 +1023,7 @@
       var price = (m.theosPerRequest === undefined || m.theosPerRequest === null) ? "—" : m.theosPerRequest;
       var free = !m.premier && (price === "—" || String(price) === "0");
       var input = (m.input || []).join(" + ");
-      if (m.reasoning) input = input ? input + " · 推理" : "推理";
+      if (m.reasoning) input = input ? input + " · " + t("推理") : t("推理");
       tb.appendChild(row([
         cell(m.id, "mono"),
         cell(m.name || m.id),
@@ -1029,7 +1035,7 @@
         cell(input, "muted")
       ]));
     });
-    translateDom(tb);
+    translateDom($("#tab-overview"));
   }
 
   // accounts 分页由服务端完成：这里只渲染当前页。
@@ -1185,6 +1191,7 @@
       renderKeys(d);
       renderSettings(d.settings || {});
       loadHealth();
+      translateDom(document.body);
     }).catch(function(e){
       toast(t("加载失败：") + e.message + (e.status === 401 ? "\n" + t("请在右上角填写管理密码") : ""), "err");
     });

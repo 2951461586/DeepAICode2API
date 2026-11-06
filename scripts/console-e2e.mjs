@@ -122,9 +122,12 @@ const requests = [];
   await navigate(ws, BASE + "/?lang=en#accounts");
   const enNav = await evaluate(ws, `document.querySelector('nav.nav button[data-tab=overview]').textContent.trim()`);
   const enTh = await evaluate(ws, `document.querySelector('#acctTable th[data-sort=account]').textContent.trim()`);
-  console.log("  en nav:", enNav, "| en th:", enTh);
+  const enKpi = await evaluate(ws, `document.querySelector("#kpis .k").textContent.trim()`);
+  console.log("  en nav:", enNav, "| en th:", enTh, "| en kpi:", enKpi);
   if (enNav !== "Overview") problems.push("英文导航未生效: " + enNav);
   if (enTh !== "Account") problems.push("英文表头未生效: " + enTh);
+  // KPI 标签是 JS 渲染出来的，最容易漏翻（静态检查看不出来）。
+  if (enKpi !== "Total requests") problems.push("英文 KPI 标签未翻译: " + enKpi);
   await shot(ws, "cdp-accounts-en");
 
   // 英文概览
