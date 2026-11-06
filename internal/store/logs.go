@@ -71,7 +71,7 @@ func (l *logStore) append(e LogEntry, keep int) error {
 		return err
 	}
 	if len(l.key) > 0 {
-		sealed, err := seal(l.key, raw)
+		sealed, err := sealLine(l.key, raw)
 		if err != nil {
 			return err
 		}

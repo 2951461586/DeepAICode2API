@@ -675,7 +675,7 @@
     // KPI 标签
     "总请求":"Total requests", "失败请求":"Failed requests", "输出字符":"Output chars",
     "Token 入 / 出":"Tokens in / out", "上游成本":"Upstream cost",
-    "账号（就绪/总）":"Accounts (ready/total)", "启动时间":"Started at",
+    "账号（就绪/总）":"Accounts (ready/total)", "统计自":"Stats since",
     "更新于 {t} · 默认模型 {m}":"Updated {t} · default {m}"
   };
 
@@ -991,7 +991,7 @@
       ["上游成本", fmtCost(s.total_cost)],
       ["账号（就绪/总）", ready + " / " + totalAccts],
       ["密钥", (d.keys||[]).length],
-      ["启动时间", fmtTime(s.started_at)]
+      ["统计自", fmtTime(s.reset_at || s.started_at)]
     ];
     var box = $("#kpis");
     box.textContent = "";
@@ -1228,16 +1228,35 @@
       .then(function(){ toast("操作成功","ok"); return refresh(); })
       .catch(function(e){ toast("失败：" + e.message, "err"); });
   }
+  // 分批探测：单批上限由服务端控制（653 号全量一次要 11 分钟）。
+  // 探过的账号 checked_at 会推到现在，下一批自然取到没探过的，不会重复烧额度。
   function checkin(id){
+    if (id) {
+      toast("正在查询上游配额…");
+      return api("/admin/api/checkin", {method:"POST", body:{id:id}}).then(function(r){
+        return finishCheckin(r.probed || 0, r.results || []);
+      }).catch(function(e){ toast("查询失败：" + e.message, "err"); });
+    }
     toast("正在查询上游配额…");
-    return api("/admin/api/checkin", {method:"POST", body: id ? {id:id} : {}}).then(function(r){
-      var results = r.results || [];
-      var bad = results.filter(function(x){ return !x.ok; });
-      toast("配额刷新完成：" + results.length + " 个账号，失败 " + bad.length +
-        (bad.length ? "\n" + bad.map(function(x){ return x.name + ": " + x.err; }).join("\n") : ""),
-        bad.length ? "err" : "ok");
-      return refresh();
-    }).catch(function(e){ toast("查询失败：" + e.message, "err"); });
+    var done = 0, bad = [], rounds = 0;
+    function step(){
+      rounds++;
+      return api("/admin/api/checkin", {method:"POST", body:{limit:100}}).then(function(r){
+        done += r.probed || 0;
+        bad = bad.concat((r.results || []).filter(function(x){ return !x.ok; }));
+        // remaining 归零或到了轮数上限就停；上限防上游全挂时无限循环。
+        if (r.remaining > 0 && rounds < 30) return step();
+        return finishCheckin(done, bad);
+      });
+    }
+    return step().catch(function(e){ toast("查询失败：" + e.message, "err"); });
+  }
+
+  function finishCheckin(done, bad){
+    toast("配额刷新完成：" + done + " 个账号，失败 " + bad.length +
+      (bad.length ? "\n" + bad.slice(0, 5).map(function(x){ return x.name + ": " + x.err; }).join("\n") : ""),
+      bad.length ? "err" : "ok");
+    return refresh();
   }
 
   // --- events ---

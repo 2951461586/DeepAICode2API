@@ -34,6 +34,20 @@ type Server struct {
 
 	// quotaReprobeDelays 是入池后 0 额度的复探退避序列（测试可注入短值）。
 	quotaReprobeDelays []time.Duration
+
+	// probing 是配额探测的在途去重表（按账号 ID）。
+	//
+	// 三条路径会同时探同一批账号：手动 checkin、入池后延迟复探、
+	// 推理时的按需复探。没有它时同一个号会被连打多次，既浪费额度
+	// 也容易触发上游风控。
+	probeMu sync.Mutex
+	probing map[string]struct{}
+
+	// probeSem 是全局在途探测上限（手动批次 / 后台守护 / 按需复探共用）。
+	//
+	// 653 个号的额度快照会同时变旧；若按需复探不加限制，一波流量就能
+	// 叠出几十上百个并行的 /theos 请求——那是最容易被上游风控的形态。
+	probeSem chan struct{}
 }
 
 // New 构造服务。
@@ -42,6 +56,8 @@ func New(st *store.Store) *Server {
 		Store: st, Up: deepai.NewClient(), Login: newLoginSessions(),
 		Registers: newRegisterJobs(), proxyClients: map[string]*deepai.Client{},
 		inflight:           map[string]int{},
+		probing:            map[string]struct{}{},
+		probeSem:           make(chan struct{}, probeWorkers),
 		quotaReprobeDelays: quotaReprobeDelays,
 	}
 }
@@ -125,10 +141,20 @@ func (s *Server) RefreshModels(ctx context.Context) ([]deepai.Model, error) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	accts := s.Store.Accounts()
 	ok := 0
+	fresh, due := 0, 0
+	now := time.Now()
 	for _, a := range accts {
 		// 尚未探测过的账号按“可用”计，避免刚导入时健康度显示为 0。
 		if a.Enabled && a.Status != "error" {
 			ok++
+		}
+		// 额度时效：fresh = 15 分钟内探过；due = 后台守护会去重探的。
+		if a.Theos != nil && a.Theos.CheckedAt > 0 &&
+			now.Sub(time.Unix(a.Theos.CheckedAt, 0)) < quotaStaleAfter {
+			fresh++
+		}
+		if quotaNeedsRefresh(a, now, quotaGuardStaleAfter) {
+			due++
 		}
 	}
 	models := s.catalog()
@@ -136,6 +162,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":        "ok",
 		"accounts":      len(accts),
 		"ready":         ok,
+		"quota_fresh":   fresh,
+		"quota_due":     due,
 		"models":        len(models),
 		"default_model": s.Store.DefaultModel(),
 		"machine_id":    shortMachine(s.Store.MachineID()),

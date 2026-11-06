@@ -425,3 +425,189 @@ node scripts/console-e2e.mjs http://127.0.0.1:10087 bin/shots
 23:49:49 DeepAICode2API dev 已启动: http://127.0.0.1:10087/
 23:49:52 模型目录已更新：14 个模型，默认 glm-5.3-flash
 ```
+
+---
+
+## 15. R3：状态文件真正加密 + 写放大回归（依据扫描报告 §6）
+
+### 15.1 根因：`.env` 只有注册 CLI 加载
+
+`main()` 只读 `os.Getenv`，而 `.env` 的加载逻辑埋在
+`internal/register/config.go` 并由 `LoadConfig()` 惰性触发；首次调用发生在
+`handleAdminRegister`，远晚于 `store.Open()`。于是写进 `.env` 的
+`DEEPAI2API_MASTER_KEY` 对网关主进程**永远无效**，状态文件只能保持明文。
+
+- 抽出 `internal/envfile`（`Load` / `LoadFiles`），网关与注册 CLI 共用；
+- `main()` 第一行调用 `envfile.Load()`，早于 flag 默认值求值（`envOr`）与 `store.Open`；
+- 启动日志打印主密钥指纹（sha256 前 8 位），磁盘仍是明文时明确提示下一步。
+
+### 15.2 `-seal`：封存存量明文（含历史日志）
+
+启用加密只影响"之后写入"的数据：主文件会在下一次 `Save` 自动重写为 v2，
+但请求日志是 append-only 的，历史明文行不会消失（`decodeLine` 兼容混合格式，
+读取时也不报错）。新增 `Store.Reseal()` 与 `-seal [-yes]`：重写主文件/统计、
+逐行重新封存 `-logs.jsonl` 与 `.1`、每个文件校验"不再含明文"、失败即报错。
+
+**顺带修掉一个真实缺陷**：`seal()` 用 `json.MarshalIndent` 产出多行信封，
+而日志是逐行 JSONL —— 代码注释写"一行一个 seal 信封"，实际写入会把一条记录
+拆成多行，`decodeLine` 按行切分永远解析不出来，表现为「开启加密后日志一重启
+就消失」。现在日志走 `sealLine()`（紧凑单行信封），并新增
+`TestEncryptedLogsSurviveReopen` 守住这个行为。
+
+### 15.3 写放大：653 号把 R2 的问题带回来了
+
+`MarkAccountResult` 每个请求都刷新 `LastUsed`（秒级），内容必变 →
+`Save` 的「未变化跳过」失效 → 后台 30s 一次 `MarshalIndent` + fsync 约 950KB
+（持续流量下约 115MB/h）。号池从 21 涨到 653 后，R2 拆日志省下的写放大被抵消。
+
+- 落盘快照把 `LastUsed` 向下取整到 5 分钟（内存仍秒级）；
+- `json.MarshalIndent` 移出读锁（此前 1MB 序列化期间顶住请求路径的写锁）；
+- 新增 `SaveCounters()`（写盘次数 / 明文字节数），供压测直接观测，不靠估算。
+
+### 15.4 统计语义与脏标志竞态
+
+扫描时看到 `stats.total_requests=0` 而日志有 500 条：`stats.started_at`
+（20:02:44）晚于最后一条日志（19:37:57），是 20:02 执行过"重置统计"，
+日志按设计保留 —— 不是 bug，但界面没有可解释的字段。
+
+- `Stats` 增 `reset_at`，`ClearStats` 保留 `started_at` 并记录重置时间；
+  控制台 KPI 由"启动时间"改为"统计自"（优先 `reset_at`）。
+- 修掉 `Save` 的脏标志窗口：写盘后改为「快照仍等于当前统计才清脏」，
+  避免快照与落盘之间插入的 `Record` 只在内存里。
+
+### 15.5 验证
+
+```text
+go build ./...                 OK
+go vet ./...                   OK
+gofmt -l .                     无输出
+go test ./...                  9 个包全部通过
+go test -race -count=1 ./...   9 个包全部通过
+```
+
+`-seal` 冒烟（临时目录，明文状态 + 明文日志，密钥写在 `.env`）：
+
+```text
+状态文件加密: 已启用（AES-256-GCM，密钥指纹 9a2db2e2，来自 DEEPAI2API_MASTER_KEY）
+已封存 3 个文件（账号 1，历史明文日志行 1，原样保留 0）
+  - state.json / state-stats.json / state-logs.jsonl
+```
+
+无密钥启动已加密文件时按预期拒绝：`状态文件已加密，但未设置 DEEPAI2API_MASTER_KEY`。
+
+---
+
+## 16. R3：额度自动复探与 checkin 分批（P1-1）
+
+### 16.1 问题
+
+扫描时全池 653 个账号的 `balance/granted` 都是 `0.00000`，`checked_at` 停在
+04:27–11:55 UTC，而 `refresh_at` 统一是次日 09:58 UTC —— **到点没有任何东西
+去复探**。自动复探只覆盖"新入池账号"（45s/2m/6m 三次），存量账号只能人工点
+「刷新全部配额」：653 号 / 4 并发 × 上游 ~4s ≈ 11 分钟，而且 handler 用的是
+`r.Context()`，浏览器一关页面就中断在半途。
+
+### 16.2 三层复探
+
+| 层 | 触发 | 范围 | 失败处理 |
+| --- | --- | --- | --- |
+| 入池复探 | 入池后 45s / 2m / 6m | 新账号 | 采信成功结果（既有逻辑） |
+| 按需复探 | 推理选中"快照过期"的账号 | 仅用到的号，15min 最多一次 | **不改 Status/Failures** |
+| 后台守护 | 每 5min ≤24 个 | `refresh_at` 已过 / 从未探 / 超 6h | 同上 |
+
+- 按需复探只刷新**已有快照**的账号：从未探测的号不在热点路径上新增上游请求，
+  交给入池复探与后台守护；
+- 后台守护在独立 goroutine：上游挂住时一批最坏几分钟，不能拖住 30s 周期保存；
+- 排序优先级：`refresh_at` 已过 → 从未探测 → 单纯过旧（同级按 checked_at 升序），
+  分批时先探最值得探的。
+
+### 16.3 两个必须的限流
+
+1. **在途去重**（`Server.probing`）：手动 checkin、入池复探、按需复探三路会撞同一批号，
+   没有去重时同一个号会被连打多次。
+2. **全局 4 个探测槽位**（`Server.probeSem`）：653 个号的快照同时过期时，一波流量
+   可能叠出上百个并行 `/theos` —— 那是最容易被上游风控的形态。按需复探拿不到
+   槽位就放弃，留给下一轮；批次探测阻塞等待，总在途数恒 ≤4。
+
+### 16.4 checkin 分批与进度语义
+
+`/admin/api/checkin` 新增 `group` / `stale_only` / `limit`，响应带
+`total` / `probed` / `remaining`：
+
+- `remaining` 定义为「过滤集里仍然过期、且不在本批里」的账号数，而不是
+  `total - probed`：否则每一批都剩同一批在途/失败的号，控制台会无限重试；
+- 探测已改为 `context.WithoutCancel` + 10min 预算：页面关掉也会把这批探完并落盘；
+- 控制台「刷新全部配额」按 `remaining` 自动翻页（≤30 轮），单批 100。
+
+### 16.5 可观测性
+
+- `/health` 增 `quota_fresh`（15min 内探过）与 `quota_due`（守护会去重探）；
+- 账号分页项增 `quota_age`（秒）与 `quota_due`，控制台不必自己复制"多久算陈旧"。
+
+### 16.6 随 PR3 一并处理的落盘写放大
+
+按需复探每分钟可能改几十个账号的 `Theos.CheckedAt`，秒级精度会让「内容未变则
+跳过」再次失效。落盘快照现在把 `Theos.CheckedAt` 与 `LastUsed` 一起量化到 5 分钟
+（内存仍秒级），重启后"最近使用 / 额度探测时间"精度降为 5 分钟。
+
+### 16.7 验证
+
+```text
+go build ./... / go vet ./... / gofmt -l .        OK
+go test ./...                                    9 个包全部通过
+go test -race -count=1 ./...                     9 个包全部通过
+```
+
+新增覆盖（`internal/server/quota_test.go`）：
+
+- `TestQuotaNeedsRefresh`：refresh_at 已过 / 未来 / 从未探测 / 15min 陈旧；
+- `TestCheckinBatchesAndReportsRemaining`：limit=3 探 5 个号，第二批补齐且 `remaining=0`；
+- `TestCheckinFiltersByGroupAndStaleness`：`group` 与 `stale_only` 只打该打的号；
+- `TestProbeBatchDedupesInFlight`：在途时标记 `Skipped`，上游 0 次请求；
+- `TestReprobeStaleOnlyProbesDueAccounts`：后台守护不碰新鲜账号；
+- `TestInferenceRefreshesStaleQuota`：推理命中过期快照会异步补探并写回；
+- `TestProbeAsyncFailureDoesNotMarkAccount`：自动复探失败不改账号状态。
+
+---
+
+## 17. R3：模块拆分与启动摘要（P2）
+
+三个文件超过 750 行后，review 与 AI 导航的成本明显上升（改一个协议分支要在
+700 行里找上下文）。本轮只做**机械搬移**：不改任何函数体、不改调用方、测试文件
+一行没动，用 `goimports` 统一导入。拆分后单文件全部 ≤400 行。
+
+| 原文件 | 行数 | 拆分后 |
+| --- | ---: | --- |
+| `internal/store/store.go` | 1054 | `store.go`(163) + `store_open.go`(380) + `store_accounts.go`(390) + `store_models.go`(72) + `store_keys.go`(109) + `store_telemetry.go`(126) |
+| `internal/server/anthropic.go` | 718 | `anthropic.go`(263) + `anthropic_translate.go`(397) + `anthropic_stream.go`(81) |
+| `internal/server/responses.go` | 780 | `responses.go`(307) + `responses_translate.go`(252) + `responses_stream.go`(244) |
+| `internal/register/pipeline.go` | 759 | `pipeline.go`(368) + `pipeline_verify.go`(181) + `pipeline_batch.go`(251) |
+
+拆分边界按职责而不是按行数切：
+
+- `store`：打开/落盘（含加密封装）与账号、密钥、模型、统计分开；
+- `server`：协议入口（handler）、字段映射（translate）、流式状态机（stream）分开，
+  以后改 Anthropic 字段映射只动 400 行以内的文件；
+- `register`：单账号阶段、验证回填、批量调度分家。
+
+### 启动摘要
+
+启动日志从多行中文提示之外，增加一行可采集的 JSON：
+
+```text
+startup {"accounts":653,"data":"…/deepaicode2api-data.json","default_model":"glm-5.3-flash",
+         "encrypted":true,"event":"startup","keys":1,"listen":"127.0.0.1:10087",
+         "machine_ready":true,"models":14,"ready":649,"version":"dev"}
+```
+
+数据路径、加密状态、号池规模这些排障第一眼要看的东西，现在可以直接
+`grep 'startup ' | jq`，不必再写正则解析中文日志。
+
+### 验证
+
+```text
+gofmt -l . / go vet ./... / go build ./...      OK
+go test -count=1 ./...                          9 个包全部通过
+go test -race -count=1 ./...                    9 个包全部通过
+node --check （控制台两段内联脚本）              语法通过
+```

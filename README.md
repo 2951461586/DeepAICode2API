@@ -160,6 +160,7 @@ export ANTHROPIC_MODEL=glm-5.3-flash
 | POST | `/admin/api/register` | 启动批量注册任务（`count` / `concurrency` / `group` / `mail_backend` / `email` / `password` / `verify`） |
 | GET | `/admin/api/register?id=…` | 查询任务进度与逐账号结果 |
 | POST | `/admin/api/accounts` | `action=enroll`：验活并写入号池 |
+| POST | `/admin/api/checkin` | 配额探测。可选 `id` / `group` / `stale_only` / `limit`；响应带 `total` / `probed` / `remaining`，按批推进 |
 
 ### 控制台
 
@@ -195,8 +196,21 @@ go build -o register.exe ./cmd/register
 ./bin/register -resume          # 补跑台账里未入池的账号
 ```
 
-> 首次部署建议先设置 `DEEPAI2API_MASTER_KEY`（`openssl rand -hex 32`）：
-> 状态文件里是上游 API Key 与账号密码，Windows 上 `0600` 不设 ACL。
+> **`.env` 现在由网关在启动时加载**（此前只有注册 CLI 惰性加载，
+> 写进 `.env` 的 `DEEPAI2API_MASTER_KEY` 对主进程不生效）。
+> 状态文件里是上游 API Key 与账号密码，Windows 上 `0600` 不设 ACL，
+> 因此首次部署就应开启加密。**先停掉正在运行的网关**，再执行：
+
+```bash
+printf 'DEEPAI2API_MASTER_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
+./bin/deepaicode2api -seal -yes   # 把存量明文（含 append-only 历史日志）封存
+./bin/deepaicode2api              # 之后每次保存都自动加密
+```
+
+`-seal` 会打印密钥指纹（sha256 前 8 位）便于核对，并校验每个文件不再含明文；
+**主密钥必须与备份一起保管，丢失后号池不可恢复**。
+只改环境变量而不跑 `-seal` 时，主文件会在下一次保存时自动重写为密文，
+但历史日志行会保持明文（读取端兼容混合格式，不会报错）。
 
 启动日志示例：
 
@@ -247,6 +261,8 @@ print(client.chat.completions.create(
 | `-allow-insecure` | `DEEPAI2API_ALLOW_INSECURE` | `false` | 允许非回环监听但不设管理密码 |
 | `-import` | — | — | 仅导入凭据后退出 |
 | `-no-import` | — | — | 启动时不自动导入 |
+| `-seal` | — | — | 把状态/统计/日志中的存量明文封存为密文后退出（需 `DEEPAI2API_MASTER_KEY`） |
+| `-yes` | — | — | 配合 `-seal` 确认不可逆操作 |
 | `-version` | — | — | 打印版本 |
 
 其他环境变量：
@@ -255,7 +271,7 @@ print(client.chat.completions.create(
 | --- | --- |
 | `DEEPAI_API_KEY` | 直接添加一个上游账号（可选） |
 | `DEEPAI_MACHINE_ID` | 覆盖机器指纹原始 UUID（容器部署必填） |
-| `DEEPAI2API_MASTER_KEY` | 状态文件加密主密钥（64 位 hex / base64，32 字节），留空则明文 |
+| `DEEPAI2API_MASTER_KEY` | 状态文件加密主密钥（64 位 hex / base64，32 字节），留空则明文；写在 `.env` 即可，启动时自动加载 |
 | `DEEPAI_API_ORIGIN` | 覆盖上游地址（自建测试） |
 | `TEMPMAIL_BASE` / `TEMPMAIL_ADMIN_KEY` / `TEMPMAIL_DOMAIN` | CF Temp Email Worker（注册链路收信） |
 | `DEEPAI_REGISTER_DOMAIN` | 静态邮箱域名（无收件箱） |
@@ -412,6 +428,35 @@ curl -s -X POST http://127.0.0.1:10087/admin/api/accounts \
 
 补齐后会自动异步重探配额。调度侧也会优先挑有额度的账号（`hasQuota`），
 已知 `balance=0` 的账号只在全组都没额度时才兜底。
+
+### 6.9.1 额度自动复探
+
+上游按 `refresh_at` 每天发放一次额度。早期只能人工点「刷新全部配额」，
+653 个号一次要 11 分钟，还会因为关掉页面（`r.Context()` 取消）中断一半。
+现在三层自动机制覆盖：
+
+| 层 | 触发 | 范围 | 失败处理 |
+| --- | --- | --- | --- |
+| 入池复探 | 入池后 45s / 2min / 6min | 新账号 | 采信成功结果 |
+| 按需复探 | 推理选中「快照已过期」的账号 | 仅用到的号，每 15min 最多一次 | 不改 `Status` / `Failures`（上游抖一下不该被调度误判） |
+| 后台守护 | 每 5 分钟一批（≤24 个） | `refresh_at` 已过 / 从未探测 / 超 6h 未探 | 同上 |
+
+三条路径共享一张在途去重表与**全局 4 个探测槽位**：653 个号的快照同时过期时，
+不会因为一波流量就叠出上百个并行 `/theos`（那是最容易被风控的形态）。
+拿不到槽位的会在下一轮补上。
+
+`/admin/api/checkin` 改为分批 + 进度语义：
+
+```bash
+# 只探 g2 分组里额度已过时的账号，本批最多 50 个
+curl -s -X POST localhost:10087/admin/api/checkin \
+  -H "X-Admin-Password: $DEEPAI2API_ADMIN_PASSWORD" \
+  -d '{"group":"g2","stale_only":true,"limit":50}'
+# → {"ok":true,"total":120,"probed":50,"remaining":70,"results":[…]}
+```
+
+控制台「刷新全部配额」会按 `remaining` 自动翻页，直到整池都探过；
+`/health` 额外给出 `quota_fresh`（15 分钟内探过）与 `quota_due`（守护会去重探）。
 
 ### 6.10 实测：补齐机器指纹前后的额度对比
 
@@ -802,6 +847,8 @@ from application` / `unexpected EOF` / 60s 超时 —— 0/50 是**自己把上�
 - 配置 `DEEPAI2API_MASTER_KEY` 后状态文件整体 AES-256-GCM 加密，
   磁盘上不再出现明文上游 Key / 账号密码；已加密的文件在缺少或错配主密钥时
   **拒绝启动**，不会静默重置成空状态。
+- `-seal` 会把 append-only 日志里的**历史明文行**一并重新封存（逐行校验、
+  幂等）；只改环境变量不会回填旧日志。
 - 状态文件默认落在 `os.UserConfigDir()`（Windows `%AppData%`、Unix `~/.config`），
   避免落在 Program Files 或共享盘；旧位置已有文件时会继续沿用，不会丢号池。
 
@@ -810,23 +857,38 @@ from application` / `unexpected EOF` / 60s 超时 —— 0/50 是**自己把上�
 ## 八、架构与目录
 
 ```text
-main.go                     启动、导入、后台落盘 / 目录刷新
+main.go                     启动、导入、后台落盘 / 目录刷新 / 额度守护 / 启动摘要
 cmd/probe/                  诊断工具
 internal/deepai/            上游客户端（协议、SSE、机器指纹、凭据导入）
+internal/envfile/           .env 加载（网关与 CLI 共用，启动时生效）
 internal/registry/          模型目录解析与别名
-internal/store/             状态持久化 + 账号池调度
+internal/store/             状态持久化 + 账号池调度（拆分后单文件 ≤400 行）
+  ├─ store_open.go         Open / Save / 落盘快照 / 原子写
+  ├─ store_accounts.go     账号 CRUD / 分页 / 调度入口
+  ├─ store_keys.go         网关密钥
+  ├─ store_models.go       模型目录 / 机器指纹 / 设置
+  ├─ store_telemetry.go    统计与日志查询
+  ├─ reseal.go             -seal：存量明文（含历史日志）封存
+  └─ state_seal.go         AES-256-GCM 信封 / 密钥指纹
 internal/register/          注册链路（stages / runner / ledger / mail backend）
   ├─ web.go                DeepAI 网页注册 / 登录 / Session / 验证
   ├─ mailbox.go            CF Temp Email / static / none
-  ├─ pipeline.go           单账号阶段 + 批量并发 + 重试
+  ├─ pipeline.go           单账号阶段 + 入池
+  ├─ pipeline_verify.go    验证回填 / 延迟复探 / 验活
+  ├─ pipeline_batch.go     批量并发 / 补跑 / 台账归并
   ├─ ledger.go             JSONL 台账（并集合并 / 升级保护）
   ├─ gateway.go            入池 HTTP 客户端
   └─ deliver.go            keys.txt / apikeys.txt / success.jsonl
 cmd/register/               注册链路 CLI（doctor / count / resume）
 internal/server/            HTTP 路由、协议转换、控制台
   ├─ chat.go                OpenAI Chat Completions（透传 + 归一化）
-  ├─ anthropic.go           Anthropic Messages（含 tool_use / thinking）
-  ├─ responses.go           Responses API（透传 / Chat 合成）
+  ├─ anthropic.go           Anthropic Messages 入口
+  ├─ anthropic_translate.go 双向字段映射
+  ├─ anthropic_stream.go    流式内容块管理器
+  ├─ responses.go           Responses API 入口（透传 / Chat 合成）
+  ├─ responses_translate.go Responses ⇄ Chat 字段映射
+  ├─ responses_stream.go    Responses 流事件生成器
+  ├─ probe.go               额度探测（按需 / 守护 / checkin 分批）
   ├─ extensions.go          配额、用量、搜索、语音
   ├─ login.go               浏览器登录（RFC 8252 本机回调）
   └─ web/index.html         单页控制台

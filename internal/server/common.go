@@ -176,6 +176,11 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		if acct == nil {
 			break
 		}
+		// 额度快照过旧时顺手异步刷新：只刷新「已经探过、但结果过期」的账号，
+		// 不在热点路径上给从未探测的号新增上游请求（那些交给入池复探 / 后台守护）。
+		if acct.Theos != nil && quotaNeedsRefresh(acct, time.Now(), quotaStaleAfter) {
+			s.probeAsync(acct)
+		}
 		if !s.acquireAccount(acct.ID) {
 			// 该账号已有足够多请求在跑：换下一个号。
 			lastErr = errAllAccountsBusy()

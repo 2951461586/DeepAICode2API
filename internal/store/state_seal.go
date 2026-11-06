@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -82,8 +83,21 @@ func isEnvelope(raw []byte) bool {
 	return probe.V == sealVersion && probe.Alg != ""
 }
 
-// seal 加密明文状态。
+// seal 加密明文状态（缩进格式，便于人工确认外层结构）。
 func seal(key, plain []byte) ([]byte, error) {
+	return sealWithIndent(key, plain, true)
+}
+
+// sealLine 加密一行日志，产出**单行**信封。
+//
+// 日志是 JSONL：读取端按 \n 切分。seal 的缩进格式会把一条记录拆成多行，
+// 写入后 decodeLine 永远解析不出来（表现为“加密开启后日志重启即丢”）。
+// 因此日志必须走紧凑序列化。
+func sealLine(key, plain []byte) ([]byte, error) {
+	return sealWithIndent(key, plain, false)
+}
+
+func sealWithIndent(key, plain []byte, indent bool) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
@@ -93,12 +107,16 @@ func seal(key, plain []byte) ([]byte, error) {
 		return nil, fmt.Errorf("生成随机数失败: %w", err)
 	}
 	ct := gcm.Seal(nil, nonce, plain, nil)
-	return json.MarshalIndent(sealEnvelope{
+	env := sealEnvelope{
 		V:     sealVersion,
 		Alg:   sealAlg,
 		Nonce: base64.StdEncoding.EncodeToString(nonce),
 		CT:    base64.StdEncoding.EncodeToString(ct),
-	}, "", "  ")
+	}
+	if indent {
+		return json.MarshalIndent(env, "", "  ")
+	}
+	return json.Marshal(env)
 }
 
 // unseal 解密状态文件内容。
@@ -140,6 +158,18 @@ func unseal(key, raw []byte) (plain []byte, encrypted bool, err error) {
 		return nil, true, ErrKeyMismatch
 	}
 	return opened, true, nil
+}
+
+// MasterKeyFingerprint 返回主密钥的短指纹（sha256 前 4 字节，8 位 hex）。
+//
+// 用于启动日志与 -seal 输出：用户可据此确认「这次用的是哪把钥匙」，
+// 又不至于把密钥本身写进日志。未配置主密钥时返回空串。
+func (s *Store) MasterKeyFingerprint() string {
+	if len(s.masterKey) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(s.masterKey)
+	return hex.EncodeToString(sum[:4])
 }
 
 func newGCM(key []byte) (cipher.AEAD, error) {

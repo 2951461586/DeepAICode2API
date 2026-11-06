@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/registry"
@@ -20,6 +21,14 @@ import (
 
 // accountView 是账号下发给控制台的投影（完整 Key 与机器指纹不外泄）。
 func accountView(a *deepai.Account) map[string]any {
+	// 额度时效：控制台不必自己算 checked_at 与当前时间的差，
+	// 否则每个前端都得复制一份“多久算陈旧”的规则。
+	age := int64(0)
+	if a.Theos != nil && a.Theos.CheckedAt > 0 {
+		if d := time.Now().Unix() - a.Theos.CheckedAt; d > 0 {
+			age = d
+		}
+	}
 	return map[string]any{
 		"id": a.ID, "name": a.Name, "source": a.Source,
 		"key": deepai.MaskSecret(a.APIKey), "key_id": a.KeyID(),
@@ -33,6 +42,9 @@ func accountView(a *deepai.Account) map[string]any {
 		"enabled": a.Enabled, "status": a.Status, "note": a.Note,
 		"last_err": a.LastErr, "failures": a.Failures, "last_used": a.LastUsed,
 		"theos": a.Theos,
+		// quota_age 是额度快照的年龄（秒）；quota_due 表示按需复探会去刷新它。
+		"quota_age": age,
+		"quota_due": quotaNeedsRefresh(a, time.Now(), quotaStaleAfter),
 	}
 }
 

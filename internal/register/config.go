@@ -1,12 +1,11 @@
 package register
 
 import (
-	"bufio"
 	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
+
+	"deepaicode2api/internal/envfile"
 )
 
 // 默认值（可在 .env / 环境变量 / 命令行覆盖）。
@@ -49,9 +48,12 @@ type Config struct {
 	DefaultPrefix string
 }
 
-// LoadConfig 读取环境变量，并尝试加载当前目录 / 可执行文件目录的 .env。
+// LoadConfig 读取环境变量，并尝试加载 .env。
+//
+// .env 由 internal/envfile 统一加载（与网关共用同一套路径优先级），
+// 这里只依赖它在读取配置前完成注入。
 func LoadConfig() *Config {
-	loadEnvFiles()
+	envfile.Load()
 
 	cfg := &Config{
 		TempMailBase:     strings.TrimRight(env("TEMPMAIL_BASE"), "/"),
@@ -110,68 +112,6 @@ func (c *Config) Validate(backend string) []string {
 		}
 	}
 	return missing
-}
-
-// loadEnvFiles 按优先级加载 .env；真实环境变量优先。
-// envLoadOnce 保证 .env 只加载一次。
-//
-// loadEnvFiles 通过 os.Setenv 注入变量，是进程级副作用：重复调用不仅浪费 IO，
-// 还会让 deepai.EnvOr / main 里直读 os.Getenv 的地方看到「取决于调用顺序」
-// 的结果。用 Once 固定为「首次调用时加载一次」，顺序依赖就消失了：
-// .env 永远在第一次解析配置前生效，且之后不再变化。
-var envLoadOnce sync.Once
-
-// loadEnvFiles 按优先级加载 .env，仅执行一次。
-//
-// 真实环境变量优先：loadDotEnv 会跳过已存在的键。
-func loadEnvFiles() {
-	envLoadOnce.Do(loadEnvFilesOnce)
-}
-
-func loadEnvFilesOnce() {
-	var paths []string
-	if p := strings.TrimSpace(os.Getenv("DEEPAI2API_ENV_FILE")); p != "" {
-		paths = append(paths, p)
-	}
-	if wd, err := os.Getwd(); err == nil {
-		paths = append(paths, filepath.Join(wd, ".env"))
-	}
-	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exe)
-		paths = append(paths, filepath.Join(dir, ".env"), filepath.Join(dir, "..", ".env"))
-	}
-	for _, p := range paths {
-		loadDotEnv(p)
-	}
-}
-
-func loadDotEnv(path string) {
-	f, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "export ") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		v = strings.Trim(v, `"'`)
-		if k == "" || os.Getenv(k) != "" {
-			continue
-		}
-		_ = os.Setenv(k, v)
-	}
 }
 
 func env(key string) string { return strings.TrimSpace(os.Getenv(key)) }

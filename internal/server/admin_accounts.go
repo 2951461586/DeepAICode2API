@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
-	"deepaicode2api/internal/parallel"
 )
 
 // --- 账号管理接口与配额巡检 ---
@@ -221,51 +220,109 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAdminCheckin 对全部（或指定）账号查询一次 Theos 配额。
+// handleAdminCheckin 对一批账号查询 Theos 配额。
 //
-// 并发度限制为 4：串行探测 20 个账号最坏要 10 分钟，全并发又容易
-// 把探针本身变成上游的风控特征。
+// 可选参数：
+//   - id：只探这个账号；
+//   - group：只探该分组的账号；
+//   - stale_only：只探额度已过时（refresh_at 已过 / 从未探 / 超 15 分钟）的账号；
+//   - limit：本批最多探多少个（默认与上限都是 maxCheckinBatch）。
+//
+// 响应带 total / probed / remaining：653 号的池子全量探测要 11 分钟，
+// 单次请求只做一批，控制台按 remaining 继续下一批（探过的 checked_at 会
+// 推到现在，下一批自然取到没探过的，不会重复烧额度）。
 func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ID string `json:"id"`
+		ID        string `json:"id"`
+		Group     string `json:"group"`
+		Limit     int    `json:"limit"`
+		StaleOnly bool   `json:"stale_only"`
 	}
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
 
-	targets := s.Store.Accounts()
-	if body.ID != "" {
-		targets = nil
+	now := time.Now()
+	var targets []*deepai.Account
+	switch {
+	case strings.TrimSpace(body.ID) != "":
 		if a := s.Store.Account(body.ID); a != nil {
 			targets = append(targets, a)
 		}
+	default:
+		group := strings.TrimSpace(body.Group)
+		for _, a := range s.Store.Accounts() {
+			if group != "" && !strings.EqualFold(a.GroupName(), group) {
+				continue
+			}
+			if body.StaleOnly && !quotaNeedsRefresh(a, now, 0) {
+				continue
+			}
+			targets = append(targets, a)
+		}
+	}
+	total := len(targets)
+
+	// 优先探「额度刚刷新 / 从未探过」的，分批才有意义。
+	sortByQuotaDue(targets, now)
+	limit := body.Limit
+	if limit <= 0 || limit > maxCheckinBatch {
+		limit = maxCheckinBatch
+	}
+	batch := targets
+	if len(batch) > limit {
+		batch = batch[:limit]
 	}
 
-	const workers = 4
-	// 按下标回填，结果顺序与号池顺序一致（旧实现按完成顺序 append，
-	// 控制台列表会随机跳动）。
-	results := make([]map[string]any, len(targets))
-	parallel.For(r.Context(), workers, len(targets), func(ctx context.Context, i int) {
-		a := targets[i]
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		al, err := s.clientFor(a).Theos(ctx, a)
-		s.Store.SetAccountAllowance(a.ID, al, err)
-		note := ""
-		if err != nil {
-			note = err.Error()
+	// 页面关掉也把这批探完：结果会落盘，重新打开就能看到。
+	// 没有 WithoutCancel 时，浏览器一切换标签页（fetch 被 abort）
+	// 就会让半批账号停在旧状态，控制台看起来像“刷新失败”。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	defer cancel()
+	out := s.probeBatch(ctx, batch, 30*time.Second, true)
+
+	results := make([]map[string]any, 0, len(out))
+	settled := make(map[string]bool, len(out))
+	for _, o := range out {
+		if o.Account == nil {
+			continue
 		}
-		results[i] = map[string]any{
-			"id": a.ID, "name": a.Name,
-			"ok": err == nil, "err": note, "theos": al,
+		settled[o.Account.ID] = true
+		item := map[string]any{"id": o.Account.ID, "name": o.Account.Name}
+		switch {
+		case o.Skipped:
+			// 已有探测在跑：既不算失败，也不算这次探过。
+			item["ok"] = true
+			item["skipped"] = true
+			item["note"] = "已有探测在进行"
+		case o.Allowance == nil && o.Err == nil:
+			item["ok"] = false
+			item["err"] = "探测已取消"
+		default:
+			item["ok"] = o.Err == nil
+			item["theos"] = o.Allowance
+			if o.Err != nil {
+				item["err"] = o.Err.Error()
+			}
 		}
+		results = append(results, item)
+	}
+
+	// remaining 是「过滤集里仍然过期、且不在本批里」的账号数，而不是
+	// total - probed：否则每次分批都剩同一批在途/失败的号，控制台会反复重试。
+	remaining := 0
+	for _, a := range targets {
+		if settled[a.ID] {
+			continue
+		}
+		if quotaNeedsRefresh(a, now, 0) {
+			remaining++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"total":     total,
+		"probed":    len(batch),
+		"remaining": remaining,
+		"results":   results,
 	})
-	_ = s.Store.Save()
-
-	// 请求取消时未跑完的槽位为 nil，从响应里去掉，避免下发 null 条目。
-	done := make([]map[string]any, 0, len(results))
-	for _, res := range results {
-		if res != nil {
-			done = append(done, res)
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "results": done})
 }
