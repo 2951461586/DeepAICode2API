@@ -166,24 +166,24 @@ func TestAccountPage(t *testing.T) {
 	}
 	st.UpsertAccount(&deepai.Account{ID: "other", APIKey: "sk-other", Group: "g2", Enabled: true})
 
-	page := st.AccountPage(0, 10, "", "", "")
+	page := st.AccountPage(AccountQuery{Limit: 10})
 	if page.Total != 26 || len(page.Items) != 10 {
 		t.Fatalf("首页: total=%d items=%d", page.Total, len(page.Items))
 	}
-	page = st.AccountPage(20, 10, "", "", "")
+	page = st.AccountPage(AccountQuery{Offset: 20, Limit: 10})
 	if len(page.Items) != 6 {
 		t.Fatalf("末页应剩 6，实际 %d", len(page.Items))
 	}
-	page = st.AccountPage(0, 10, "g2", "", "")
+	page = st.AccountPage(AccountQuery{Limit: 10, Group: "g2"})
 	if page.Total != 1 {
 		t.Fatalf("分组过滤: %d", page.Total)
 	}
-	page = st.AccountPage(0, 10, "", "", "u3@")
+	page = st.AccountPage(AccountQuery{Limit: 10, Query: "u3@"})
 	if page.Total != 1 {
 		t.Fatalf("关键词过滤: %d", page.Total)
 	}
 	// 越界 offset 不应 panic，返回空页。
-	page = st.AccountPage(999, 10, "", "", "")
+	page = st.AccountPage(AccountQuery{Offset: 999, Limit: 10})
 	if len(page.Items) != 0 || page.Total != 26 {
 		t.Fatalf("越界: items=%d total=%d", len(page.Items), page.Total)
 	}
@@ -201,5 +201,62 @@ func TestLogsTrimmedToKeep(t *testing.T) {
 	}
 	if got := st.Stats().TotalRequests; got != 10 {
 		t.Fatalf("统计不应被裁剪，实际 %d", got)
+	}
+}
+
+// 排序必须由服务端做：分页切片前后都要有序，且相等值按 ID 兜底，
+// 否则同一批数据在翻页时会重复或漏条。
+func TestAccountPageSorting(t *testing.T) {
+	st := newStore(t)
+	quota := []string{"5", "0", "9", ""}
+	for i := 0; i < 4; i++ {
+		a := &deepai.Account{
+			ID: "id" + strconv.Itoa(i), APIKey: "sk-" + strconv.Itoa(i),
+			Email: "u" + strconv.Itoa(i) + "@x.com", Group: "g1", Enabled: true,
+			Failures: i,
+		}
+		if quota[i] != "" {
+			a.Theos = &deepai.Allowance{Enabled: true, Balance: quota[i]}
+		}
+		st.UpsertAccount(a)
+	}
+
+	// theos 升序：未知(-1) 在最前，然后 0、5、9。
+	page := st.AccountPage(AccountQuery{Sort: "theos"})
+	got := []string{}
+	for _, a := range page.Items {
+		got = append(got, a.ID)
+	}
+	want := []string{"id3", "id1", "id0", "id2"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("theos 升序 = %v，期望 %v", got, want)
+		}
+	}
+
+	// failures 降序。
+	page = st.AccountPage(AccountQuery{Sort: "failures", Desc: true})
+	if page.Items[0].ID != "id3" {
+		t.Fatalf("failures 降序首条应为 id3，实际 %s", page.Items[0].ID)
+	}
+
+	// 分页稳定：逐页取回拼起来必须等于一次性取回。
+	all := st.AccountPage(AccountQuery{Sort: "account"})
+	var paged []string
+	for off := 0; off < all.Total; off += 2 {
+		p := st.AccountPage(AccountQuery{Offset: off, Limit: 2, Sort: "account"})
+		for _, a := range p.Items {
+			paged = append(paged, a.ID)
+		}
+	}
+	for i, a := range all.Items {
+		if paged[i] != a.ID {
+			t.Fatalf("分页结果不一致：全量 %v，分页 %v", all.Items, paged)
+		}
+	}
+
+	// 未知排序字段不应改变结果，也不应 panic。
+	if p := st.AccountPage(AccountQuery{Sort: "nope"}); p.Total != 4 {
+		t.Fatalf("未知排序字段：total=%d", p.Total)
 	}
 }

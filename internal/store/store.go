@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -470,13 +472,33 @@ func (s *Store) AccountCounts() (total, ready int) {
 	return len(s.st.Accounts), ready
 }
 
-// AccountPage 按分组/状态/关键词过滤后分页返回账号快照。
+// AccountQuery 描述一次账号列表查询。
+type AccountQuery struct {
+	Offset int
+	Limit  int
+	Group  string
+	Status string
+	Query  string
+	// Sort 取 account / group / source / plan / theos / status / failures / last_used；
+	// 空串表示保持号池原顺序。
+	Sort string
+	// Desc 为 true 时降序。
+	Desc bool
+}
+
+// AccountPage 按条件过滤、排序后分页返回账号快照。
 //
 // 控制台一屏只渲染几十行，而全量账号快照动辄几百 KB；
 // 分页把传输量从 O(全部账号) 降到 O(单页)。
 //
+// 排序必须在这里做而不是前端：列表是服务端分页的，只排当前页会得到
+// 错误结果（第 2 页的第一条可能比第 1 页的最后一条还小）。
+// 相等值统一按 ID 兜底，保证翻页时条目不会在页之间跳动。
+//
 // offset<0 视为 0；limit<=0 用默认 50；limit>200 封顶 200。
-func (s *Store) AccountPage(offset, limit int, group, status, query string) AccountPage {
+func (s *Store) AccountPage(q AccountQuery) AccountPage {
+	offset := q.Offset
+	limit := q.Limit
 	if offset < 0 {
 		offset = 0
 	}
@@ -486,9 +508,9 @@ func (s *Store) AccountPage(offset, limit int, group, status, query string) Acco
 	if limit > 200 {
 		limit = 200
 	}
-	group = strings.TrimSpace(group)
-	status = strings.ToLower(strings.TrimSpace(status))
-	query = strings.ToLower(strings.TrimSpace(query))
+	group := strings.TrimSpace(q.Group)
+	status := strings.ToLower(strings.TrimSpace(q.Status))
+	query := strings.ToLower(strings.TrimSpace(q.Query))
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -507,6 +529,8 @@ func (s *Store) AccountPage(offset, limit int, group, status, query string) Acco
 		matched = append(matched, a)
 	}
 
+	sortAccounts(matched, q.Sort, q.Desc)
+
 	total := len(matched)
 	if offset >= total {
 		return AccountPage{Items: nil, Total: total}
@@ -520,6 +544,105 @@ func (s *Store) AccountPage(offset, limit int, group, status, query string) Acco
 		items = append(items, a.Clone())
 	}
 	return AccountPage{Items: items, Total: total}
+}
+
+// sortAccounts 按指定字段排序；未知字段保持原顺序。
+func sortAccounts(xs []*deepai.Account, key string, desc bool) {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" || len(xs) < 2 {
+		return
+	}
+	cmp, ok := accountComparator(key)
+	if !ok {
+		return
+	}
+	sort.SliceStable(xs, func(i, j int) bool {
+		c := cmp(xs[i], xs[j])
+		if c == 0 {
+			return xs[i].ID < xs[j].ID // 稳定兜底
+		}
+		if desc {
+			return c > 0
+		}
+		return c < 0
+	})
+}
+
+// accountComparator 返回某字段的升序比较函数；未知字段返回 ok=false。
+func accountComparator(key string) (func(a, b *deepai.Account) int, bool) {
+	cmpStr := func(a, b string) int { return strings.Compare(a, b) }
+	cmpInt := func(a, b int64) int {
+		switch {
+		case a < b:
+			return -1
+		case a > b:
+			return 1
+		default:
+			return 0
+		}
+	}
+	switch key {
+	case "account", "name", "email":
+		return func(a, b *deepai.Account) int { return cmpStr(accountLabel(a), accountLabel(b)) }, true
+	case "group":
+		return func(a, b *deepai.Account) int { return cmpStr(a.GroupName(), b.GroupName()) }, true
+	case "source":
+		return func(a, b *deepai.Account) int { return cmpStr(a.Source, b.Source) }, true
+	case "plan":
+		return func(a, b *deepai.Account) int { return cmpStr(accountPlanLabel(a), accountPlanLabel(b)) }, true
+	case "theos":
+		return func(a, b *deepai.Account) int { return cmpInt(quotaValue(a), quotaValue(b)) }, true
+	case "status":
+		return func(a, b *deepai.Account) int { return cmpStr(a.Status, b.Status) }, true
+	case "failures":
+		return func(a, b *deepai.Account) int {
+			return cmpInt(int64(a.Failures), int64(b.Failures))
+		}, true
+	case "last_used":
+		return func(a, b *deepai.Account) int { return cmpInt(a.LastUsed, b.LastUsed) }, true
+	}
+	return nil, false
+}
+
+// accountLabel 是账号的展示名（优先邮箱，其次名称，最后 ID）。
+func accountLabel(a *deepai.Account) string {
+	if a == nil {
+		return ""
+	}
+	switch {
+	case a.Email != "":
+		return a.Email
+	case a.Name != "":
+		return a.Name
+	default:
+		return a.ID
+	}
+}
+
+// accountPlanLabel 是套餐的展示名（与前端一致）。
+func accountPlanLabel(a *deepai.Account) string {
+	if a == nil {
+		return ""
+	}
+	if a.IsPro {
+		return "pro"
+	}
+	if a.Plan != "" {
+		return a.Plan
+	}
+	return "free"
+}
+
+// quotaValue 把 Theos 余额解析成数值；未知/解析不了按 -1（排在最前，升序）。
+func quotaValue(a *deepai.Account) int64 {
+	if a == nil || a.Theos == nil {
+		return -1
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(a.Theos.Balance), 64)
+	if err != nil {
+		return -1
+	}
+	return int64(v * 1000) // 保留 3 位小数，避免浮点在比较里的抖动
 }
 
 // accountMatches 在 ID / 名称 / 邮箱 / 用户名 / 分组 / 代理上做子串匹配。

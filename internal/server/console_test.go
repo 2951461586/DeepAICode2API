@@ -147,3 +147,43 @@ func TestConsoleShellHooks(t *testing.T) {
 		}
 	}
 }
+
+// 抽屉菜单 / 表头排序 / 中英双语的关键钩子。
+//
+// 这三块都是「静默失效」型功能：字典少一条不会报错，只是英文界面里
+// 冒出一句中文；表头没有 wireSort 也不会报错，只是点了没反应。
+func TestConsoleFeatures(t *testing.T) {
+	html := string(consoleHTML)
+
+	for name, needle := range map[string]string{
+		"语言按钮":      `id="lang"`,
+		"英文字典":      `var I18N_EN = {`,
+		"翻译入口":      `function translateDom(`,
+		"语言应用":      `function applyLang(`,
+		"语言深链接":     `[?&]lang=(en|zh)`,
+		"语言持久化":     `deepaicode2api_lang`,
+		"菜单构造":      `function openMenu(`,
+		"账号行菜单":     `function rowMenu(`,
+		"密钥行菜单":     `function keyMenu(`,
+		"菜单关闭":      `function closeMenu(`,
+		"账号表排序：服务端": `wireSort("#acctTable", "accounts"`,
+		"模型表排序":     `wireSort("#modelTable", "models"`,
+		"密钥表排序":     `wireSort("#keyTable", "keys"`,
+		"日志表排序":     `wireSort("#logTable", "logs"`,
+		"排序参数下推":    `"&sort=" + encodeURIComponent(st.key)`,
+	} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("缺少%s：%s", name, needle)
+		}
+	}
+
+	// 每张声明了 data-sort 的表都必须有对应的 wireSort，否则点了没反应。
+	for _, tbl := range []string{"acctTable", "modelTable", "keyTable", "logTable"} {
+		if !strings.Contains(html, `id="`+tbl+`"`) {
+			t.Errorf("表 %s 缺少 id（排序接线依赖它）", tbl)
+		}
+	}
+	if n := strings.Count(html, "data-sort="); n < 20 {
+		t.Errorf("data-sort 表头过少（%d），排序可能没接全", n)
+	}
+}

@@ -74,7 +74,14 @@ func (s *Server) handleAdminAccountsPage(w http.ResponseWriter, r *http.Request)
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
 
-	page := s.Store.AccountPage(offset, limit, q.Get("group"), q.Get("status"), q.Get("q"))
+	sortKey := strings.TrimSpace(q.Get("sort"))
+	desc := strings.EqualFold(q.Get("order"), "desc")
+
+	page := s.Store.AccountPage(store.AccountQuery{
+		Offset: offset, Limit: limit,
+		Group: q.Get("group"), Status: q.Get("status"), Query: q.Get("q"),
+		Sort: sortKey, Desc: desc,
+	})
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, a := range page.Items {
 		items = append(items, accountView(a))
@@ -84,6 +91,8 @@ func (s *Server) handleAdminAccountsPage(w http.ResponseWriter, r *http.Request)
 		"total":  page.Total,
 		"offset": offset,
 		"limit":  limit,
+		"sort":   sortKey,
+		"order":  map[bool]string{true: "desc", false: "asc"}[desc],
 	})
 }
 
