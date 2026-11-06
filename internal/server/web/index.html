@@ -10,6 +10,18 @@
     --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
     --fg:#e6e8ec; --dim:#9aa3b2; --accent:#4f8cff; --ok:#3ecf8e;
     --warn:#f0b429; --err:#f2555a;
+    --ok-line:#1f5c43; --err-line:#5c1f22; --warn-line:#5c4a1f;
+    --hover-line:#3a4150; --shadow:0 8px 30px rgba(0,0,0,.45);
+    --pill-bg:#1e222b;
+  }
+  /* 白天模式：只覆盖变量，组件样式不需要改。 */
+  :root[data-theme="light"]{
+    --bg:#f5f7fa; --panel:#ffffff; --panel2:#eef1f6; --line:#dde2ea;
+    --fg:#1b2027; --dim:#5b6672; --accent:#2f6fed; --ok:#12855a;
+    --warn:#a86b00; --err:#c33a40;
+    --ok-line:#a8dcc4; --err-line:#f0bcbe; --warn-line:#f0d9a4;
+    --hover-line:#c3ccda; --shadow:0 8px 30px rgba(15,23,42,.14);
+    --pill-bg:#eef1f6;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
@@ -20,9 +32,9 @@
   header .sp{flex:1}
   .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;
     font-size:12px;border:1px solid var(--line);background:var(--panel2);color:var(--dim)}
-  .badge.ok{color:var(--ok);border-color:#1f5c43}
-  .badge.err{color:var(--err);border-color:#5c1f22}
-  .badge.warn{color:var(--warn);border-color:#5c4a1f}
+  .badge.ok{color:var(--ok);border-color:var(--ok-line)}
+  .badge.err{color:var(--err);border-color:var(--err-line)}
+  .badge.warn{color:var(--warn);border-color:var(--warn-line)}
   .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
   main{padding:18px;max-width:1240px;margin:0 auto}
   nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
@@ -46,7 +58,7 @@
   .trunc{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   button.btn{background:var(--panel2);border:1px solid var(--line);color:var(--fg);padding:6px 11px;
     border-radius:7px;cursor:pointer;font-size:12.5px}
-  button.btn:hover{border-color:#3a4150}
+  button.btn:hover{border-color:var(--hover-line)}
   button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
   button.btn.danger{color:var(--err)}
   button.btn:disabled{opacity:.5;cursor:not-allowed}
@@ -60,7 +72,7 @@
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
   .toast{position:fixed;right:18px;bottom:18px;background:var(--panel2);border:1px solid var(--line);
     border-left:3px solid var(--accent);padding:10px 14px;border-radius:8px;max-width:460px;
-    box-shadow:0 8px 30px rgba(0,0,0,.45);display:none;white-space:pre-wrap;word-break:break-word;z-index:9}
+    box-shadow:var(--shadow);display:none;white-space:pre-wrap;word-break:break-word;z-index:9}
   .toast.show{display:block}
   .toast.err{border-left-color:var(--err)}
   .toast.ok{border-left-color:var(--ok)}
@@ -75,6 +87,7 @@
   <span id="health" class="badge"><i class="dot"></i><span>检测中…</span></span>
   <span id="upstream" class="badge">上游 …</span>
   <span class="sp"></span>
+  <button class="btn" id="theme" title="切换白天 / 黑夜模式">🌙 深色</button>
   <input id="pw" type="password" placeholder="管理密码（如已设置）" autocomplete="current-password" style="width:190px">
   <button class="btn" id="savePw">记住</button>
   <button class="btn primary" id="refresh">刷新</button>
@@ -121,6 +134,17 @@
       <table><thead><tr>
         <th>账号</th><th>分组</th><th>来源</th><th>Key</th><th>套餐 / 验证</th><th>Theos</th><th>状态</th><th>失败</th><th>最近使用</th><th>操作</th>
       </tr></thead><tbody id="accounts"></tbody></table>
+      <div class="row" id="acctPager" style="margin-top:12px">
+        <span id="acctInfo" class="muted"></span>
+        <span class="sp"></span>
+        <label style="margin:0;display:flex;gap:6px;align-items:center">每页
+          <select id="acctSize" style="width:auto">
+            <option value="20">20</option><option value="50">50</option><option value="100">100</option>
+          </select>
+        </label>
+        <button class="btn" id="acctPrev">上一页</button>
+        <button class="btn" id="acctNext">下一页</button>
+      </div>
       <div class="card" id="oauthPanel" style="display:none;margin-top:14px">
         <h2>浏览器登录</h2>
         <div class="row">
@@ -233,6 +257,13 @@
   "use strict";
   var $ = function(s){ return document.querySelector(s); };
   var state = { data:null };
+  // 账号列表分页：默认每页 20，偏好记在 localStorage。
+  var acctPage = 0;
+  var acctPageSize = 20;
+  try {
+    var ps = parseInt(localStorage.getItem("deepaicode2api_acct_page_size"), 10);
+    if (ps === 20 || ps === 50 || ps === 100) acctPageSize = ps;
+  } catch(e){}
 
   function toast(msg, kind){
     var t = $("#toast");
@@ -361,17 +392,20 @@
     var models = d.models || [];
     if (!models.length) { tb.appendChild(emptyRow(8, "无")); return; }
     models.forEach(function(m){
-      var free = (m.TheosPerRequest === undefined || m.TheosPerRequest === null) ? !m.Premier : String(m.TheosPerRequest) === "0";
-      var price = m.TheosPerRequest === undefined || m.TheosPerRequest === null ? "—" : m.TheosPerRequest;
-      var input = (m.Input || []).join(" + ");
+      // 后端字段是 camelCase（theosPerRequest / contextWindow / maxTokens / input），
+      // 之前按 Go 字段名（PascalCase）取，于是整列都是空的。
+      var price = (m.theosPerRequest === undefined || m.theosPerRequest === null) ? "—" : m.theosPerRequest;
+      var free = !m.premier && (price === "—" || String(price) === "0");
+      var input = (m.input || []).join(" + ");
+      if (m.reasoning) input = input ? input + " · 推理" : "推理";
       tb.appendChild(row([
-        cell(m.ID, "mono"),
-        cell(m.Name),
+        cell(m.id, "mono"),
+        cell(m.name || m.id),
         cell(free ? "free" : "premier", free ? "muted" : ""),
         cell(price, "mono"),
-        cell(fmtNum(m.ContextWindow), "mono"),
-        cell(fmtNum(m.MaxTokens), "mono"),
-        cell(m.API || "chat", "mono muted"),
+        cell(fmtNum(m.contextWindow), "mono"),
+        cell(fmtNum(m.maxTokens), "mono"),
+        cell(m.api || "chat", "mono muted"),
         cell(input, "muted")
       ]));
     });
@@ -380,11 +414,18 @@
   function renderAccounts(d){
     var tb = $("#accounts");
     tb.textContent = "";
-    var accts = d.accounts || [];
-    if (!accts.length) {
+    var all = d.accounts || [];
+    if (!all.length) {
       tb.appendChild(emptyRow(10, "暂无账号，点击「导入本机桌面端」或「浏览器登录」"));
+      updateAcctPager(0, 0);
       return;
     }
+    // 分页：超过一页时只渲染当前页，排序仍按后端下发的顺序。
+    var pages = Math.max(1, Math.ceil(all.length / acctPageSize));
+    if (acctPage > pages - 1) acctPage = pages - 1;
+    if (acctPage < 0) acctPage = 0;
+    var start = acctPage * acctPageSize;
+    var accts = all.slice(start, start + acctPageSize);
     accts.forEach(function(a){
       var statusCell = cell("");
       if (a.enabled) {
@@ -428,6 +469,25 @@
       if (a.theos && a.theos.refresh_at) r.title = (a.last_err ? a.last_err + "\n" : "") + "配额刷新：" + a.theos.refresh_at;
       tb.appendChild(r);
     });
+    updateAcctPager(all.length, start + accts.length);
+  }
+
+  // 分页控件状态（总数为 0 时也给出明确文案）。
+  function updateAcctPager(total, shownTo){
+    var info = $("#acctInfo"), prev = $("#acctPrev"), next = $("#acctNext");
+    if (!info || !prev || !next) return;
+    var pages = Math.max(1, Math.ceil(total / acctPageSize));
+    if (!total) {
+      info.textContent = "共 0 个账号";
+      prev.disabled = true;
+      next.disabled = true;
+      return;
+    }
+    var from = acctPage * acctPageSize + 1;
+    info.textContent = "共 " + total + " 个账号 · 第 " + (acctPage + 1) + "/" + pages +
+      " 页 · 显示 " + from + "-" + shownTo;
+    prev.disabled = acctPage <= 0;
+    next.disabled = acctPage >= pages - 1;
   }
 
   function renderKeys(d){
@@ -773,6 +833,40 @@
 
   try { var saved = localStorage.getItem("deepaicode2api_pw"); if (saved) $("#pw").value = saved; } catch(e){}
   $("#pw").addEventListener("keydown", function(e){ if (e.key === "Enter") { $("#savePw").click(); } });
+
+  // --- 主题（白天 / 黑夜）---
+  // 优先用上次的选择；没选过就跟随系统 prefers-color-scheme。
+  function applyTheme(mode){
+    document.documentElement.setAttribute("data-theme", mode);
+    var b = $("#theme");
+    if (b) b.textContent = mode === "light" ? "☀️ 浅色" : "🌙 深色";
+  }
+  (function initTheme(){
+    var mode = null;
+    try { mode = localStorage.getItem("deepaicode2api_theme"); } catch(e){}
+    if (mode !== "light" && mode !== "dark") {
+      mode = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+    }
+    applyTheme(mode);
+  })();
+  $("#theme").onclick = function(){
+    var next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    applyTheme(next);
+    try { localStorage.setItem("deepaicode2api_theme", next); } catch(e){}
+  };
+
+  // --- 账号分页控件 ---
+  $("#acctSize").value = String(acctPageSize);
+  $("#acctPrev").onclick = function(){ if (acctPage > 0) { acctPage--; renderAccounts(state.data || {}); } };
+  $("#acctNext").onclick = function(){ acctPage++; renderAccounts(state.data || {}); };
+  $("#acctSize").onchange = function(){
+    var v = parseInt(this.value, 10);
+    if (v !== 20 && v !== 50 && v !== 100) return;
+    acctPageSize = v;
+    acctPage = 0;
+    try { localStorage.setItem("deepaicode2api_acct_page_size", String(v)); } catch(e){}
+    renderAccounts(state.data || {});
+  };
 
   refresh();
   setInterval(loadHealth, 20000);
