@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +36,7 @@ func main() {
 		importOnly = flag.Bool("import", false, "仅执行一次桌面端凭据导入后退出")
 		noImport   = flag.Bool("no-import", false, "启动时不自动导入桌面端凭据")
 		adminPw    = flag.String("admin-password", envOr("DEEPAI2API_ADMIN_PASSWORD", ""), "管理密码（非空时覆盖状态文件中的设置）")
+		allowOpen  = flag.Bool("allow-insecure", envBool("DEEPAI2API_ALLOW_INSECURE", false), "允许非回环监听但不设管理密码（不安全）")
 		showVer    = flag.Bool("version", false, "打印版本后退出")
 	)
 	flag.Parse()
@@ -86,6 +88,26 @@ func main() {
 		if isNew := st.UpsertAccount(envAcct); isNew {
 			log.Printf("已从 DEEPAI_API_KEY 添加账号 %s", envAcct.Name)
 			_ = st.Save()
+		}
+	}
+
+	// 非回环监听意味着网关已接入局域网 / 公网，此时两项底线不能靠“默认值”撑着：
+	// 管理面必须有密码，数据面必须已有密钥。否则从启动到人工创建密钥之间，
+	// 上游账号池就是一个无需鉴权的开放中继。
+	if !isLoopbackListen(*host) {
+		if st.Settings().AdminPassword == "" && !*allowOpen {
+			log.Fatalf("监听地址 %q 不是回环地址，但未设置管理密码：控制台会对局域网开放。\n"+
+				"  请用 -admin-password 或 DEEPAI2API_ADMIN_PASSWORD 设置密码；\n"+
+				"  确实需要无密码运行请显式加 -allow-insecure（或 DEEPAI2API_ALLOW_INSECURE=1）。", *host)
+		}
+		if !st.HasKeys() {
+			k := st.AddKey("bootstrap", "default")
+			if err := st.Save(); err != nil {
+				log.Fatalf("生成引导密钥失败: %v", err)
+			}
+			log.Printf("⚠ 非回环监听且尚未签发密钥，已自动生成引导密钥（仅本次启动显示，请立即保存）：")
+			log.Printf("    %s", k.Key)
+			log.Printf("  之后可在控制台改名或吊销。")
 		}
 	}
 
@@ -245,4 +267,31 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+func envBool(key string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return def
+}
+
+// isLoopbackListen 判断监听地址是否只接受本机连接。
+//
+// 空串 / 0.0.0.0 / :: 都表示监听全部网卡，属于对外暴露，不算回环。
+func isLoopbackListen(host string) bool {
+	host = strings.TrimSpace(host)
+	switch strings.ToLower(host) {
+	case "", "0.0.0.0", "::", "[::]":
+		return false
+	case "localhost":
+		return true
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

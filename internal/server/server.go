@@ -187,12 +187,22 @@ func isLoopbackHost(host string) bool {
 
 // withAuth 校验 Bearer 密钥。
 //
-// 未签发任何密钥时允许无密钥访问（首次使用的便利）；
-// 一旦签发了密钥，则强制校验。
+// 尚未签发任何密钥时：
+//   - 来自本机回环的请求放行（首次使用的便利，且便于控制台自举）；
+//   - 来自非回环来源的请求一律 503 setup_required。
+//     否则在监听 0.0.0.0（容器 / 局域网）时，从首次启动到创建第一个密钥之间
+//     网关就是一个无需鉴权的开放中继。
+//
+// 一旦签发了密钥，所有来源都强制校验。
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.Store.HasKeys() {
-			next(w, r)
+			if isLoopbackAddr(r.RemoteAddr) {
+				next(w, r)
+				return
+			}
+			writeErr(w, http.StatusServiceUnavailable,
+				"网关尚未签发 API 密钥，请先在本机控制台创建密钥（/admin）", "setup_required")
 			return
 		}
 		key := extractKey(r)

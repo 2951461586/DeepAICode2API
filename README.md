@@ -226,6 +226,7 @@ print(client.chat.completions.create(
 | `-data` | `DEEPAI2API_DATA_PATH` | 可执行文件同目录 | 状态文件 |
 | `-deepai-dir` | `DEEPAI2API_DATA_DIR` | 自动探测 | 桌面端数据目录 |
 | `-admin-password` | `DEEPAI2API_ADMIN_PASSWORD` | 空 | 管理密码 |
+| `-allow-insecure` | `DEEPAI2API_ALLOW_INSECURE` | `false` | 允许非回环监听但不设管理密码 |
 | `-import` | — | — | 仅导入凭据后退出 |
 | `-no-import` | — | — | 启动时不自动导入 |
 | `-version` | — | — | 打印版本 |
@@ -384,12 +385,15 @@ go run ./cmd/probe -key <api-key>         # 直接验证某个 Key
 - **概览**：请求量、失败数、token 入/出、上游成本、模型目录（免费 / 付费、Theos、上下文、端点）。
 - **账号**：导入桌面端凭据、浏览器登录、手工添加 API Key、刷新配额、启停 / 删除 / 清错。
 - **密钥**：签发 `sk-…` 网关密钥；只在创建时显示一次。
-  **未签发任何密钥时，`/v1/*` 允许无密钥调用。**
+  **未签发任何密钥时，仅本机回环允许无密钥调用；非回环来源一律 `503 setup_required`。**
+  若监听非回环地址且尚无密钥，启动时会自动生成一个 `bootstrap` 密钥并打印一次。
 - **日志**：端点、模型、流式、状态、耗时、字符数、token、成本、账号。
 - **设置**：超时、重试、日志保留、CORS、兜底模型、模型别名、管理密码。
 
 安全默认值：
 
+- 监听**非回环**地址时必须设置管理密码，否则拒绝启动（如需绕过用 `-allow-insecure`）；
+- 未签发密钥时，非回环来源的数据面请求返回 `503 setup_required`，不是放行；
 - 未设置管理密码时，管理接口**只允许本机环回**；
 - 写操作做同源校验，阻断 CSRF；
 - CORS 默认仅允许本机来源，不提供 `*`；
