@@ -21,6 +21,14 @@ type Enroller interface {
 	Enroll(ctx context.Context, rec *Record) (string, error)
 }
 
+// VerifiedMarker 由入池器可选实现：验证邮件晚到时回填账号的 email_verified。
+//
+// 入池不再等待验证，因此验证结果可能在入池之后才拿到；实现了本接口的
+// 入池器会被后台回填流程调用。
+type VerifiedMarker interface {
+	MarkVerified(ctx context.Context, accountID, email string) error
+}
+
 // EnrollerFunc 把普通函数适配成 Enroller。
 type EnrollerFunc func(ctx context.Context, rec *Record) (string, error)
 
@@ -261,49 +269,19 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 	validateErr := p.validate(ctx, rec, up)
 	validateElapsed := time.Since(t)
 
-	// 6) 邮箱验证（可选，失败不阻断）：join 上面并行启动的等待
-	joined := false
-	joinVerify := func() {
-		if joined {
-			return
-		}
-		joined = true
-		if verifyCh == nil {
-			rec.Mark("verify", "skipped", 0)
-			return
-		}
+	// 6) 邮箱验证：只在「上游要求已验证」时才同步等待，其余情况移出关键路径
+	//
+	// 实测 verify 占 E2E 的 83.6% 且波动极大（14.8s → 56.1s），而上游并不因
+	// 邮箱未验证就拒发额度（第五批 14 个超时账号最终全部拿到 200）。
+	// 所以默认不在入池前等待，改为入池后由后台补验证并回填。
+	if validateErr != nil && p.opts.Verify && verifyCh != nil && isUnverifiedError(validateErr) {
 		out := <-verifyCh
-		vt := time.Now()
-		switch {
-		case errors.Is(out.err, ErrNoInbox):
-			rec.Mark("verify", "skipped (no inbox)", 0)
-			p.logf("[%s] 邮箱后端无收件箱，跳过邮件验证", email)
-		case out.err != nil:
-			rec.Mark("verify", "warning", out.waited)
-			p.logf("[%s] 等待验证邮件失败（继续入池）：%v", email, out.err)
-		default:
-			if err := web.VerifyEmail(ctx, out.link); err != nil {
-				rec.Mark("verify", "warning", out.waited+time.Since(vt))
-				p.logf("[%s] 验证链接访问失败（继续入池）：%v", email, err)
-			} else {
-				rec.EmailVerified = true
-				if StatusRank(rec.Status) < StatusRank(StatusVerified) {
-					rec.Status = StatusVerified
-				}
-				rec.Mark("verify", "ok", out.waited+time.Since(vt))
-				p.logf("[%s] 邮箱验证完成", email)
-			}
-		}
-	}
-
-	// 少数账号要邮箱已验证才能调上游：先用验证换个机会，再重试一次。
-	if validateErr != nil && p.opts.Verify && isUnverifiedError(validateErr) {
-		joinVerify()
+		verifyCh = nil
+		p.applyVerify(ctx, rec, web, out)
 		t = time.Now()
 		validateErr = p.validate(ctx, rec, up)
 		validateElapsed += time.Since(t)
 	}
-	joinVerify()
 
 	if validateErr != nil {
 		rec.Mark("validate", "failed", validateElapsed)
@@ -332,7 +310,88 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 		}
 	}
 
+	// 8) 验证结果后台回填：入池已经完成，不再等邮件
+	if !p.opts.Verify {
+		rec.Mark("verify", "skipped", 0)
+	} else if verifyCh != nil {
+		rec.Mark("verify", "pending", 0)
+		go p.verifyBackfill(rec, web, verifyCh)
+	}
+
 	return p.finish(rec)
+}
+
+// applyVerify 处理一次验证结果（点链接 + 打点），返回是否验证成功。
+func (p *Pipeline) applyVerify(ctx context.Context, rec *Record, web *WebClient, out verifyOutcome) bool {
+	vt := time.Now()
+	switch {
+	case errors.Is(out.err, ErrNoInbox):
+		rec.Mark("verify", "skipped (no inbox)", 0)
+		p.logf("[%s] 邮箱后端无收件箱，跳过邮件验证", rec.Email)
+	case out.err != nil:
+		rec.Mark("verify", "warning", out.waited)
+		p.logf("[%s] 等待验证邮件失败：%v", rec.Email, out.err)
+	default:
+		if err := web.VerifyEmail(ctx, out.link); err != nil {
+			rec.Mark("verify", "warning", out.waited+time.Since(vt))
+			p.logf("[%s] 验证链接访问失败：%v", rec.Email, err)
+			return false
+		}
+		rec.EmailVerified = true
+		if StatusRank(rec.Status) < StatusRank(StatusVerified) {
+			rec.Status = StatusVerified
+		}
+		rec.Mark("verify", "ok", out.waited+time.Since(vt))
+		p.logf("[%s] 邮箱验证完成", rec.Email)
+		return true
+	}
+	return false
+}
+
+// verifyBackfill 在入池之后继续等验证邮件，成功后回填 email_verified。
+//
+// 用脱离调用方 ctx 的独立超时：批次的 ctx 在 RunBatch 返回时就会被取消，
+// 而验证往往在这之后才完成。所有写入都作用在记录副本上，避免与
+// finish()/notify() 的读取竞争。
+func (p *Pipeline) verifyBackfill(rec *Record, web *WebClient, ch chan verifyOutcome) {
+	cp := cloneRecord(rec)
+	if cp == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			p.logf("[%s] 后台验证异常：%v", cp.Email, r)
+		}
+	}()
+
+	wait := p.opts.VerifyTimeout
+	if wait <= 0 {
+		wait = DefaultVerifyWait
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wait+2*time.Minute)
+	defer cancel()
+
+	var out verifyOutcome
+	select {
+	case out = <-ch:
+	case <-ctx.Done():
+		return
+	}
+	if !p.applyVerify(ctx, cp, web, out) {
+		return
+	}
+
+	if vm, ok := p.opts.Enroller.(VerifiedMarker); ok {
+		if err := vm.MarkVerified(ctx, cp.AccountID, cp.Email); err != nil {
+			p.logf("[%s] 回填验证状态失败：%v", cp.Email, err)
+		}
+	}
+
+	// 再写一条台账：Merge 保留更高等级，并把 verify 从 pending 更新为 ok。
+	if p.opts.Ledger != nil {
+		_ = p.opts.Ledger.Append(cp)
+	}
+	p.notify(cp)
 }
 
 // theosRetryDelays 是 /theos 验活遇到瞬时错误时的退避序列。

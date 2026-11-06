@@ -465,6 +465,7 @@ const (
 	actionClearErrors   = "clear-errors"
 	actionAssignMachine = "assign-machine"
 	actionSetGroup      = "set-group"
+	actionMarkVerified  = "mark-verified"
 )
 
 func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
@@ -628,6 +629,13 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		// 重新探测配额，让调度能立即看到新指纹下的额度。
 		go s.probeAccounts(targets)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
+	case actionMarkVerified:
+		// 后台验证完成后回填：入池时 email_verified 可能还是 false。
+		if err := s.markAccountVerified(body.ID, body.Email); err != nil {
+			writeErr(w, http.StatusNotFound, err.Error(), "invalid_request_error")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case actionSetGroup:
 		// 把账号迁到另一个分组（例如把压测批次的账号并入日常号池）。
 		// id 为空时按 from_group 批量迁移，便于整批归位。

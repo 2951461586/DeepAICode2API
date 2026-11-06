@@ -315,12 +315,10 @@ func (s *Server) runRegisterJob(ctx context.Context, job *registerJob, cfg *regi
 	defer func() { _ = ledger.Close() }()
 
 	pipe := register.New(register.Options{
-		Config:   cfg,
-		Provider: provider,
-		Ledger:   ledger,
-		Enroller: register.EnrollerFunc(func(_ context.Context, rec *register.Record) (string, error) {
-			return s.enrollRecord(rec)
-		}),
+		Config:        cfg,
+		Provider:      provider,
+		Ledger:        ledger,
+		Enroller:      localEnroller{s: s},
 		Group:         job.Group,
 		Verify:        verify,
 		ProxyPool:     pool,
@@ -342,6 +340,43 @@ func (s *Server) runRegisterJob(ctx context.Context, job *registerJob, cfg *regi
 	if _, err := register.WriteDeliverables(filepath.Join(baseDir, "result"), records); err != nil {
 		log.Printf("[register] 写交付物失败: %v", err)
 	}
+}
+
+// localEnroller 是进程内入池器：既写入号池，也能回填验证状态。
+//
+// 实现 register.VerifiedMarker，因此后台验证完成后会自动回填 email_verified。
+type localEnroller struct{ s *Server }
+
+func (e localEnroller) Enroll(_ context.Context, rec *register.Record) (string, error) {
+	return e.s.enrollRecord(rec)
+}
+
+func (e localEnroller) MarkVerified(_ context.Context, accountID, email string) error {
+	return e.s.markAccountVerified(accountID, email)
+}
+
+// markAccountVerified 把账号标记为邮箱已验证（按 ID 或邮箱定位）。
+func (s *Server) markAccountVerified(id, email string) error {
+	var target *deepai.Account
+	if strings.TrimSpace(id) != "" {
+		target = s.Store.Account(strings.TrimSpace(id))
+	}
+	if target == nil && strings.TrimSpace(email) != "" {
+		for _, a := range s.Store.Accounts() {
+			if strings.EqualFold(a.Email, strings.TrimSpace(email)) {
+				target = a
+				break
+			}
+		}
+	}
+	if target == nil {
+		return errors.New("账号不存在")
+	}
+	if target.EmailVerified {
+		return nil // 幂等
+	}
+	target.EmailVerified = true
+	return s.Store.Save()
 }
 
 // enrollRecord 把注册链路的结果写入号池（服务端内进程调用）。
