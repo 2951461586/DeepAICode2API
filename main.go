@@ -119,13 +119,6 @@ func main() {
 
 	srv := server.New(st)
 
-	// 启动时同步拉一次模型目录；失败不阻塞启动（会沿用缓存 / 兜底模型）。
-	if models, err := srv.RefreshModels(context.Background()); err != nil {
-		log.Printf("拉取模型目录失败（沿用缓存）: %v", err)
-	} else {
-		log.Printf("模型目录已更新：%d 个模型，默认 %s", len(models), st.DefaultModel())
-	}
-
 	addr := net.JoinHostPort(*host, fmt.Sprintf("%d", *port))
 	httpSrv := &http.Server{
 		Addr:              addr,
@@ -133,6 +126,12 @@ func main() {
 		ReadHeaderTimeout: 20 * time.Second,
 		// 流式响应可能持续数分钟，不设 WriteTimeout
 	}
+
+	// 后台任务：首个目录拉取 + 定期落盘 + 定期刷新模型目录。
+	// 有意放在监听之前启动：首个目录拉取可能与上游耗上 20s 超时，
+	// 先起它、再起监听，两者并行，互不阻塞。
+	stopBG := make(chan struct{})
+	go background(st, srv, stopBG)
 
 	go func() {
 		log.Printf("DeepAICode2API %s 已启动: http://%s/", version, addr)
@@ -151,10 +150,6 @@ func main() {
 		}
 	}()
 
-	// 后台任务：定期落盘 + 定期刷新模型目录。
-	stopBG := make(chan struct{})
-	go background(st, srv, stopBG)
-
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
@@ -172,8 +167,26 @@ func main() {
 	log.Printf("已退出")
 }
 
-// background 负责定期持久化与模型目录刷新。
+// background 负责首个模型目录拉取、定期持久化与周期性目录刷新。
+//
+// 首个拉取放在这里而不是 main() 里同步执行：上游不通时 RefreshModels 要等满
+// 20s 超时（实测日志里 "机器指纹" 到 "已启动" 正好差 20 秒），同步做会把
+// 「开始监听」整体拖后。目录为空时 /v1/models 与模型解析都回落到内置兜底
+// 条目（server.catalog / registry.Resolve），所以先监听、后补目录是安全的。
 func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
+	// 首个目录拉取：与监听并行，失败只影响模型清单，不影响服务可用。
+	// 用独立 ctx：即使 stop 关闭也让它自己超时结束，不阻塞退出流程。
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		models, err := srv.RefreshModels(ctx)
+		cancel()
+		if err != nil {
+			log.Printf("拉取模型目录失败（先用缓存/兜底）: %v", err)
+		} else {
+			log.Printf("模型目录已更新：%d 个模型，默认 %s", len(models), st.DefaultModel())
+		}
+	}
+
 	saveTick := time.NewTicker(30 * time.Second)
 	defer saveTick.Stop()
 	modelTick := time.NewTicker(6 * time.Hour)

@@ -371,7 +371,7 @@ go test ./... -race → 11 个包全绿（新增 retry 6 / parallel 4 / pool 7 �
 新增 `scripts/console-e2e.mjs`：用 CDP 驱动无头 Chrome 做**真实交互**断言，
 而不是只看截图 ——
 
-```
+```text
 node scripts/console-e2e.mjs http://127.0.0.1:10087 bin/shots
 ```
 
@@ -384,3 +384,44 @@ node scripts/console-e2e.mjs http://127.0.0.1:10087 bin/shots
 两者在静态检查里都看不出来。
 
 另外 `console_test.go` 增加 `TestConsoleFeatures`，守住菜单/排序/双语的钩子存在性。
+
+---
+
+## 14. 启动不再被模型目录拉取阻塞
+
+**根因**：`main()` 在起监听**之前**同步调用 `srv.RefreshModels()`。
+`RefreshModels` 内部是 20s 超时，上游不通时这 20 秒整段压在启动路径上。
+
+线上日志可以直接看到（2026-11-06 23:02 那次重启）：
+
+```text
+23:02:04 机器指纹: 8751f711d837…
+23:02:24 拉取模型目录失败（沿用缓存）: context deadline exceeded
+23:02:24 DeepAICode2API dev 已启动: http://127.0.0.1:10087/
+```
+
+**决策**：先监听，目录交给后台首个拉取。
+
+- 目录为空时 `/v1/models` 与模型解析都会回落到内置兜底条目
+  （`server.catalog()` / `registry.Resolve`），所以空目录期间服务是可用的；
+- 首个拉取放在 `background()` 开头（该 goroutine 在起监听前启动），
+  用独立 `context.WithTimeout(30s)`，失败只影响模型清单，不影响退出流程；
+- 6 小时周期的刷新逻辑不变。
+
+**实测**（`scripts/measure-startup.py`，上游指向不可达的 TEST-NET 地址）：
+
+| | 启动 → `/health` 可服务 |
+| --- | ---: |
+| 改动前（同步拉取） | **6.20s** |
+| 改动后（先监听） | **0.96s** |
+
+> 本机 connect 约 6s 就失败；线上那次上游是「挂住」而非拒绝，所以吃满了
+> 20s 的 ctx 超时——两种情况下改动收益方向一致。
+
+正常网络下的日志顺序也验证了行为：
+
+```text
+23:49:49 机器指纹: 8751f711d837…
+23:49:49 DeepAICode2API dev 已启动: http://127.0.0.1:10087/
+23:49:52 模型目录已更新：14 个模型，默认 glm-5.3-flash
+```
