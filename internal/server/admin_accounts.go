@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/register"
 )
 
 // --- 账号管理接口与配额巡检 ---
@@ -21,6 +22,7 @@ const (
 	actionToggle        = "toggle"
 	actionClearErrors   = "clear-errors"
 	actionAssignMachine = "assign-machine"
+	actionAssignProxy   = "assign-proxy"
 	actionSetGroup      = "set-group"
 	actionMarkVerified  = "mark-verified"
 )
@@ -55,7 +57,10 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		// SkipProbe 让调用方跳过入池时的 /theos 探测。
 		// 注册链路刚刚验活过并随请求带上了 theos_balance/granted，
 		// 再探一次既慢（~2s）又会引入全新的失败点。
-		SkipProbe      bool   `json:"skip_probe"`
+		SkipProbe bool `json:"skip_probe"`
+		// Reassign 为 true 时覆盖已有代理；Clear 为 true 时清空代理（回滚用）。
+		Reassign       bool   `json:"reassign"`
+		Clear          bool   `json:"clear"`
 		Proxy          string `json:"proxy"`
 		Fingerprint    string `json:"fingerprint"`
 		MachineID      string `json:"machine_id"`
@@ -189,6 +194,68 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		// 重新探测配额，让调度能立即看到新指纹下的额度。
 		go s.probeAccounts(targets)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
+	case actionAssignProxy:
+		// 把注册代理池（PROXY_POOL / PROXY_POOL_FILE）轮询分配给号池账号。
+		// 默认只补空值；reassign=true 覆盖，clear=true 清空（回滚）。
+		id := strings.TrimSpace(body.ID)
+		group := strings.TrimSpace(body.Group)
+		match := func(a *deepai.Account) bool {
+			if id != "" {
+				return a.ID == id
+			}
+			if group != "" {
+				return strings.EqualFold(a.GroupName(), group)
+			}
+			return true
+		}
+		if body.Clear {
+			cleared := s.Store.UpdateAccounts(func(a *deepai.Account) bool {
+				if !match(a) || strings.TrimSpace(a.Proxy) == "" {
+					return false
+				}
+				a.Proxy = ""
+				return true
+			})
+			_ = s.Store.Save()
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
+			return
+		}
+		cfg := register.LoadConfig()
+		raw := cfg.ProxyPool
+		if strings.TrimSpace(raw) == "" && strings.TrimSpace(cfg.ProxyFile) != "" {
+			if fileRaw, err := register.ReadProxyFile(cfg.ProxyFile); err == nil {
+				raw = fileRaw
+			}
+		}
+		pool, err := register.NewProxyPool(raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "代理池配置错误: "+err.Error(), "invalid_request_error")
+			return
+		}
+		if pool == nil || pool.Len() == 0 {
+			writeErr(w, http.StatusBadRequest, "未配置代理池（PROXY_POOL / DEEPAI_REGISTER_PROXY_POOL / PROXY_POOL_FILE）", "invalid_request_error")
+			return
+		}
+		dist := map[string]int{}
+		assigned := s.Store.UpdateAccounts(func(a *deepai.Account) bool {
+			if !match(a) {
+				return false
+			}
+			if !body.Reassign && strings.TrimSpace(a.Proxy) != "" {
+				return false
+			}
+			p := pool.Next()
+			if p == "" {
+				return false
+			}
+			a.Proxy = p
+			dist[register.ProxyLabel(p)]++
+			return true
+		})
+		_ = s.Store.Save()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "assigned": assigned, "pool_size": pool.Len(), "proxies": dist,
+		})
 	case actionMarkVerified:
 		// 后台验证完成后回填：入池时 email_verified 可能还是 false。
 		if err := s.markAccountVerified(body.ID, body.Email); err != nil {

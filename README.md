@@ -410,6 +410,13 @@ issue 或发给别人排查。凭据单独落在 `*-credentials.jsonl`（`0600`�
 - 每个账号轮询分配一个代理并写入台账，补跑时复用历史代理；
 - 推理侧按账号绑定的代理调用上游（`Server.clientFor`），管理接口只展示
   `host:port`，不泄露代理凭据；
+- 存量账号（HAR 导入 / 手工导入 / 桌面端导入）可随时从代理池补绑：
+  `POST /admin/api/accounts {"action":"assign-proxy"}`
+  （默认只补空值；`"reassign":true` 覆盖、`"clear":true` 回滚；
+  可用 `"id"` 或 `"group"` 限定范围）；
+- 多样化出口有价值：每日免费 Theos 是**按网络（出口 IP）限额**发放的
+  （见 `docs/recon.md` 的 `network_bound`），把 14 个号分散到 12 个出口后，
+  有额度的账号从 5 个提升到 10 个；
 - 指纹库内置 6 套自洽的 `User-Agent` / `Sec-CH-UA` / 平台 / `Accept-Language`，
   按邮箱稳定分配（同一账号补跑得到同一套请求头）；
 - CLI：`-check-proxies`、`-proxy-pool`、`-proxy-file`、`-proxy`、`-no-fingerprint`、

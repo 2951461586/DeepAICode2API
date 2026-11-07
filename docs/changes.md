@@ -793,3 +793,34 @@ chat：13/13 200（2 个首发瞬时失败——读超时 / TLS EOF——重试�
 > 注意：`zhuhaoyi181@gmail.com`（HAR 里的 Key）与 `zhuhaoyi181`（桌面端
 > 当前 Key）是同一账号的两把不同 Key，都能用；如需去重可删其中一条。
 > `accounts/` 已加入 `.gitignore`（HAR 含凭据，不入库）。
+
+---
+
+## 22. 号池代理池：存量账号补绑
+
+**背景**：HAR 导入的 13 个账号 + 桌面端账号都走直连出口。实测 `network_bound`
+（每日免费 Theos 按出口 IP 限额）后，同一直连 IP 下只有 5 个账号拿到额度，
+其余 8 个要等刷新。
+
+**做法**：
+
+- 新增 `POST /admin/api/accounts {"action":"assign-proxy"}`：
+  - 从 `PROXY_POOL` / `PROXY_POOL_FILE` 解析代理池，按账号轮询分配；
+  - 默认只补空值，`reassign:true` 覆盖，`clear:true` 回滚；
+  - 支持 `id` / `group` 限定范围；返回 `assigned` 与 `host:port` 分布（不含凭据）；
+- 复用注册链路的 `register.NewProxyPool` / `ProxyLabel` / `CheckProxyPool`，
+  不新增代理实现；
+- 分配后跑一次 `/admin/api/checkin` 验证：代理 → `/theos` 全链路。
+
+**验证**（2026-11-07）：
+
+```text
+代理池：12/12 可用（go run ./cmd/register -check-proxies）
+分配：14 个账号 → 12 个出口（2 个出口各 2 号）
+验活：14/14 最终 200（1 个 TLS 握手中超时，重试即通过）
+额度：有 200 Theos 的账号 5 → 10（含 zhuhaoyi181 两把 Key 共用钱包）
+计量 chat（glm-5.3）经代理：HTTP 200 content="42"，耗时 ~10.9s（直连 ~3s）
+```
+
+> 代价：代理链路有额外延迟，流式长连接对代理稳定性更敏感；
+> 出问题时可 `"clear":true` 一键回到直连。
