@@ -40,6 +40,8 @@ coverage.out
 /.console-check.js
 /.recon/
 /deepai.org.har
+# 抓包目录：HAR 内含 API Key / Cookie，绝不入库
+/accounts/
 
 # 编辑器 / 系统
 .DS_Store

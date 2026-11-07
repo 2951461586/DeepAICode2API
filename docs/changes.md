@@ -763,3 +763,33 @@ Google/Apple 登录的账号，或等待上游放开该策略。`go test ./...` 
 > 备注：邮箱号与 Google 账号的差别在 `/theos` 就能看出来——前者 403
 > `social_login_required`，后者 200。桌面端账号 `epsoft-…` 仍保留在池里
 > （`blocked`，调度跳过），确认不再需要后可删除。
+
+---
+
+## 21. HAR 批量导入与验活
+
+**背景**：`accounts/` 下积累了 13 个按邮箱命名的 HAR（浏览器抓包），
+需要把其中的 API Key 批量导入号池并验活。
+
+**做法**：
+
+- 从每个 HAR 的响应体里提取 `"api_key"`（UUID 格式），文件名即邮箱，
+  一号一键、零误配；
+- 通过 `POST /admin/api/accounts {"action":"manual"}` 逐个导入（`default` 分组）；
+- 因手动导入不带机器指纹，随即调用 `action=assign-machine` 给 13 个号各分一个
+  独立 UUID（否则共用进程指纹，只有第一个能领到每日额度）；
+- 验活分两层：`/theos` 批量探测（状态/lane/额度）+ 每个 Key 直连上游做一次
+  免费模型对话（确认真正能推理，避免「/theos 200 但 chat 被拒」）。
+
+**结果**（2026-11-07）：
+
+```text
+导入 13 个（new=true 13/13），号池 1 → 14
+/theos：14/14 200，全部 lane_version=4，check_in 正常
+chat：13/13 200（2 个首发瞬时失败——读超时 / TLS EOF——重试即通过）
+额度：新机器指纹下 balance/granted 均为 0，等 refresh_at 后下发
+```
+
+> 注意：`zhuhaoyi181@gmail.com`（HAR 里的 Key）与 `zhuhaoyi181`（桌面端
+> 当前 Key）是同一账号的两把不同 Key，都能用；如需去重可删其中一条。
+> `accounts/` 已加入 `.gitignore`（HAR 含凭据，不入库）。
