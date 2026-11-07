@@ -312,6 +312,23 @@ func TestKeysLifecycle(t *testing.T) {
 		t.Fatal("未知密钥的 KeyGroup 应为空")
 	}
 
+	// 改绑分组：保持密钥值不变；空分组归到 default。
+	if !st.SetKeyGroup(k.Key, "default") {
+		t.Fatal("SetKeyGroup 应找到已存在的密钥")
+	}
+	if got := st.KeyGroup(k.Key); got != "default" {
+		t.Fatalf("改绑后 KeyGroup = %q", got)
+	}
+	if !st.SetKeyGroup(k.Key, "  ") || st.KeyGroup(k.Key) != "default" {
+		t.Fatalf("空分组应归一为 default，实际 %q", st.KeyGroup(k.Key))
+	}
+	if st.SetKeyGroup("sk-unknown", "x") {
+		t.Fatal("未知密钥不应改绑成功")
+	}
+	if k.Key == "" || len(st.Keys()) != 1 {
+		t.Fatal("改绑不应影响密钥数量或值")
+	}
+
 	// 计数：ValidKey 会累加使用次数。
 	k2 := st.Keys()[0]
 	if k2.Requests != 1 || k2.LastUsed == 0 {

@@ -561,6 +561,9 @@ func newSSEWriter(w http.ResponseWriter) *sseWriter {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
+	// 在这里提交 200：调用方随后再写 header 会被 net/http 判为
+	// superfluous（旧实现正是如此，只在日志里制造噪音）。
+	w.WriteHeader(http.StatusOK)
 	if flusher != nil {
 		flusher.Flush()
 	}

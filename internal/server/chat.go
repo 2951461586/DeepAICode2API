@@ -155,11 +155,11 @@ func addReasoningContent(obj map[string]any) {
 // streamChat 以 OpenAI SSE 格式流式转发。
 func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, rl reqLog) {
 	sw := newSSEWriter(w)
-	w.WriteHeader(http.StatusOK)
 
 	var (
-		usage  Usage
-		outLen int
+		usage    Usage
+		outLen   int
+		doneSent bool
 	)
 
 	streamErr := forEachSSEFrame(body, func(f sseFrame) bool {
@@ -174,6 +174,7 @@ func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, rl reqLog) {
 		}
 		if f.Data == sseDone {
 			sw.done()
+			doneSent = true
 			return false
 		}
 		if f.Object == nil {
@@ -201,7 +202,10 @@ func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, rl reqLog) {
 			sw.data(errPayload)
 		}
 	}
-	sw.done()
+	if !doneSent {
+		// 上游自己发了 [DONE] 时不要再补一个：重复的终止帧会让部分客户端报警。
+		sw.done()
+	}
 	rl.done(outLen, usage, streamErr)
 }
 

@@ -58,10 +58,24 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"keys": safeKeyList(s.Store.Keys())})
 	case http.MethodPost:
 		var body struct {
-			Name  string `json:"name"`
-			Group string `json:"group"`
+			Action string `json:"action"`
+			Name   string `json:"name"`
+			Group  string `json:"group"`
+			Key    string `json:"key"`
 		}
 		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+		// action=set-group：只改绑定分组（保持密钥值不变）；其余 / 空值仍为新建。
+		if body.Action == "set-group" {
+			key := s.resolveKeyRef(strings.TrimSpace(body.Key))
+			if key == "" {
+				writeErr(w, http.StatusBadRequest, "缺少 key", "invalid_request_error")
+				return
+			}
+			ok := s.Store.SetKeyGroup(key, body.Group)
+			_ = s.Store.Save()
+			writeJSON(w, http.StatusOK, map[string]any{"ok": ok, "group": s.Store.KeyGroup(key)})
+			return
+		}
 		k := s.Store.AddKey(body.Name, body.Group)
 		_ = s.Store.Save()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": k.Key})

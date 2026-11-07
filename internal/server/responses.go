@@ -101,7 +101,6 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 	}
 
 	sw := newSSEWriter(w)
-	w.WriteHeader(http.StatusOK)
 	var (
 		usage  Usage
 		outLen int
@@ -191,7 +190,6 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 	defer resp.Body.Close()
 
 	sw := newSSEWriter(w)
-	w.WriteHeader(http.StatusOK)
 	gen := newResponsesStreamGen(sw, rl.model)
 	gen.created()
 

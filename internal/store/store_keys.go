@@ -49,6 +49,26 @@ func (s *Store) KeyGroup(key string) string {
 	return ""
 }
 
+// SetKeyGroup 修改密钥绑定的号池分组（空串等价于 default）。
+//
+// 用于运营调整：例如清空压测分组后，把密钥改绑回 default，
+// 避免「分组内无可用账号」。返回是否找到该密钥。
+func (s *Store) SetKeyGroup(key, group string) bool {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		group = "default"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, k := range s.st.Keys {
+		if k.Key == key {
+			k.Group = group
+			return true
+		}
+	}
+	return false
+}
+
 // DeleteKey 删除密钥。
 func (s *Store) DeleteKey(key string) bool {
 	s.mu.Lock()

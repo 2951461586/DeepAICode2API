@@ -730,3 +730,36 @@ Google/Apple 登录的账号，或等待上游放开该策略。`go test ./...` 
 
 > 注：偶发 `400 invalid_request_error` 只在滚动升级窗口出现过一次，
 > 触发条件与「缺 system / 缺 tools」相关但未定论；兜底重试已覆盖该路径。
+
+---
+
+## 20. 密钥改绑分组 + SSE 收尾修正
+
+**根因**：
+
+1. 清空 `stress-*` 号池后，唯一密钥仍绑定在 `stress-20261106` 分组，请求会
+   命中「分组内无可用账号」；而密钥分组此前没有修改入口，只能删除重建
+   （会改变密钥值，客户端全部要改）。
+2. SSE 三个流式入口在 `newSSEWriter`（已 flush 隐式 200）之后又调了一次
+   `WriteHeader`，net/http 每次流式请求都记一条 `superfluous` 日志；
+   chat 流还会在上游已发 `[DONE]` 后再补一个，客户端收到重复终止帧。
+
+**决策**：
+
+- `store.SetKeyGroup` + `POST /admin/api/keys {"action":"set-group","key":…,"group":…}`，
+  保持密钥值不变（支持掩码 ref）；空分组归一为 `default`；
+- `newSSEWriter` 内显式 `WriteHeader(200)`，删除四处调用方重复写头；
+- chat 流用 `doneSent` 标记，只发一个 `[DONE]`。
+
+**验证**（2026-11-07）：
+
+```text
+密钥 stress-group: stress-20261106 → default（ok:true）
+桌面端改用 Google 账号后导入：zhuhaoyi181（/theos 200，lane 4，带 check_in）
+网关非流式 glm-5.3-flash → 200 content="42"
+网关流式同一请求 → content delta "42"，[DONE] 恰好 1 个，无 superfluous 日志
+```
+
+> 备注：邮箱号与 Google 账号的差别在 `/theos` 就能看出来——前者 403
+> `social_login_required`，后者 200。桌面端账号 `epsoft-…` 仍保留在池里
+> （`blocked`，调度跳过），确认不再需要后可删除。

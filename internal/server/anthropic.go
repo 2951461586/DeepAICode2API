@@ -121,7 +121,6 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 	defer resp.Body.Close()
 
 	sw := newSSEWriter(w)
-	w.WriteHeader(http.StatusOK)
 
 	msgID := "msg_" + deepai.RandomHex(12)
 	send := func(event string, v any) {
