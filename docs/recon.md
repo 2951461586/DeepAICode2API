@@ -77,6 +77,7 @@
 | 401 | — | 鉴权失败 | 记失败、换号 |
 | 403 + `email_unverified` | — | 邮箱未验证 | 视为鉴权失败 |
 | 403 + `social_login_required` | — | 账号只能用 Google/Apple 登录 | **策略终态**：标记 blocked、换号不再打它 |
+| 403 + `network_bound` | `Today's free Theos for your network have all been claimed. More become available at <RFC3339>` | **网络级**免费额度已领完 | 按 message 里的时间等 `refresh_at`；换号通常无效（同出口 IP） |
 | 400 + `machine_required` | — | 计量模型缺机器指纹 | 不重试，提示配置 `DEEPAI_MACHINE_ID` |
 | 426 + `lane_version_unsupported` | — | 车道版本不对 | 不重试，提示升级网关 |
 | 400 + `invalid_request_error` | message = `This request is not one DeepAI Code sends.` | 请求体不是桌面端形状 | 同号按桌面端字段白名单 + 补 system 重试一次 |
@@ -87,6 +88,14 @@
 > `social_login_required` 是 0.3.19 新引入的账号策略：上游明确要求账号用
 > Google/Apple 登录。实测邮箱密码注册的账号在 `/theos` 与推理端点都会命中，
 > 且被拦截的账号连 `/theos` 都会 403（403 body 里仍带 `check_in`）。
+>
+> `network_bound` 是 0.3.19 实测到的**网络级额度限额**：每日免费 Theos 不是
+> “一机一份、彼此独立”，而是同一出口 IP 共享一个当日池子。池子领完后，
+> 未拿到额度的账号仍可通过 `/theos`（`balance=granted=0`），但调计量模型会
+> 403 `network_bound`；免费模型（`theosPerRequest=0`）不受影响。
+> message 里的时间就是下一次发放时间，可直接作为 `Retry-After` 语义使用。
+> 实测同一批 14 个账号中只有 5 个拿到 200 Theos，其余 8 个等到
+> `2026-11-07T17:14Z` 刷新。
 
 ## 5. 已知坑
 
