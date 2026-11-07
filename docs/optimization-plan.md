@@ -126,7 +126,7 @@ if !s.Store.HasKeys() {
 | 文件 | 覆盖点 | 关键用例 |
 | --- | --- | --- |
 | `internal/deepai/sse_test.go` | `readSSELines`（`sse.go`） | CRLF、多行 `data:`、`: comment`、`event:`、半包/截断、末尾无空行、`[DONE]` |
-| `internal/deepai/client_test.go` | `HTTPError` 语义（`client.go:51-92`） | 409 `session_busy` → `CapacityWaiting` 且 `RetryAfter` 取头部；401 → `AuthFailed`；426 `lane_version_unsupported` → 不可重试；请求头含 `Api-Key`/`X-DeepAI-Code-Theos`/`X-DeepAI-Code-Machine` |
+| `internal/deepai/client_test.go` | `HTTPError` 语义（`client.go:51-92`） | 409 `session_busy` → `CapacityWaiting` 且 `RetryAfter` 取头部；401 → `AuthFailed`；426 `lane_version_unsupported` → 不可重试；请求头含 `Api-Key`/`X-DeepAI-Code-Theos`/`X-DeepAI-Code-Machine`（0.3.19 起车道为 4，并新增 `X-DeepAI-Code-Instance` 与 `/theos` 签到头） |
 | `internal/server/anthropic_test.go` | `v1/messages` 双向映射（`anthropic.go`） | system 数组、`tools`/`tool_choice`、图片 block、`stop_sequences`；上游 SSE → `message_start/content_block_delta/tool_use/message_stop` 事件序列与 `index` 连续性 |
 | `internal/server/responses_test.go` | `v1/responses` 映射（`responses.go`） | `input` 字符串 vs 数组、`instructions` → system、`function_call` item、`stream` 开关、`usage` 字段透传 |
 | `internal/store/store_test.go` | 调度与持久化（`store.go`） | 轮询公平性（N 次内每个账号都被选中）、`Failures>0` 被跳过、分组隔离、key 停用后 `ValidKey` 拒绝、`Save`/`Open` 往返等价、并发 `Record` 无 race |

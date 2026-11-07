@@ -130,6 +130,10 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		default:
 			probed, err := s.probeAccountQuota(acct)
 			if err != nil {
+				if deepai.IsSocialLoginRequired(err) {
+					writeErr(w, http.StatusBadRequest, "上游已限制为 Google/Apple 登录（social_login_required），该 Key 无法推理", "social_login_required")
+					return
+				}
 				writeErr(w, http.StatusBadRequest, "Key 验活失败: "+err.Error(), "invalid_request_error")
 				return
 			}

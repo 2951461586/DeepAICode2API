@@ -46,6 +46,11 @@ func (s *Scheduler) Pick(accounts []*deepai.Account, group string) *deepai.Accou
 		if !a.Enabled {
 			return false
 		}
+		// 上游策略拦截（social_login_required）是账号级终态：
+		// 继续轮询只会把每个请求都撞一次 403。
+		if a.Status == deepai.StatusBlocked {
+			return false
+		}
 		return group == "" || strings.EqualFold(a.GroupName(), group)
 	}
 	if a := s.pick(accounts, eligible, true); a != nil {

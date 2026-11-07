@@ -315,12 +315,15 @@ func (s *Server) runRegisterJob(ctx context.Context, job *registerJob, cfg *regi
 	defer func() { _ = ledger.Close() }()
 
 	pipe := register.New(register.Options{
-		Config:        cfg,
-		Provider:      provider,
-		Ledger:        ledger,
-		Enroller:      localEnroller{s: s},
-		Group:         job.Group,
-		Verify:        verify,
+		Config:   cfg,
+		Provider: provider,
+		Ledger:   ledger,
+		Enroller: localEnroller{s: s},
+		Group:    job.Group,
+		Verify:   verify,
+		// 0.3.19 起上游新增 social_login_required 策略：/theos 可能 200 而 chat 403。
+		// 入池前多跑一次最小对话探针，把这类账号挡在池外。
+		ProbeChat:     true,
 		ProxyPool:     pool,
 		NoFingerprint: noFingerprint,
 		VerifyTimeout: cfg.VerifyWait,

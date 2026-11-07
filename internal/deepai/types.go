@@ -12,7 +12,8 @@
 //	POST https://api.deepai.org/speech_to_text
 //
 // 鉴权使用桌面端登录后写入的 API Key（`Api-Key` 头），并附带
-// `X-DeepAI-Code-Theos` 车道版本与 `X-DeepAI-Code-Machine` 机器指纹。
+// `X-DeepAI-Code-Theos` 车道版本、`X-DeepAI-Code-Instance` 进程实例、
+// `X-DeepAI-Code-Machine` 机器指纹；`/theos` 还要带签到 nonce 与心跳。
 package deepai
 
 import "strings"
@@ -20,13 +21,46 @@ import "strings"
 // 上游协议常量。
 const (
 	// LaneVersion 是本网关对齐的 Theos 计费车道版本。
-	LaneVersion = "2"
+	//
+	// 0.3.17 → 0.3.19 上游把车道从 2 提到 4：其它值一律 426
+	// lane_version_unsupported（"This version of DeepAI Code is no longer supported"）。
+	LaneVersion = "4"
+
+	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
+	AppVersion = "0.3.19"
+
+	// DesktopUserAgent 是桌面端访问赞助类根路径时使用的 User-Agent。
+	DesktopUserAgent = "DeepAI-Code"
 
 	// 请求头名称。
 	HeaderKeyName  = "Api-Key"             // 上游统一使用 Api-Key（大小写不敏感）
 	HeaderLane     = "X-DeepAI-Code-Theos" // 车道版本
 	HeaderMachine  = "X-DeepAI-Code-Machine"
 	HeaderAffinity = "X-Session-Affinity"
+	// HeaderInstance 是进程级随机实例号（16 字节随机数的 hex），桌面端每个
+	// 进程生成一次，随所有 JSON 请求发出。
+	HeaderInstance = "X-DeepAI-Code-Instance"
+	// HeaderCheckIn 是 /theos 响应下发的签到 nonce，仅 /theos 请求回传。
+	HeaderCheckIn = "X-DeepAI-Code-Check-In"
+	// HeaderBeacon 是 /theos 请求上的客户端心跳。
+	HeaderBeacon = "X-DeepAI-Code-Beacon"
+
+	// 上游错误码。
+	CodeSessionBusy      = "session_busy"
+	CodeLaneUnsupported  = "lane_version_unsupported"
+	CodeSocialLogin      = "social_login_required"
+	CodeMachineRequired  = "machine_required"
+	CodeEmailUnverified  = "email_unverified"
+	CodeAuthRequired     = "auth_required"
+	CodeInvalidAPIKey    = "invalid_api_key"
+	CodeInvalidReq       = "invalid_request_error"
+	CodeNotDeepAICodeMsg = "not one deepai code sends"
+
+	// StatusBlocked 是账号级“上游策略拦截”状态（目前来源：social_login_required）。
+	//
+	// 与普通错误不同：它不是网络/额度问题，换号重试也救不回来，
+	// 调度器应直接跳过，直到一次成功的 /theos 把它重新置回 ok。
+	StatusBlocked = "blocked"
 
 	// 路径前缀。
 	ModelBasePath = "/deepai_code"
@@ -39,13 +73,19 @@ const (
 	PathWebSearch    = "/web_search"
 	PathFindService  = "/find_service"
 	PathSessionsList = "/sessions/list"
+	PathSessionsGet  = "/sessions/get"
+	PathSessionsDel  = "/sessions/delete"
+	PathSessionTurn  = "/session_turn"
 	PathSignIn       = "/desktop_auth/"
 	PathExchange     = "/desktop_auth/exchange/"
 
 	// 根路径（不在 /deepai_code 之下）。
-	PathUsageSummary = "/get_usage_summary"
-	PathSpeechToText = "/speech_to_text"
-	PathAttachments  = "/chat_attachments/upload"
+	PathUsageSummary      = "/get_usage_summary"
+	PathSpeechToText      = "/speech_to_text"
+	PathAttachments       = "/chat_attachments/upload"
+	PathAttachmentsGet    = "/chat_attachments/get"
+	PathGravityDisplay    = "/gravity-display-proxy"
+	PathGravityImpression = "/gravity-imp"
 
 	// DefaultOrigin 是生产环境上游地址。
 	DefaultOrigin = "https://api.deepai.org"
@@ -96,14 +136,37 @@ type Credentials struct {
 	IsPro    bool   `json:"isPro"`
 }
 
+// CheckIn 是 /theos 响应里的签到挑战（成功与拒绝都会下发）。
+//
+// 桌面端把它缓存起来，下一次 /theos 带 X-DeepAI-Code-Check-In: <nonce>，
+// 并按 seconds 的半个周期重新签到。
+type CheckIn struct {
+	Nonce   string `json:"nonce"`
+	Seconds int    `json:"seconds"`
+}
+
+// Valid 报告签到挑战是否可回传（nonce 为 32 位小写 hex，seconds 为正）。
+func (c *CheckIn) Valid() bool {
+	if c == nil || c.Seconds <= 0 || len(c.Nonce) != 32 {
+		return false
+	}
+	for _, r := range c.Nonce {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // Allowance 是 /theos 返回的配额信息。
 type Allowance struct {
-	Enabled     bool   `json:"enabled"`
-	Balance     string `json:"balance,omitempty"`
-	Granted     string `json:"granted,omitempty"`
-	RefreshAt   string `json:"refresh_at,omitempty"`
-	LaneVersion int    `json:"lane_version,omitempty"`
-	CheckedAt   int64  `json:"checked_at,omitempty"`
+	Enabled     bool     `json:"enabled"`
+	Balance     string   `json:"balance,omitempty"`
+	Granted     string   `json:"granted,omitempty"`
+	RefreshAt   string   `json:"refresh_at,omitempty"`
+	LaneVersion int      `json:"lane_version,omitempty"`
+	CheckIn     *CheckIn `json:"check_in,omitempty"`
+	CheckedAt   int64    `json:"checked_at,omitempty"`
 }
 
 // Clone 返回配额信息的副本（nil 安全）。
@@ -112,6 +175,10 @@ func (a *Allowance) Clone() *Allowance {
 		return nil
 	}
 	cp := *a
+	if a.CheckIn != nil {
+		ci := *a.CheckIn
+		cp.CheckIn = &ci
+	}
 	return &cp
 }
 

@@ -167,13 +167,22 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 		rec.Mark("exists", "skipped (fresh)", 0)
 	} else {
 		t = time.Now()
-		var existsErr error
-		exists, existsErr = web.UserExists(ctx, email)
+		lt, existsErr := web.LoginType(ctx, email)
 		if existsErr != nil {
 			rec.Mark("exists", "warning", time.Since(t))
 			p.logf("[%s] 预检失败，继续尝试注册：%v", email, existsErr)
 		} else {
+			exists = lt.UserExists
 			rec.Mark("exists", boolText(exists), time.Since(t))
+			// 只能社交登录的账号没有密码会话，本链路取不到 Key；
+			// 在花掉注册/登录时间之前就判策略拦截，避免产出无效号。
+			if lt.SocialOnly() {
+				rec.Mark("login", "social-only", 0)
+				rec.Status = StatusBlocked
+				rec.Error = "该邮箱仅支持 Google/Apple 登录（社交登录），无法用密码会话取 Key"
+				p.logf("[%s] 跳过：%s", email, rec.Error)
+				return p.finish(rec)
+			}
 		}
 	}
 
@@ -293,6 +302,14 @@ func (p *Pipeline) runOne(ctx context.Context, email, password, proxyOverride, f
 
 	if validateErr != nil {
 		rec.Mark("validate", "failed", validateElapsed)
+		// 上游策略拦截：Key 可用但无法推理，不应进池，也不要被后续重试覆盖。
+		if deepai.IsSocialLoginRequired(validateErr) {
+			rec.Status = StatusBlocked
+			rec.Mark("validate", "blocked", validateElapsed)
+			rec.Error = "上游已限制为 Google/Apple 登录（social_login_required），邮箱密码账号无法推理"
+			p.logf("[%s] 策略拦截：%s（%v）", email, rec.Error, validateErr)
+			return p.finish(rec)
+		}
 		rec.SetError("validate", validateErr)
 		return p.finish(rec)
 	}

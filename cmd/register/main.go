@@ -55,7 +55,7 @@ func main() {
 		noFingerprint = flag.Bool("no-fingerprint", false, "关闭浏览器指纹库")
 		checkProxies  = flag.Bool("check-proxies", false, "只检查代理池连通性后退出")
 		verify        = flag.Bool("verify", true, "是否自动收信并点击验证链接")
-		probeChat     = flag.Bool("probe-chat", false, "验活时额外做一次最小对话探针")
+		probeChat     = flag.Bool("probe-chat", true, "验活时额外做一次最小对话探针（0.3.19 起默认开启：/theos 通过不代表能推理）")
 		resume        = flag.Bool("resume", false, "补跑台账中未入池的账号")
 		doctor        = flag.Bool("doctor", false, "只做环境体检，不出网注册")
 		noEnroll      = flag.Bool("no-enroll", false, "只注册/验活，不写入网关号池")

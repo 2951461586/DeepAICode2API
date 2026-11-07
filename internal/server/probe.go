@@ -206,6 +206,11 @@ func (s *Server) probeBatch(ctx context.Context, accts []*deepai.Account, timeou
 		if err != nil && !strict {
 			return
 		}
+		// 策略拦截不是“额度探测失败”：单独落 blocked，调度器会跳过它。
+		if deepai.IsSocialLoginRequired(err) {
+			s.Store.BlockAccount(a.ID, err.Error())
+			return
+		}
 		s.Store.SetAccountAllowance(a.ID, al, err)
 	})
 
@@ -251,6 +256,15 @@ func (s *Server) probeAsync(a *deepai.Account) bool {
 		if err != nil {
 			// 自动复探失败不改账号状态：推理路径不依赖这次结果，
 			// 把 transient 错误写进 Status/Failures 只会让调度误判。
+			// 但 social_login_required 是策略终态，必须落盘让调度器停下。
+			if deepai.IsSocialLoginRequired(err) {
+				s.Store.BlockAccount(a.ID, err.Error())
+				if saveErr := s.Store.Save(); saveErr != nil {
+					log.Printf("[quota] 保存策略拦截状态失败: %v", saveErr)
+				}
+				log.Printf("[quota] %s 已被上游要求改用 Google/Apple 登录（social_login_required）", a.Name)
+				return
+			}
 			log.Printf("[quota] %s 额度复探失败（不影响调度）: %v", a.Name, err)
 			return
 		}

@@ -273,24 +273,44 @@ func (c *WebClient) verifyLinkAllowed(link string) bool {
 	return strings.EqualFold(u.Host, allowed)
 }
 
+// LoginType 是 /get_user_login_type 的返回。
+//
+// 0.3.19 起上游把 DeepAI Code 推理收窄到 Google/Apple 登录的账号，
+// 这里保留原始字段，供注册链路在入池前判定“邮箱号是否已被策略排除”。
+type LoginType struct {
+	UserExists        bool     `json:"user_exists"`
+	LoginWithPassword bool     `json:"login_with_password"`
+	SocialAccounts    []string `json:"login_with_social_accounts"`
+}
+
+// SocialOnly 报告该账号是否只能用社交账号登录（无密码登录）。
+func (l LoginType) SocialOnly() bool {
+	return l.UserExists && !l.LoginWithPassword && len(l.SocialAccounts) > 0
+}
+
+// LoginType 查询邮箱的登录方式。
+func (c *WebClient) LoginType(ctx context.Context, email string) (LoginType, error) {
+	st, raw, err := c.postForm(ctx, "/get_user_login_type", map[string]string{"email": email})
+	if err != nil {
+		return LoginType{}, err
+	}
+	if st != http.StatusOK {
+		return LoginType{}, &WebError{Op: "查询邮箱", Status: st, Message: apiMessage(raw)}
+	}
+	var out LoginType
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return LoginType{}, fmt.Errorf("登录类型响应解析失败: %w", err)
+	}
+	return out, nil
+}
+
 // UserExists 查询邮箱是否已注册。
 func (c *WebClient) UserExists(ctx context.Context, email string) (bool, error) {
-	st, raw, err := c.postForm(ctx, "/get_user_login_type", map[string]string{"email": email})
+	lt, err := c.LoginType(ctx, email)
 	if err != nil {
 		return false, err
 	}
-	if st != http.StatusOK {
-		return false, &WebError{Op: "查询邮箱", Status: st, Message: apiMessage(raw)}
-	}
-	var out struct {
-		UserExists        bool     `json:"user_exists"`
-		LoginWithPassword bool     `json:"login_with_password"`
-		SocialAccounts    []string `json:"login_with_social_accounts"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return false, fmt.Errorf("登录类型响应解析失败: %w", err)
-	}
-	return out.UserExists, nil
+	return lt.UserExists, nil
 }
 
 // SaveSignupData 保存注册来源（对齐网页端行为，失败不阻断）。

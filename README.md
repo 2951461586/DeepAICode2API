@@ -10,14 +10,19 @@
 复用桌面端登录后写入的 API Key，无需另申请密钥；纯 Go 标准库实现，
 单文件约 10 MB，零外部依赖。
 
+> ⚠️ 上游从 0.3.19（2026-11）起把 DeepAI Code 推理收窄到 **Google/Apple 登录**的账号：
+> 邮箱密码注册的号会在 `/theos` / 推理端点拿到 `403 social_login_required`。
+> 网关会把这类账号标记为 `blocked` 并跳过调度；邮箱注册链路仍能产号，但已无法推理。
+
 | 能力 | 说明 |
 | --- | --- |
 | 双协议 | OpenAI `/v1/chat/completions`、`/v1/responses`；Anthropic `/v1/messages` |
-| 号池治理 | 分组轮询、失败换号、容量退避、按账号配额调度 |
-| 账号注册 | 邮箱注册 → 登录 → 取 Key → 验活 → 入池，CF 临时邮箱 + 代理池 |
+| 协议对齐 | 车道 4 + `X-DeepAI-Code-Instance` + `/theos` 签到；区分 `social_login_required` / `machine_required` / `lane_version_unsupported` |
+| 号池治理 | 分组轮询、失败换号、容量退避、按账号配额调度、策略拦截自动跳过 |
+| 账号注册 | 邮箱注册 → 登录 → 取 Key → 验活 → 入池，CF 临时邮箱 + 代理池；入池前识别社交-only / 策略拦截 |
 | 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 注册 / 设置 |
 | 安全 | 密钥鉴权、管理口令、同源写保护、状态文件 AES-256-GCM 可选加密 |
-| 可回归 | 3.8k 行测试，`go test -race` + CI 覆盖 5 个包 |
+| 可回归 | 6.6k 行测试，`go test -race` + CI 覆盖 9 个包 |
 
 ```text
 ┌──────────────┐  /v1/chat/completions   ┌────────────────┐   Api-Key + Theos 头   ┌─────────────────────────────┐
@@ -35,7 +40,7 @@
 
 ## 一、逆向结论
 
-DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 0.3.17）。
+DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 0.3.19，车道 4）。
 真正干活的不是桌面壳，而是 `resources/server.asar` 里的 t3code server；
 它把上游能力封装成本地回环 HTTP 服务，再交给 Pi（编码 agent）调用。
 
@@ -55,10 +60,13 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 0.3.17
 | 语音转写 | `POST https://api.deepai.org/speech_to_text`（字段 `voiceRecording`） |
 | 联网搜索 | `POST https://api.deepai.org/deepai_code/web_search` |
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
-| 协议头 | `X-DeepAI-Code-Theos: 2`（计费车道版本） |
-| **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos |
+| 协议头 | `X-DeepAI-Code-Theos: 4`（计费车道版本；2/3/5 一律 426） |
+| 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每进程随机一次，随所有 JSON 请求发出） |
+| 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0|1;focus=0|1` |
+| **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
 | 会话粘性 | `X-Session-Affinity`（body 里的 `prompt_cache_key` 也会被上游使用） |
 | 容量拒绝 | `409 {"error":{"code":"session_busy"}}` + `Retry-After` |
+| 账号策略 | `403 social_login_required`：上游只允许 Google/Apple 登录的账号推理（邮箱密码号被挡） |
 | 浏览器登录 | `GET /deepai_code/desktop_auth/?state=…&port=…` → 本机 `/auth-callback?code=…` → `POST /deepai_code/desktop_auth/exchange/` |
 
 ### 1.2 上游本身就是 OpenAI 兼容的
@@ -920,16 +928,21 @@ docker run -d --name deepaicode2api \
   deepaicode2api
 ```
 
-> `X-DeepAI-Code-Machine` 是**所有模型请求的必需头**：缺失时上游直接返回
-> `426 lane_version_unsupported`。容器里通常读不到宿主机的 SMBIOS UUID，
-> 因此 `DEEPAI_MACHINE_ID` 在容器部署时**必填**。填桌面端所在机器的原始 UUID
-> 即可复用同一份每日免费额度。
+> `X-DeepAI-Code-Theos: 4` 是硬门槛：2/3/5 一律 `426 lane_version_unsupported`。
+> `X-DeepAI-Code-Machine` 仍是计量模型的必需头：缺失时返回 `400 machine_required`。
+> 容器里通常读不到宿主机的 SMBIOS UUID，因此 `DEEPAI_MACHINE_ID` 在容器部署时**必填**。
+> 填桌面端所在机器的原始 UUID 即可复用同一份每日免费额度。
 
 ---
 
 ## 十、限制与说明
 
-- `X-DeepAI-Code-Machine` 缺失时上游对所有模型请求返回 426，因此无 SMBIOS 的环境必须设置 `DEEPAI_MACHINE_ID`；
+- `X-DeepAI-Code-Theos` 必须是 `4`（0.3.19 客户端对齐值）；车道不符时上游对所有端点返回 426，需要升级网关；
+- `X-DeepAI-Code-Machine` 缺失时计量模型返回 `machine_required`，因此无 SMBIOS 的环境必须设置 `DEEPAI_MACHINE_ID`；
+- 上游 0.3.19 起把 DeepAI Code 推理收窄到 **Google/Apple 登录**的账号：
+  邮箱密码注册的号会在 `/theos` 或推理端点拿到 `403 social_login_required`。
+  网关会把这些账号标记为 `blocked` 并停止调度；控制台里看到该状态时，
+  说明该账号只能改用社交登录重新授权，重试/换代理都无效；
 - 上游免费额度按「机器指纹 + 账号」每天发放，额度耗尽后返回 403；
   机器指纹**每个账号一份**（见 §6.9），共用时只有第一个账号能领到；
 - `gpt-6-astra` 等 `openai-responses` 模型必须走 `/v1/responses`；用

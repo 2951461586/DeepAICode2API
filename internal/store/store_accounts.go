@@ -356,6 +356,27 @@ func (s *Store) MarkAccountResult(id string, ok bool, note string) {
 	}
 }
 
+// BlockAccount 把账号标记为“上游策略拦截”（当前来源：social_login_required）。
+//
+// 与普通失败的区别：这不是网络/额度问题，换号重试救不回来。调度器会跳过
+// blocked，直到一次成功的 /theos 把它重新置回 ok（见 SetAccountAllowance）。
+func (s *Store) BlockAccount(id, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.st.Accounts {
+		if a.ID != id {
+			continue
+		}
+		a.LastUsed = time.Now().Unix()
+		a.Status = deepai.StatusBlocked
+		a.LastErr = reason
+		if a.Failures < 1 {
+			a.Failures = 1
+		}
+		return
+	}
+}
+
 // SetAccountAllowance 缓存一次配额探测结果。
 func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) {
 	s.mu.Lock()

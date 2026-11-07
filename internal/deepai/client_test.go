@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -184,6 +185,12 @@ func TestClientSendsRequiredHeaders(t *testing.T) {
 	}
 	if v := got.Get(HeaderLane); v != LaneVersion {
 		t.Fatalf("%s = %q，期望 %q", HeaderLane, v, LaneVersion)
+	}
+	if LaneVersion != "4" {
+		t.Fatalf("车道版本 = %q，0.3.19 客户端使用 4", LaneVersion)
+	}
+	if inst := got.Get(HeaderInstance); len(inst) != 32 || strings.Trim(inst, "0123456789abcdef") != "" {
+		t.Fatalf("%s = %q，期望 32 位小写 hex", HeaderInstance, inst)
 	}
 	if v := got.Get(HeaderMachine); v != "machine-fingerprint" {
 		t.Fatalf("%s = %q", HeaderMachine, v)
@@ -383,5 +390,136 @@ func TestIsTransient(t *testing.T) {
 		if got := IsTransient(c.err); got != c.want {
 			t.Errorf("%s: IsTransient=%v，期望 %v", c.name, got, c.want)
 		}
+	}
+}
+
+// 车道 4 的签到握手：/theos 下发 check_in，下一次请求回传 nonce 与心跳。
+func TestTheosCheckInHandshake(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		header []http.Header
+	)
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		header = append(header, r.Header.Clone())
+		n := len(header)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			_, _ = io.WriteString(w, `{"enabled":true,"balance":"1","granted":"0","lane_version":4,`+
+				`"check_in":{"nonce":"0123456789abcdef0123456789abcdef","seconds":600}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"enabled":true,"lane_version":4}`)
+	})
+
+	acct := &Account{APIKey: "k-handshake"}
+	if _, err := c.Theos(context.Background(), acct); err != nil {
+		t.Fatalf("Theos: %v", err)
+	}
+	ci := c.CheckIn(acct)
+	if ci == nil || ci.Nonce != "0123456789abcdef0123456789abcdef" || ci.Seconds != 600 {
+		t.Fatalf("签到挑战解析错误: %#v", ci)
+	}
+	if got := header[0].Get(HeaderCheckIn); got != "" {
+		t.Fatalf("首次请求不应带签到 nonce，实际 %q", got)
+	}
+	if b := header[0].Get(HeaderBeacon); !strings.HasPrefix(b, "v=0.3.19;up=") || !strings.Contains(b, "pi=") {
+		t.Fatalf("心跳格式不对: %q", b)
+	}
+
+	if _, err := c.Theos(context.Background(), acct); err != nil {
+		t.Fatalf("第二次 Theos: %v", err)
+	}
+	if got := header[1].Get(HeaderCheckIn); got != ci.Nonce {
+		t.Fatalf("第二次请求应回传 nonce，实际 %q", got)
+	}
+}
+
+// 403 拒绝里也会带 check_in，必须照样吃掉，否则永远签不上到。
+func TestTheosCapturesCheckInFromRefusal(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"message":"social","code":"social_login_required"},`+
+			`"check_in":{"nonce":"ffffffffffffffffffffffffffffffff","seconds":600}}`)
+	})
+	acct := &Account{APIKey: "k-blocked"}
+	_, err := c.Theos(context.Background(), acct)
+	var he *HTTPError
+	if !asHTTPError(err, &he) || !he.SocialLoginRequired() {
+		t.Fatalf("应返回 social_login_required，实际 %v", err)
+	}
+	if got := c.CheckIn(acct); got == nil || got.Seconds != 600 {
+		t.Fatalf("拒绝响应里的 check_in 未被保存: %#v", got)
+	}
+}
+
+// 策略类错误是终态：不能换号重试，也不能被当成可重试 403。
+func TestHTTPErrorPolicyClassification(t *testing.T) {
+	social := mustErr(t, http.StatusForbidden, `{"error":{"code":"social_login_required"}}`)
+	if !social.SocialLoginRequired() || social.Retryable() {
+		t.Fatalf("social_login_required 应识别为策略拦截且不可重试: %+v", social)
+	}
+	machine := mustErr(t, http.StatusBadRequest, `{"error":{"code":"machine_required"}}`)
+	if !machine.MachineRequired() || machine.Retryable() {
+		t.Fatalf("machine_required 应不可重试: %+v", machine)
+	}
+	lane := mustErr(t, http.StatusUpgradeRequired, `{"error":{"code":"lane_version_unsupported"}}`)
+	if !lane.LaneUnsupported() || lane.Retryable() {
+		t.Fatalf("lane_version_unsupported 应识别为车道错误且不可重试: %+v", lane)
+	}
+	// 普通 403 仍然可换号。
+	if !mustErr(t, http.StatusForbidden, `{}`).Retryable() {
+		t.Fatal("普通 403 应保持可重试")
+	}
+}
+
+// 400 形状拒绝 -> 桌面端字段白名单 + 补 system 消息。
+func TestChatBodyFallback(t *testing.T) {
+	body := []byte(`{"model":"m","stream":true,"user":"u1","messages":[{"role":"user","content":"hi"}],"tools":[]}`)
+	rejected := mustErr(t, http.StatusBadRequest,
+		`{"error":{"message":"This request is not one DeepAI Code sends.","code":"invalid_request_error"}}`)
+	if !rejected.BodyRejected() {
+		t.Fatal("应识别为请求体形状拒绝")
+	}
+
+	out, ok := ChatBodyFallback(body, "")
+	if !ok {
+		t.Fatal("可解析的 messages 应能兜底")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("兜底结果不是合法 JSON: %v", err)
+	}
+	if _, exists := got["user"]; exists {
+		t.Fatal("白名单外的字段应被剔除")
+	}
+	if got["stream"] != true || got["model"] != "m" {
+		t.Fatalf("白名单字段应保留: %#v", got)
+	}
+	msgs, _ := got["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("应插入一条 system 消息，实际 %d 条", len(msgs))
+	}
+	if role, _ := msgs[0].(map[string]any)["role"].(string); role != "system" {
+		t.Fatalf("第一条应为 system，实际 %q", role)
+	}
+
+	if _, ok := ChatBodyFallback([]byte(`{"model":"m"}`), ""); ok {
+		t.Fatal("没有 messages 时不应兜底")
+	}
+}
+
+// 已带 system 的请求不应被重复插入。
+func TestChatBodyFallbackKeepsExistingSystem(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)
+	out, ok := ChatBodyFallback(body, "")
+	if !ok {
+		t.Fatal("应能兜底")
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if msgs, _ := got["messages"].([]any); len(msgs) != 2 {
+		t.Fatalf("不应插入额外 system，实际 %d 条", len(msgs))
 	}
 }

@@ -157,6 +157,8 @@ func (p *Pipeline) validate(ctx context.Context, rec *Record, up *deepai.Client)
 			"stream":     false,
 			"max_tokens": 8,
 			"messages": []any{
+				// 桌面端每个请求都带 system；不带会被上游的请求体校验拒掉。
+				map[string]any{"role": "system", "content": deepai.DefaultSystemPrompt},
 				map[string]any{"role": "user", "content": "Reply with exactly: OK"},
 			},
 		}
@@ -168,7 +170,9 @@ func (p *Pipeline) validate(ctx context.Context, rec *Record, up *deepai.Client)
 		defer resp.Body.Close()
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if resp.StatusCode/100 != 2 {
-			return fmt.Errorf("对话验活 HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))
+			// 保留 HTTPError 类型，否则 social_login_required 会被降级成普通字符串，
+			// 上层就无法把它识别成策略拦截。
+			return &deepai.HTTPError{Op: "对话验活", Status: resp.StatusCode, Body: raw}
 		}
 	}
 	return nil

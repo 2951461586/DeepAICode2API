@@ -682,3 +682,51 @@ startup {"accounts":703,"encrypted":true,"keys":1,"models":14,"ready":696,...}
 - 主密钥写入 `.env`（指纹 `8bd06c78`，仅指纹入库，密钥不入库）；
 - 切换后删除临时明文备份与两个历史 `*.bak-*` 明文备份；
 - 临时压测密钥已删除，仅保留原有 `stress-group`。
+
+---
+
+## 19. 0.3.19 协议对齐：车道 4 / 签到 / SSO 门槛
+
+**根因**：桌面端自动升级到 **0.3.19**，上游同时把 Theos 车道从 2 提到 **4**。
+旧网关的每个 `/models`、`/theos`、`/chat/completions` 都开始返回
+`426 lane_version_unsupported`（"This version of DeepAI Code is no longer supported"），
+即整个网关不可用。对照解包后的 `server.asar`（`src/deepai/api.ts`）与线上实测，
+协议还多了三处变化：
+
+1. `X-DeepAI-Code-Instance`：每进程 16 字节随机 hex，随所有 JSON 请求发出；
+2. `/theos` 变成签到通道：响应（含 403 拒绝）带 `check_in:{nonce,seconds}`，
+   下次请求回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon`；
+3. 新增账号策略 `403 social_login_required`：邮箱密码注册的账号被挡在推理之外。
+
+**决策**：
+
+- `deepai.LaneVersion = "4"`；`Client.Instance` 在构造时生成一次；
+- 签到状态**按 API Key 隔离**（同一个 Client 会被多个账号复用），
+  半衰期（`seconds/2`）后补签，推理前 `EnsureCheckIn` 且失败不阻塞；
+  `captureCheckIn` 从成功/拒绝两种 body 里都取挑战；
+- 错误分层：`social_login_required` → `StatusBlocked`（调度跳过、全池 blocked 时
+  503 并说明原因）；`machine_required` / `lane_version_unsupported` → 直接上报不换号；
+  其余 403 仍按账号失败换号；
+- 针对 `400 This request is not one DeepAI Code sends.`：先原样透传，命中后
+  同号用桌面端字段白名单 + 补 system 消息重试一次（`ChatBodyFallback`）；
+- 注册链路：`/get_user_login_type` 预检社交-only 账号、`validate` 把
+  `social_login_required` 落成 `blocked`（不再降级成 `failed`），
+  对话探针保留 `*HTTPError` 类型以便上层识别；
+- 新增测试：车道/实例头、签到握手（含从 403 取 nonce）、策略错误分类、
+  形状兜底、blocked 调度跳过、网关两层（形状重试 / 策略拦截）。
+
+**验证**（2026-11-07 线上）：
+
+```text
+lane 0/2/3/5/6 /models → 426 lane_version_unsupported
+lane 4       /models → 200（17 个模型，default=glm-5.3-flash）
+lane 4       /theos  → 200 {lane_version:4, check_in:{nonce, seconds:600}}
+lane 4       /web_search → 200
+邮箱注册号    /theos、/chat/completions → 403 social_login_required
+```
+
+结论：协议层已可用，但**池内邮箱密码账号已无法推理**；后续只能导入
+Google/Apple 登录的账号，或等待上游放开该策略。`go test ./...` 全绿。
+
+> 注：偶发 `400 invalid_request_error` 只在滚动升级窗口出现过一次，
+> 触发条件与「缺 system / 缺 tools」相关但未定论；兜底重试已覆盖该路径。

@@ -4,7 +4,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"deepaicode2api/internal/deepai"
 )
 
 func TestChatNonStreamTransform(t *testing.T) {
@@ -176,5 +179,89 @@ func TestChatNonJSONUpstreamIsDiagnosable(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "JSON") {
 		t.Fatalf("错误信息应说明是解析失败: %s", rec.Body.String())
+	}
+}
+
+// 上游 0.3.19 的请求体校验：400 形状拒绝后按桌面端形状（补 system + 字段白名单）同号重试一次。
+func TestChatBodyRejectedRetriesWithDesktopShape(t *testing.T) {
+	var chatCalls atomic.Int64
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, deepai.PathTheos) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"enabled":true,"lane_version":4}`)
+			return
+		}
+		if chatCalls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"This request is not one DeepAI Code sends.",`+
+				`"code":"invalid_request_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	})
+	s, key := newTestServer(t, u)
+
+	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}],"user":"u1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if chatCalls.Load() != 2 {
+		t.Fatalf("应重试一次，实际上游 chat 调用 %d 次", chatCalls.Load())
+	}
+
+	// 第二次请求体必须是桌面端形状：补了 system、剔除了白名单外字段。
+	last := u.last(t)
+	if last.Path != deepai.ModelBasePath+deepai.PathChat {
+		t.Fatalf("最后一次上游路径 = %q", last.Path)
+	}
+	if _, exists := last.Payload["user"]; exists {
+		t.Fatalf("兜底重试仍带白名单外字段: %s", string(last.Body))
+	}
+	msgs, _ := last.Payload["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatal("兜底重试缺少 messages")
+	}
+	if role, _ := msgs[0].(map[string]any)["role"].(string); role != "system" {
+		t.Fatalf("兜底重试第一条应为 system，实际 %q", role)
+	}
+}
+
+// social_login_required 是账号级策略拦截：回传后账号落 blocked，后续调度跳过。
+func TestSocialLoginBlocksAccount(t *testing.T) {
+	var chatCalls atomic.Int64
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, deepai.PathTheos) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"enabled":true,"lane_version":4}`)
+			return
+		}
+		chatCalls.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"message":"Google or Apple","type":"social_login_required",`+
+			`"code":"social_login_required"}}`)
+	})
+	s, key := newTestServer(t, u)
+
+	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if got := s.Store.Account("acc-1"); got == nil || got.Status != deepai.StatusBlocked {
+		t.Fatalf("账号应被标记 blocked，实际 %#v", got)
+	}
+
+	rec = do(t, s, http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("全池被拦截时应返回 503，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), deepai.CodeSocialLogin) {
+		t.Fatalf("503 应说明 social_login_required：%s", rec.Body.String())
+	}
+	if chatCalls.Load() != 1 {
+		t.Fatalf("被拦截的账号不应再打上游，实际 chat 调用 %d 次", chatCalls.Load())
 	}
 }

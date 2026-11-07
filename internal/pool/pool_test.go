@@ -124,3 +124,20 @@ func TestPickEmpty(t *testing.T) {
 		t.Fatalf("空号池应返回 nil，实际 %v", got)
 	}
 }
+
+// 被上游策略拦截（social_login_required）的账号不应再被调度。
+func TestPickSkipsBlocked(t *testing.T) {
+	s := New()
+	blocked, good := acct("blocked", ""), acct("good", "")
+	blocked.Status = deepai.StatusBlocked
+	accounts := []*deepai.Account{blocked, good}
+
+	for i := 0; i < 10; i++ {
+		if got := s.Pick(accounts, ""); got == nil || got.ID != "good" {
+			t.Fatalf("应跳过被拦截账号，实际 %v", got)
+		}
+	}
+	if got := s.Pick([]*deepai.Account{blocked}, ""); got != nil {
+		t.Fatalf("只剩被拦截账号时应返回 nil，实际 %v", got)
+	}
+}

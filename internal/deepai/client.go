@@ -65,7 +65,13 @@ func (e *HTTPError) Code() string {
 //
 // 400 / 404 / 422 是请求本身的问题，重试无意义；
 // 401 / 403 / 409 / 429 / 5xx 与账号或容量相关，可以重试。
+// 例外：策略类错误码（social_login_required / machine_required /
+// lane_version_unsupported）是账号或客户端终态，换号 / 重试都没用。
 func (e *HTTPError) Retryable() bool {
+	switch e.Code() {
+	case CodeSocialLogin, CodeMachineRequired, CodeLaneUnsupported:
+		return false
+	}
 	switch e.Status {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict,
 		http.StatusTooManyRequests, http.StatusInternalServerError,
@@ -81,7 +87,38 @@ func (e *HTTPError) AuthFailed() bool {
 		return true
 	}
 	code := e.Code()
-	return code == "auth_required" || code == "invalid_api_key" || code == "email_unverified"
+	return code == CodeAuthRequired || code == CodeInvalidAPIKey || code == CodeEmailUnverified
+}
+
+// SocialLoginRequired 报告账号是否被上游要求改用 Google/Apple 登录。
+//
+// 0.3.19 起上游对“邮箱 + 密码”注册的账号在 /theos 与推理端点返回 403；
+// 这是账号级策略拦截，不是鉴权失败，也不是可重试错误。
+func (e *HTTPError) SocialLoginRequired() bool { return e.Code() == CodeSocialLogin }
+
+// MachineRequired 报告是否因缺少机器指纹被拒（计量模型专属）。
+func (e *HTTPError) MachineRequired() bool { return e.Code() == CodeMachineRequired }
+
+// LaneUnsupported 报告车道版本不再被上游接受（426）。
+func (e *HTTPError) LaneUnsupported() bool {
+	return e.Status == http.StatusUpgradeRequired || e.Code() == CodeLaneUnsupported
+}
+
+// BodyRejected 报告上游是否因“请求体不是 DeepAI Code 的形状”而拒绝。
+//
+// 上游对新车道加了请求体校验，典型响应是 400 + code=invalid_request_error，
+// message 固定为 "This request is not one DeepAI Code sends."。
+func (e *HTTPError) BodyRejected() bool {
+	if e.Status != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(e.Body)), CodeNotDeepAICodeMsg)
+}
+
+// IsSocialLoginRequired 报告 err 是否为 social_login_required。
+func IsSocialLoginRequired(err error) bool {
+	var he *HTTPError
+	return errors.As(err, &he) && he.SocialLoginRequired()
 }
 
 // CapacityWaiting 报告是否为“会话忙”的容量拒绝。
@@ -158,12 +195,20 @@ func IsTransient(err error) bool {
 }
 
 // Client 是 DeepAI 上游客户端。
+//
+// 一个 Client 可以服务多个账号（按代理分桶复用），签到状态按 API Key 隔离。
 type Client struct {
 	Origin    string
 	HTTP      *http.Client
 	Machine   string
 	UserAgent string
 	Proxy     string
+
+	// Instance 是进程级实例号（16 字节随机 hex），随所有 JSON 请求发出。
+	Instance string
+
+	// checkIns 缓存每个 API Key 的签到挑战与心跳时间。
+	checkIns *checkInStore
 }
 
 // NewClient 构造上游客户端（默认读取环境代理）。
@@ -202,6 +247,8 @@ func NewClientWithFingerprint(proxyRaw, userAgent string) *Client {
 		Machine:   MachineID(),
 		UserAgent: strings.TrimSpace(userAgent),
 		Proxy:     proxyRaw,
+		Instance:  newInstanceID(),
+		checkIns:  newCheckInStore(),
 		HTTP: &http.Client{
 			Transport: transport,
 			// 上游会 302 跳到登录页，跟随只会掩盖鉴权失败。
@@ -227,7 +274,10 @@ func (c *Client) SignInURL(state string, port int) string {
 
 // commonHeaders 写入所有上游请求的公共头。
 func (c *Client) commonHeaders(req *http.Request, acct *Account) {
-	req.Header.Set("X-DeepAI-Code-Theos", LaneVersion)
+	req.Header.Set(HeaderLane, LaneVersion)
+	if c.Instance != "" {
+		req.Header.Set(HeaderInstance, c.Instance)
+	}
 	// 机器指纹优先取账号级：上游按它发放每日免费额度，共用会互相抵消。
 	machine := c.Machine
 	if acct != nil && acct.MachineID != "" {
@@ -331,6 +381,8 @@ func (c *Client) OpenModel(ctx context.Context, acct *Account, path string, body
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.commonHeaders(req, acct)
+	// 桌面端在转发推理前会记一次 lastRelayAt，心跳里的 pi 字段由此得来。
+	c.markRelay(acct)
 	if affinity != "" {
 		req.Header.Set(HeaderAffinity, affinity)
 	}
@@ -338,12 +390,16 @@ func (c *Client) OpenModel(ctx context.Context, acct *Account, path string, body
 }
 
 // Theos 查询账号的免费额度 / 余额。
+//
+// 0.3.19 起 /theos 同时是签到通道：响应（包括 403 拒绝）带 check_in，
+// 下一次请求把 nonce 回传并附带心跳。
 func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ModelURL(PathTheos), nil)
 	if err != nil {
 		return nil, err
 	}
 	c.commonHeaders(req, acct)
+	c.applyCheckInHeaders(req, acct)
 
 	resp, err := c.do(req)
 	if err != nil {
@@ -354,6 +410,8 @@ func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 无论成功还是拒绝，都先吃掉签到挑战：上游在 403 里也会下发。
+	c.captureCheckIn(acct, body)
 	if resp.StatusCode/100 != 2 {
 		return nil, &HTTPError{Op: "查询 Theos", Status: resp.StatusCode, Body: body}
 	}

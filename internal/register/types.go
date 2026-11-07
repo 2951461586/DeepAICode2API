@@ -16,6 +16,7 @@ import (
 // 记录状态（等级见 rank）。
 const (
 	StatusFailed     = "failed"
+	StatusBlocked    = "blocked"    // 上游策略拦截（social_login_required）：Key 可取，但无法推理
 	StatusRegistered = "registered" // 会话已建立
 	StatusVerified   = "verified"   // 邮箱已验证（获得每日 Theos）
 	StatusKeyed      = "keyed"      // API Key 已通过上游验活
@@ -26,6 +27,7 @@ const (
 var rank = map[string]int{
 	"":               0,
 	StatusFailed:     0,
+	StatusBlocked:    3,
 	StatusRegistered: 4,
 	StatusVerified:   5,
 	StatusKeyed:      6,

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -188,7 +189,12 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		}
 		used = acct
 
-		resp, err := s.clientFor(acct).OpenModel(ctx, acct, path, body, affinity)
+		client := s.clientFor(acct)
+		// 与桌面端一致：推理前先补签到（仅在挑战过期时，失败不阻塞）。
+		if path == deepai.PathChat || path == deepai.PathResponses {
+			client.EnsureCheckIn(ctx, acct)
+		}
+		resp, err := client.OpenModel(ctx, acct, path, body, affinity)
 		if err != nil {
 			s.releaseAccount(acct.ID)
 			lastErr = err
@@ -208,13 +214,47 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 
 		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		_ = resp.Body.Close()
-		s.releaseAccount(acct.ID)
 		if readErr != nil {
+			s.releaseAccount(acct.ID)
 			lastErr = readErr
 			s.Store.MarkAccountResult(acct.ID, false, readErr.Error())
 			continue
 		}
 		httpErr := &deepai.HTTPError{Op: "上游推理", Status: resp.StatusCode, Body: payload}
+
+		// 上游 0.3.19 对请求体做了形状校验（400 + "This request is not one
+		// DeepAI Code sends."）。用桌面端字段白名单 + 补 system 消息同号重试一次。
+		if httpErr.BodyRejected() && path == deepai.PathChat {
+			if alt, ok := deepai.ChatBodyFallback(body, ""); ok {
+				log.Printf("[upstream] 请求体被拒，按桌面端形状重试：account=%s", acctLabel(acct))
+				if retry, err2 := client.OpenModel(ctx, acct, path, alt, affinity); err2 == nil {
+					if retry.StatusCode/100 == 2 {
+						s.Store.MarkAccountResult(acct.ID, true, "")
+						retry.Body = &releaseBody{ReadCloser: retry.Body, release: func() { s.releaseAccount(acct.ID) }}
+						return retry, acct, nil
+					}
+					payload2, _ := io.ReadAll(io.LimitReader(retry.Body, 4<<20))
+					_ = retry.Body.Close()
+					if len(payload2) > 0 {
+						payload = payload2
+						httpErr = &deepai.HTTPError{Op: httpErr.Op, Status: retry.StatusCode, Body: payload2}
+					}
+				} else {
+					log.Printf("[upstream] 形状回退重试失败：account=%s err=%v", acctLabel(acct), err2)
+				}
+			}
+		}
+		s.releaseAccount(acct.ID)
+
+		// 账号级策略拦截：记 blocked 后直接回传（下一次请求调度会跳过它）。
+		if httpErr.SocialLoginRequired() {
+			s.Store.BlockAccount(acct.ID, httpErr.Error())
+			return nil, acct, httpErr
+		}
+		// 客户端配置问题：车道不对 / 缺机器指纹，换号也没用。
+		if httpErr.LaneUnsupported() || httpErr.MachineRequired() {
+			return nil, acct, httpErr
+		}
 
 		// 容量拒绝：按上游建议等待后重试（不换号，保持会话粘性）。
 		if httpErr.CapacityWaiting() {
@@ -240,9 +280,34 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		}
 	}
 	if lastErr == nil {
-		lastErr = errors.New("全部账号均不可用")
+		lastErr = s.noAccountError()
 	}
 	return nil, used, lastErr
+}
+
+// noAccountError 在没有可选账号时给出可执行的错误。
+//
+// 池里全部账号都被上游要求改用 Google/Apple 登录时，不能只回一句
+// 「全部账号均不可用」——那是运营层面的策略变更，必须让调用方看见原因。
+func (s *Server) noAccountError() error {
+	accts := s.Store.Accounts()
+	if len(accts) == 0 {
+		return errors.New("没有可用账号，请先在控制台导入桌面端凭据或添加 API Key")
+	}
+	blocked := 0
+	for _, a := range accts {
+		if a.Status == deepai.StatusBlocked {
+			blocked++
+		}
+	}
+	if blocked > 0 && blocked == len(accts) {
+		return &deepai.HTTPError{
+			Op:     "账号调度",
+			Status: http.StatusServiceUnavailable,
+			Body:   []byte(`{"error":{"message":"全部账号已被上游要求改用 Google/Apple 登录（social_login_required）；邮箱密码注册的账号无法再推理","type":"social_login_required","code":"social_login_required"}}`),
+		}
+	}
+	return errors.New("全部账号均不可用")
 }
 
 // callJSON 发起一次非流式上游请求并解析 JSON。
