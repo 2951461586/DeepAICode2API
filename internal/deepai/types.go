@@ -50,14 +50,17 @@ const (
 	HeaderBeacon = "X-DeepAI-Code-Beacon"
 
 	// 上游错误码。
-	CodeSessionBusy      = "session_busy"
-	CodeLaneUnsupported  = "lane_version_unsupported"
-	CodeSocialLogin      = "social_login_required"
-	CodeMachineRequired  = "machine_required"
-	CodeEmailUnverified  = "email_unverified"
-	CodeAuthRequired     = "auth_required"
-	CodeInvalidAPIKey    = "invalid_api_key"
-	CodeInvalidReq       = "invalid_request_error"
+	CodeSessionBusy     = "session_busy"
+	CodeLaneUnsupported = "lane_version_unsupported"
+	CodeSocialLogin     = "social_login_required"
+	CodeMachineRequired = "machine_required"
+	CodeEmailUnverified = "email_unverified"
+	CodeAuthRequired    = "auth_required"
+	CodeInvalidAPIKey   = "invalid_api_key"
+	CodeInvalidReq      = "invalid_request_error"
+	// CodeCheckInRefused 是签到被限流：账号本身没坏，推理仍可用，
+	// 但当天不能再签到 —— 会一直落在替身模型分支直到明天。
+	CodeCheckInRefused   = "check_in_refused"
 	CodeNotDeepAICodeMsg = "not one deepai code sends"
 
 	// StatusBlocked 是账号级“上游策略拦截”状态（目前来源：social_login_required）。

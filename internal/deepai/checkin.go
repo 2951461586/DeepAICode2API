@@ -41,6 +41,14 @@ type checkInState struct {
 	noteAt    time.Time // 拿到挑战的时间
 	attemptAt time.Time // 最近一次主动签到的时间
 	lastRelay time.Time // 最近一次推理转发时间（心跳 pi 字段）
+
+	// ackedNonce 是已经回传给上游的 nonce。
+	//
+	// 「拿到 nonce」和「把 nonce 回传」是两件事：实测只有后者才算签到完成，
+	// 未完成的客户端会被上游换到替身模型分支（docs/recon.md §5.1）。
+	// 没有这个字段时，EnsureCheckIn 会在 seconds/2 内直接返回，导致冷启动后
+	// 前 300s 的推理都还没签到。
+	ackedNonce string
 }
 
 type checkInStore struct {
@@ -107,6 +115,17 @@ func (c *Client) CheckIn(acct *Account) *CheckIn {
 	return &cp
 }
 
+// markAcked 记录已回传的 nonce（只有 /theos 真正带上了它才调用）。
+func (c *Client) markAcked(acct *Account, nonce string) {
+	if nonce == "" {
+		return
+	}
+	st := c.stateFor(acct)
+	c.checkIns.mu.Lock()
+	st.ackedNonce = nonce
+	c.checkIns.mu.Unlock()
+}
+
 // markRelay 记录一次推理转发时间；心跳里的 pi 字段据此判断“最近有没有在干活”。
 func (c *Client) markRelay(acct *Account) {
 	st := c.stateFor(acct)
@@ -149,11 +168,14 @@ func (c *Client) EnsureCheckIn(ctx context.Context, acct *Account) {
 	}
 	st := c.stateFor(acct)
 	c.checkIns.mu.Lock()
-	ci, noteAt, attemptAt := st.checkIn, st.noteAt, st.attemptAt
+	ci, noteAt, attemptAt, acked := st.checkIn, st.noteAt, st.attemptAt, st.ackedNonce
 	c.checkIns.mu.Unlock()
 
 	now := time.Now()
-	if ci != nil && ci.Valid() && now.Sub(noteAt) < time.Duration(ci.Seconds)*time.Second/2 {
+	// 有挑战但没回传过 → 先补一次（这是上游判定“真实客户端”的依据）。
+	// 否则才退回半衰期节奏（seconds/2，默认 300s）。
+	needAck := ci != nil && ci.Valid() && ci.Nonce != acked
+	if ci != nil && ci.Valid() && !needAck && now.Sub(noteAt) < time.Duration(ci.Seconds)*time.Second/2 {
 		return
 	}
 	if !attemptAt.IsZero() && now.Sub(attemptAt) < checkInMinInterval {

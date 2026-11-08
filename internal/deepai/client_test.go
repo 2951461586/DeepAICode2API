@@ -608,3 +608,70 @@ func TestChatBodyFallbackKeepsSamplingFields(t *testing.T) {
 		}
 	}
 }
+
+// 拿到 nonce 后必须尽快回传：上游把「完成签到」当作真实模型分支的准入条件，
+// 只拉不回传等于没签到（docs/recon.md §5.1）。
+//
+// 没有 ackedNonce 时 EnsureCheckIn 会在 seconds/2（300s）内直接返回，
+// 冷启动后的头 5 分钟推理都还没签到。
+func TestEnsureCheckInAcksPromptly(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		header []http.Header
+	)
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		header = append(header, r.Header.Clone())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"enabled":true,"balance":"1","granted":"0","lane_version":4,`+
+			`"check_in":{"nonce":"0123456789abcdef0123456789abcdef","seconds":600}}`)
+	})
+	acct := &Account{APIKey: "k-ack"}
+	ctx := context.Background()
+
+	// 模拟启动探测：只拿到挑战，还没回传。
+	if _, err := c.Theos(ctx, acct); err != nil {
+		t.Fatalf("Theos: %v", err)
+	}
+	if got := header[0].Get(HeaderCheckIn); got != "" {
+		t.Fatalf("首次请求不应带 nonce，实际 %q", got)
+	}
+
+	// 推理前补签到：必须立刻回传，而不是等半衰期。
+	c.EnsureCheckIn(ctx, acct)
+	if len(header) != 2 {
+		t.Fatalf("应立刻补一次 /theos，实际请求数 %d", len(header))
+	}
+	if got := header[1].Get(HeaderCheckIn); got != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("补签到必须回传 nonce，实际 %q", got)
+	}
+	if b := header[1].Get(HeaderBeacon); !strings.Contains(b, "pi=") {
+		t.Fatalf("补签到应带心跳，实际 %q", b)
+	}
+
+	// 已回传且未到半衰期 → 不再打扰上游。
+	c.EnsureCheckIn(ctx, acct)
+	if len(header) != 2 {
+		t.Fatalf("已签到后不应重复请求，实际 %d", len(header))
+	}
+}
+
+// 签到被限流（check_in_refused）不是账号坏：推理仍 200，只是落在替身分支。
+// 必须能和 social_login_required 区分开，否则好号会被标成 error。
+func TestCheckInRefusedDetection(t *testing.T) {
+	e := mustErr(t, http.StatusForbidden, `{"error":{"type":"check_in_refused","code":"check_in_refused"}}`)
+	if !IsCheckInRefused(e) {
+		t.Fatal("应识别为 check_in_refused")
+	}
+	if e.SocialLoginRequired() {
+		t.Fatal("不应被当成 social_login_required")
+	}
+	if e.AuthFailed() {
+		t.Fatal("不应被当成鉴权失败")
+	}
+	// 其它 403 不应误判。
+	if IsCheckInRefused(mustErr(t, http.StatusForbidden, `{"error":{"code":"social_login_required"}}`)) {
+		t.Fatal("social_login_required 不应识别为 check_in_refused")
+	}
+}

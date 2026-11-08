@@ -211,6 +211,11 @@ func (s *Server) probeBatch(ctx context.Context, accts []*deepai.Account, timeou
 			s.Store.BlockAccount(a.ID, err.Error())
 			return
 		}
+		// 签到被限流也不是账号坏：推理照常，只是当天别想再签到。
+		if deepai.IsCheckInRefused(err) {
+			s.Store.NoteAccountIssue(a.ID, err.Error())
+			return
+		}
 		s.Store.SetAccountAllowance(a.ID, al, err)
 	})
 

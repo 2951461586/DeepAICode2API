@@ -115,10 +115,22 @@ func (e *HTTPError) BodyRejected() bool {
 	return strings.Contains(strings.ToLower(string(e.Body)), CodeNotDeepAICodeMsg)
 }
 
+// CheckInRefused 报告签到是否被上游按「当天重启次数」限流。
+//
+// 它与账号不可用不同：推理照常 200，只是会落在替身模型分支
+// （见 docs/recon.md §5.1），因此不能把账号标成 error。
+func (e *HTTPError) CheckInRefused() bool { return e.Code() == CodeCheckInRefused }
+
 // IsSocialLoginRequired 报告 err 是否为 social_login_required。
 func IsSocialLoginRequired(err error) bool {
 	var he *HTTPError
 	return errors.As(err, &he) && he.SocialLoginRequired()
+}
+
+// IsCheckInRefused 报告 err 是否为签到被限流（check_in_refused）。
+func IsCheckInRefused(err error) bool {
+	var he *HTTPError
+	return errors.As(err, &he) && he.CheckInRefused()
 }
 
 // CapacityWaiting 报告是否为“会话忙”的容量拒绝。
@@ -444,12 +456,16 @@ func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 	}
 	c.commonHeaders(req, acct)
 	c.applyCheckInHeaders(req, acct)
+	sentNonce := req.Header.Get(HeaderCheckIn)
 
 	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	// 请求带上了 nonce 就说明这一次是「回传」：签到完成（403 拒绝也算，
+	// 桌面端对拒绝同样记一次 noteCheckIn）。
+	c.markAcked(acct, sentNonce)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJSONBytes))
 	if err != nil {
 		return nil, err

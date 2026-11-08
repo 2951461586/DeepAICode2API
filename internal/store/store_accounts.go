@@ -378,6 +378,24 @@ func (s *Store) BlockAccount(id, reason string) {
 }
 
 // SetAccountAllowance 缓存一次配额探测结果。
+// NoteAccountIssue 只更新备注，不改状态与失败计数。
+//
+// 用于「账号本身没坏、只是这件事今天做不了」的错误。典型是
+// check_in_refused：签到被上游按当天重启次数限流，但推理照常 200
+// （只是会落在替身模型分支），把账号标成 error 会把好号从调度里踢掉。
+func (s *Store) NoteAccountIssue(id, note string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.st.Accounts {
+		if a.ID != id {
+			continue
+		}
+		a.LastErr = note
+		a.LastUsed = time.Now().Unix()
+		return
+	}
+}
+
 func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
