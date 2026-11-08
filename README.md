@@ -2,7 +2,12 @@
 
 [![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod)
+[![tests](https://img.shields.io/badge/tests-260%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
+[![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#三接口清单)
+[![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/2951461586/DeepAICode2API)
 
 把本机 **DeepAI Code 桌面端**的上游模型服务，逆向复刻成一个
 **OpenAI / Anthropic 双协议兼容的 Go 网关**。
@@ -22,7 +27,7 @@
 | 账号注册 | 邮箱注册 → 登录 → 取 Key → 验活 → 入池，CF 临时邮箱 + 代理池；入池前识别社交-only / 策略拦截 |
 | 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 注册 / 设置 |
 | 安全 | 密钥鉴权、管理口令、同源写保护、状态文件 AES-256-GCM 可选加密 |
-| 可回归 | 6.8k 行测试，`go test -race` + CI 覆盖 9 个包 |
+| 可回归 | 260 个用例 / 7.2k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 9 个包 |
 
 ```text
 ┌──────────────┐  /v1/chat/completions   ┌────────────────┐   Api-Key + Theos 头   ┌─────────────────────────────┐
