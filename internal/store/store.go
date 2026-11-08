@@ -31,6 +31,9 @@ type Settings struct {
 	CORSOrigin     string            `json:"cors_origin"`
 	AdminPassword  string            `json:"admin_password"`
 	FallbackModel  string            `json:"fallback_model"`
+	// StrictModel 关闭「解析不到就回落」的行为：模型名不在目录里时返回 404，
+	// 而不是静默换成默认模型。默认关闭，保持开箱即用。
+	StrictModel bool `json:"strict_model"`
 }
 
 // LogEntry 是一条请求日志（只记元信息，不落对话内容）。

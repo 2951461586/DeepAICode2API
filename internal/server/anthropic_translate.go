@@ -28,6 +28,9 @@ func anthropicToChatPayload(req *anthropicRequest, modelID string) (map[string]a
 	if len(req.StopSequences) > 0 {
 		payload["stop"] = req.StopSequences
 	}
+	if effort := anthropicEffort(req); effort != "" {
+		payload["reasoning_effort"] = effort
+	}
 
 	messages := make([]any, 0, len(req.Messages)+1)
 	if sys := anthropicSystemText(req.System); sys != "" {
@@ -65,6 +68,51 @@ func anthropicToChatPayload(req *anthropicRequest, modelID string) (map[string]a
 		}
 	}
 	return payload, nil
+}
+
+// anthropicEffort 把 Anthropic 的 thinking / output_config.effort 映射为
+// 上游 chat 端点的 reasoning_effort。
+//
+// 上游只认 OpenAI 形状；此处前 thinking 被解析后直接丢弃，结果就是
+// Anthropic 客户端（包括模型指纹类检测）显式要求的推理强度被静默降级成
+// 上游默认值——测出来的“模型指纹”自然与客户端不一致。
+//
+// 优先级：output_config.effort > thinking.type > thinking.budget_tokens。
+func anthropicEffort(req *anthropicRequest) string {
+	if req == nil {
+		return ""
+	}
+	if req.OutputConfig != nil {
+		if e := strings.ToLower(strings.TrimSpace(req.OutputConfig.Effort)); e != "" {
+			return e
+		}
+	}
+	if len(req.Thinking) == 0 {
+		return ""
+	}
+	var th struct {
+		Type         string `json:"type"`
+		BudgetTokens int    `json:"budget_tokens"`
+	}
+	if json.Unmarshal(req.Thinking, &th) != nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(th.Type)) {
+	case "disabled":
+		return "none"
+	case "enabled":
+		switch {
+		case th.BudgetTokens <= 0:
+			return "" // 只说了“开”，没给预算：交给上游默认
+		case th.BudgetTokens < 4096:
+			return "low"
+		case th.BudgetTokens < 16384:
+			return "medium"
+		default:
+			return "high"
+		}
+	}
+	return ""
 }
 
 // appendAnthropicMessage 把一个 Anthropic 消息展开为一条或多条 OpenAI 消息。

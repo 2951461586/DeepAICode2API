@@ -10,6 +10,19 @@ import (
 
 // --- Responses → Chat ---
 
+// responsesReasoningEffort 提取 Responses 请求里的推理强度。
+//
+// 兼容两种写法：官方形状 {"reasoning":{"effort":"low"}}，以及直接给字符串。
+func responsesReasoningEffort(payload map[string]any) string {
+	switch v := payload["reasoning"].(type) {
+	case map[string]any:
+		return strings.ToLower(strings.TrimSpace(strOf(v["effort"])))
+	case string:
+		return strings.ToLower(strings.TrimSpace(v))
+	}
+	return ""
+}
+
 // responsesToChatPayload 把 Responses 请求翻译成 Chat Completions。
 func responsesToChatPayload(payload map[string]any, modelID string) (map[string]any, error) {
 	out := map[string]any{
@@ -27,6 +40,11 @@ func responsesToChatPayload(payload map[string]any, modelID string) (map[string]
 	}
 	if v, ok := payload["prompt_cache_key"]; ok {
 		out["prompt_cache_key"] = v
+	}
+	// Responses 的 reasoning.effort 与 chat 的 reasoning_effort 是同一个旋钮。
+	// 不映射就是静默把调用方的推理强度丢掉（上游会按默认值跑）。
+	if effort := responsesReasoningEffort(payload); effort != "" {
+		out["reasoning_effort"] = effort
 	}
 
 	messages := make([]any, 0, 4)

@@ -125,3 +125,55 @@ func TestFind(t *testing.T) {
 		t.Fatal("不存在的模型应返回 false")
 	}
 }
+
+// 严格模式：不回落、不做子串匹配，但保留别名与「模型名称」这类明确意图。
+func TestResolveStrictNoImplicitFallback(t *testing.T) {
+	for _, name := range []string{"gpt-6-sol", "gpt-5.6-sol", "mimo-v2.6-flash", "nope"} {
+		if m, ok := ResolveStrict(catalog(), nil, name, "glm-5.3-flash"); ok {
+			t.Errorf("%q 不应解析成功，实际 %q", name, m.ID)
+		}
+		// 宽松模式保持原行为（回落），保证开箱即用。
+		if got := Resolve(catalog(), nil, name, "glm-5.3-flash"); got.ID != "glm-5.3-flash" {
+			t.Errorf("%q 宽松模式应回落默认模型，实际 %q", name, got.ID)
+		}
+	}
+
+	// 子串匹配不算「有依据」：gpt-6 不能静默变成目录里第一个 gpt-6-*。
+	if _, ok := ResolveStrict(catalog(), nil, "gpt-6", "glm-5.3-flash"); ok {
+		t.Error("严格模式不应做子串匹配")
+	}
+	if _, ok := ResolveStrict(catalog(), nil, "opus", ""); ok {
+		t.Error("严格模式不应把 opus 子串命中 claude-opus-5-5")
+	}
+
+	// 模型名称（含空格）是明确意图。
+	if m, ok := ResolveStrict(catalog(), nil, "  Claude Opus 5.5 ", ""); !ok || m.ID != "claude-opus-5-5" {
+		t.Errorf("名称匹配失败: %#v %v", m, ok)
+	}
+	// 别名仍然生效。
+	if m, ok := ResolveStrict(catalog(), map[string]string{"mine": "gpt-6-luna"}, "mine", ""); !ok || m.ID != "gpt-6-luna" {
+		t.Errorf("自定义别名失败: %#v %v", m, ok)
+	}
+	if m, ok := ResolveStrict(catalog(), nil, "gpt-4o", "glm-5.3-flash"); !ok || m.ID != "glm-5.3-flash" {
+		t.Errorf("内置别名失败: %#v %v", m, ok)
+	}
+}
+
+func TestSuggest(t *testing.T) {
+	picks := Suggest(catalog(), "gpt-6-sol", 5)
+	found := false
+	for _, id := range picks {
+		if id == "gpt-6-luna" {
+			found = true
+		}
+		if id == "glm-5.3-flash" {
+			t.Errorf("不相关的模型不应被推荐: %v", picks)
+		}
+	}
+	if !found {
+		t.Fatalf("gpt-6-sol 应推荐 gpt-6-luna 附近的模型，实际 %v", picks)
+	}
+	if got := Suggest(catalog(), "gpt-6-sol", 0); got != nil {
+		t.Fatalf("max<=0 应返回 nil，实际 %v", got)
+	}
+}

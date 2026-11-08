@@ -4,15 +4,20 @@ import "encoding/json"
 
 // DefaultSystemPrompt 是补齐 system 消息时使用的兜底提示词。
 //
-// 上游 0.3.19 的请求体校验只认“DeepAI Code 会发的那种形状”，桌面端每个
+// 上游 0.3.19+ 的请求体校验只认“DeepAI Code 会发的那种形状”，桌面端每个
 // 请求都带 system 提示词与 tools；纯 user-only 的请求偶尔会被 400
-// invalid_request_error 拒绝。这里只补 system 消息，不改写用户内容。
+// invalid_request_error 拒绝。这里只补 system 消息，不改写用户内容；
+// 请求里已经有 system / developer 消息时原样保留，绝不替换。
 const DefaultSystemPrompt = "You are a helpful AI assistant. Answer the user's request directly."
 
 // desktopChatKeys 是桌面端 chat/completions 实际会发送的字段白名单。
 //
-// 仅在请求被上游以 “This request is not one DeepAI Code sends.” 拒绝后
-// 作为兜底重试使用；正常路径仍然透传客户端的原始字段。
+// 仅在上游以 “This request is not one DeepAI Code sends.” 拒绝后作为兜底
+// 重试使用；正常路径仍然透传客户端的原始字段。
+//
+// 采样参数必须在白名单里：形状回退是为了让请求被接受，不是为了把它改成
+// 另一个请求。丢掉 seed / service_tier / stream_options 会改变采样条件与
+// 用量上报，指纹类检测甚至会因此换一个候选模型。
 var desktopChatKeys = map[string]bool{
 	"model":                 true,
 	"messages":              true,
@@ -25,6 +30,9 @@ var desktopChatKeys = map[string]bool{
 	"top_p":                 true,
 	"stop":                  true,
 	"stream":                true,
+	"stream_options":        true,
+	"seed":                  true,
+	"service_tier":          true,
 	"reasoning_effort":      true,
 	"prompt_cache_key":      true,
 }

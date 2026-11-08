@@ -18,29 +18,14 @@ import (
 // 无法识别时不报错而是回落：这样任意客户端（Claude Code / Cline /
 // OpenAI SDK）都能用自己习惯的模型名开箱即用。
 func Resolve(catalog []deepai.Model, aliases map[string]string, name, defaultID string) deepai.Model {
+	if m, ok := ResolveStrict(catalog, aliases, name, defaultID); ok {
+		return m
+	}
 	n := normalize(name)
 	if n != "" {
-		if m, ok := lookup(catalog, n); ok {
-			return m
-		}
-		if target, ok := lookupAlias(aliases, n); ok {
-			if m, ok := lookup(catalog, target); ok {
-				return m
-			}
-		}
-		if target, ok := builtinAliases[n]; ok {
-			if m, ok := lookup(catalog, target); ok {
-				return m
-			}
-		}
 		// 宽松匹配：模型名包含用户输入，或用户输入包含模型 ID。
 		for _, m := range catalog {
 			if strings.Contains(strings.ToLower(m.ID), n) {
-				return m
-			}
-		}
-		for _, m := range catalog {
-			if n == strings.ToLower(strings.ReplaceAll(m.Name, " ", "-")) {
 				return m
 			}
 		}
@@ -53,6 +38,93 @@ func Resolve(catalog []deepai.Model, aliases map[string]string, name, defaultID 
 		return catalog[0]
 	}
 	return deepai.DefaultModelEntry()
+}
+
+// ResolveStrict 与 Resolve 的“有依据”解析部分一致，但不做任何隐式回落。
+//
+// 依次尝试：去掉前缀 → 精确 ID → 自定义别名 → 内置别名 → 模型名称匹配。
+// 全部不命中时返回 ok=false，**不**回落默认模型、**不**做子串包含匹配。
+//
+// 这是严格模式（Settings.StrictModel）的依据：子串匹配会把 "gpt-6" 解成
+// 目录里第一个 “gpt-6-*“（可能是另一个模型），默认回落更会把任意拼写
+// 错误变成默认模型——两者都会让调用方以为自己测的是 A，实际跑的是 B。
+func ResolveStrict(catalog []deepai.Model, aliases map[string]string, name, defaultID string) (deepai.Model, bool) {
+	n := normalize(name)
+	if n == "" {
+		return deepai.Model{}, false
+	}
+	if m, ok := lookup(catalog, n); ok {
+		return m, true
+	}
+	if target, ok := lookupAlias(aliases, n); ok {
+		if m, ok := lookup(catalog, target); ok {
+			return m, true
+		}
+	}
+	if target, ok := builtinAliases[n]; ok {
+		if m, ok := lookup(catalog, target); ok {
+			return m, true
+		}
+	}
+	for _, m := range catalog {
+		if n == strings.ToLower(strings.ReplaceAll(m.Name, " ", "-")) {
+			return m, true
+		}
+	}
+	return deepai.Model{}, false
+}
+
+// Suggest 返回与 name 相关的目录 ID，用于严格模式下的可执行错误提示。
+//
+// 只做提示，不参与解析。相似度只要求“够像”：子串命中，或忽略标点后
+// 前 4 个字符相同（`gpt-6-sol` ↔ `gpt-6.1-sol` / `gpt-6-luna`，
+// `mimo-v2.6-flash` ↔ `mimo-2.6-flash`）。
+func Suggest(catalog []deepai.Model, name string, max int) []string {
+	n := normalize(name)
+	if n == "" || max <= 0 {
+		return nil
+	}
+	key := similarityKey(n)
+	out := make([]string, 0, max)
+	for _, m := range catalog {
+		id := strings.ToLower(m.ID)
+		label := normalize(m.Name)
+		near := strings.Contains(id, n) || strings.Contains(n, id) || strings.Contains(label, n)
+		if !near {
+			near = commonPrefix(key, similarityKey(m.ID)) >= 4
+		}
+		if !near {
+			continue
+		}
+		out = append(out, m.ID)
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
+}
+
+// similarityKey 去掉分隔符，避免 `6.1` 与 `6-1`、“v2.6” 与 “2.6” 的差异。
+func similarityKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func commonPrefix(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return i
 }
 
 // List 返回对外模型清单（含自定义别名）。
@@ -101,7 +173,8 @@ func normalize(name string) string {
 			break
 		}
 	}
-	return n
+	// 模型名里的空白当分隔符："Claude Opus 5.5" 与 "claude-opus-5.5" 等价。
+	return strings.Join(strings.Fields(n), "-")
 }
 
 func lookup(catalog []deepai.Model, id string) (deepai.Model, bool) {

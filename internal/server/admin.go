@@ -20,6 +20,7 @@ func sanitizedSettings(st store.Settings) map[string]any {
 		"log_keep":            st.LogKeep,
 		"cors_origin":         st.CORSOrigin,
 		"fallback_model":      st.FallbackModel,
+		"strict_model":        st.StrictModel,
 		"admin_password_set":  st.AdminPassword != "",
 	}
 }
@@ -135,6 +136,7 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		CORSOrigin     *string           `json:"cors_origin"`
 		AdminPassword  *string           `json:"admin_password"`
 		FallbackModel  *string           `json:"fallback_model"`
+		StrictModel    *bool             `json:"strict_model"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
@@ -161,6 +163,9 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.FallbackModel != nil {
 			st.FallbackModel = strings.TrimSpace(*body.FallbackModel)
+		}
+		if body.StrictModel != nil {
+			st.StrictModel = *body.StrictModel
 		}
 	})
 	_ = s.Store.Save()

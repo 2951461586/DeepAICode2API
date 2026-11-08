@@ -27,7 +27,11 @@ const (
 	LaneVersion = "4"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
-	AppVersion = "0.3.19"
+	//
+	// 0.3.20（2026-11-07 发布）与 0.3.19 的 wire protocol 逐项核对后完全一致：
+	// 车道仍是 4、实例仍是每进程一次、机器指纹算法未变、签到形态未变。
+	// 只有心跳里的版本号需要跟上，否则 /theos 上自报的是旧客户端。
+	AppVersion = "0.3.20"
 
 	// DesktopUserAgent 是桌面端访问赞助类根路径时使用的 User-Agent。
 	DesktopUserAgent = "DeepAI-Code"
@@ -75,6 +79,7 @@ const (
 	PathSessionsList = "/sessions/list"
 	PathSessionsGet  = "/sessions/get"
 	PathSessionsDel  = "/sessions/delete"
+	PathSessionsSave = "/sessions/save" // 0.3.20 新增：云端会话 / 偏好上传
 	PathSessionTurn  = "/session_turn"
 	PathSignIn       = "/desktop_auth/"
 	PathExchange     = "/desktop_auth/exchange/"

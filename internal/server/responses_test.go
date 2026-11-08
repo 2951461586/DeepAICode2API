@@ -338,3 +338,30 @@ func TestResponsesPassthroughRewritesModel(t *testing.T) {
 		}
 	}
 }
+
+// Responses 的 reasoning.effort 必须翻译成 chat 的 reasoning_effort：
+// 不映射就是静默把调用方的推理强度丢掉。
+func TestResponsesReasoningEffortMapping(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload map[string]any
+		want    string
+	}{
+		{"官方形状", map[string]any{"model": "m", "input": "hi", "reasoning": map[string]any{"effort": "medium"}}, "medium"},
+		{"字符串形式", map[string]any{"model": "m", "input": "hi", "reasoning": "high"}, "high"},
+		{"大小写归一", map[string]any{"model": "m", "input": "hi", "reasoning": map[string]any{"effort": " LOW "}}, "low"},
+		{"没有 reasoning", map[string]any{"model": "m", "input": "hi"}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out, err := responsesToChatPayload(c.payload, "m")
+			if err != nil {
+				t.Fatalf("翻译: %v", err)
+			}
+			got, _ := out["reasoning_effort"].(string)
+			if got != c.want {
+				t.Fatalf("reasoning_effort = %q，期望 %q", got, c.want)
+			}
+		})
+	}
+}

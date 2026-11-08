@@ -23,7 +23,11 @@ type anthropicRequest struct {
 	Tools         []anthropicTool    `json:"tools"`
 	ToolChoice    json.RawMessage    `json:"tool_choice"`
 	Thinking      json.RawMessage    `json:"thinking"`
-	Metadata      json.RawMessage    `json:"metadata"`
+	// OutputConfig 是 Anthropic 自适应思考的强度旋钮（{"effort":"low"}）。
+	OutputConfig *struct {
+		Effort string `json:"effort"`
+	} `json:"output_config"`
+	Metadata json.RawMessage `json:"metadata"`
 }
 
 type anthropicMessage struct {
@@ -63,7 +67,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	model := s.resolveModel(req.Model)
+	model, modelOK := s.resolveModelOK(req.Model)
+	if !modelOK {
+		writeAnthropicErr(w, http.StatusNotFound, "invalid_request_error", s.unknownModelMessage(req.Model))
+		return
+	}
 	payload, err := anthropicToChatPayload(&req, model.ID)
 	if err != nil {
 		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())

@@ -207,6 +207,14 @@ type Client struct {
 	// Instance 是进程级实例号（16 字节随机 hex），随所有 JSON 请求发出。
 	Instance string
 
+	// BrowserFingerprint 决定是否把账号的浏览器指纹头（User-Agent /
+	// sec-ch-ua / Accept-Language）带到上游请求。
+	//
+	// 桌面端走 Node fetch，**从不发这些头**；带上去等于在推理接口上自报
+	// “我不是客户端”。注册链路需要它们（和网页注册时保持一致），
+	// 因此只有 NewClientWithFingerprint 打开它。
+	BrowserFingerprint bool
+
 	// checkIns 缓存每个 API Key 的签到挑战与心跳时间。
 	checkIns *checkInStore
 }
@@ -214,11 +222,20 @@ type Client struct {
 // NewClient 构造上游客户端（默认读取环境代理）。
 //
 // DEEPAI_API_ORIGIN 可覆盖上游地址（仅接受 http/https）。
-func NewClient() *Client { return NewClientWithFingerprint("", "") }
+func NewClient() *Client { return inferClient(NewClientWithFingerprint("", "")) }
 
 // NewClientWithProxy 构造走指定代理的上游客户端。
 func NewClientWithProxy(proxyRaw string) *Client {
-	return NewClientWithFingerprint(proxyRaw, "")
+	return inferClient(NewClientWithFingerprint(proxyRaw, ""))
+}
+
+// inferClient 把客户端切成「推理形态」：不带浏览器指纹。
+//
+// 注册链路专用 NewClientWithFingerprint（默认带账号的 Chrome 指纹）；
+// 其余调用点都是推理 / 探测，必须与桌面端一致。
+func inferClient(c *Client) *Client {
+	c.BrowserFingerprint = false
+	return c
 }
 
 // NewClientWithFingerprint 构造带代理与 User-Agent 的上游客户端。
@@ -243,12 +260,13 @@ func NewClientWithFingerprint(proxyRaw, userAgent string) *Client {
 		}
 	}
 	return &Client{
-		Origin:    origin,
-		Machine:   MachineID(),
-		UserAgent: strings.TrimSpace(userAgent),
-		Proxy:     proxyRaw,
-		Instance:  newInstanceID(),
-		checkIns:  newCheckInStore(),
+		Origin:             origin,
+		Machine:            MachineID(),
+		UserAgent:          strings.TrimSpace(userAgent),
+		Proxy:              proxyRaw,
+		Instance:           newInstanceID(),
+		BrowserFingerprint: true,
+		checkIns:           newCheckInStore(),
 		HTTP: &http.Client{
 			Transport: transport,
 			// 上游会 302 跳到登录页，跟随只会掩盖鉴权失败。
@@ -272,6 +290,21 @@ func (c *Client) SignInURL(state string, port int) string {
 	return u + "?" + q.Encode()
 }
 
+// desktopInferenceHeaders 复刻桌面端 Node fetch（undici）的默认请求头。
+//
+// 实测 Node 22 的全局 fetch 发出的是：
+//
+//	user-agent: node / accept: */* / accept-language: * / sec-fetch-mode: cors
+//
+// 没有浏览器的 UA，也没有 sec-ch-ua。网关此前把注册用的 Chrome 指纹带到
+// 推理请求上，与真实客户端不一致；这里按实测值对齐。
+var desktopInferenceHeaders = map[string]string{
+	"User-Agent":      "node",
+	"Accept":          "*/*",
+	"Accept-Language": "*",
+	"Sec-Fetch-Mode":  "cors",
+}
+
 // commonHeaders 写入所有上游请求的公共头。
 func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 	req.Header.Set(HeaderLane, LaneVersion)
@@ -288,26 +321,37 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 	if machine != "" {
 		req.Header.Set(HeaderMachine, machine)
 	}
-	req.Header.Set("Accept", "application/json")
 
-	// 指纹头也优先取账号级：注册与推理必须用同一套特征。
-	ua := c.UserAgent
-	if acct != nil && acct.UserAgent != "" {
-		ua = acct.UserAgent
-	}
-	if ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
-	if acct != nil {
-		if acct.AcceptLanguage != "" {
-			req.Header.Set("Accept-Language", acct.AcceptLanguage)
+	// 两种指纹形态二选一，不混用：
+	//   - BrowserFingerprint=true：注册链路，带账号的 Chrome 指纹；
+	//   - 否则：与桌面端推理一致，只带 Node fetch 的默认头。
+	//
+	// 注意：这里不能 return —— 后面还有 Api-Key（鉴权头）要写。
+	if !c.BrowserFingerprint {
+		for k, v := range desktopInferenceHeaders {
+			req.Header.Set(k, v)
 		}
-		if acct.SecCHUA != "" {
-			req.Header.Set("sec-ch-ua", acct.SecCHUA)
-			req.Header.Set("sec-ch-ua-mobile", "?0")
+	} else {
+		req.Header.Set("Accept", "application/json")
+		// 指纹头也优先取账号级：注册与推理必须用同一套特征。
+		ua := c.UserAgent
+		if acct != nil && acct.UserAgent != "" {
+			ua = acct.UserAgent
 		}
-		if acct.Platform != "" {
-			req.Header.Set("sec-ch-ua-platform", acct.Platform)
+		if ua != "" {
+			req.Header.Set("User-Agent", ua)
+		}
+		if acct != nil {
+			if acct.AcceptLanguage != "" {
+				req.Header.Set("Accept-Language", acct.AcceptLanguage)
+			}
+			if acct.SecCHUA != "" {
+				req.Header.Set("sec-ch-ua", acct.SecCHUA)
+				req.Header.Set("sec-ch-ua-mobile", "?0")
+			}
+			if acct.Platform != "" {
+				req.Header.Set("sec-ch-ua-platform", acct.Platform)
+			}
 		}
 	}
 	if acct != nil && acct.APIKey != "" {

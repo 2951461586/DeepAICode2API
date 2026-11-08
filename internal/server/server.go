@@ -166,6 +166,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"quota_due":     due,
 		"models":        len(models),
 		"default_model": s.Store.DefaultModel(),
+		"strict_model":  s.Store.Settings().StrictModel,
 		"machine_id":    shortMachine(s.Store.MachineID()),
 		"machine_ready": s.Store.MachineID() != "",
 	})

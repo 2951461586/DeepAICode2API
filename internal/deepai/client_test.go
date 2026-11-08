@@ -424,7 +424,7 @@ func TestTheosCheckInHandshake(t *testing.T) {
 	if got := header[0].Get(HeaderCheckIn); got != "" {
 		t.Fatalf("首次请求不应带签到 nonce，实际 %q", got)
 	}
-	if b := header[0].Get(HeaderBeacon); !strings.HasPrefix(b, "v=0.3.19;up=") || !strings.Contains(b, "pi=") {
+	if b := header[0].Get(HeaderBeacon); !strings.HasPrefix(b, "v="+AppVersion+";up=") || !strings.Contains(b, "pi=") {
 		t.Fatalf("心跳格式不对: %q", b)
 	}
 
@@ -521,5 +521,90 @@ func TestChatBodyFallbackKeepsExistingSystem(t *testing.T) {
 	_ = json.Unmarshal(out, &got)
 	if msgs, _ := got["messages"].([]any); len(msgs) != 2 {
 		t.Fatalf("不应插入额外 system，实际 %d 条", len(msgs))
+	}
+}
+
+// 推理客户端必须与桌面端一致：Node fetch 不发 User-Agent / sec-ch-ua /
+// Accept-Language，网关带上去等于在推理接口自报“我不是客户端”。
+func TestInferenceClientOmitsBrowserFingerprint(t *testing.T) {
+	var got http.Header
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+	c.BrowserFingerprint = false
+
+	acct := &Account{
+		APIKey:         "k1",
+		UserAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/156.0.0.0",
+		AcceptLanguage: "en-US,en;q=0.9",
+		SecCHUA:        `"Chromium";v="156"`,
+		Platform:       `"Windows"`,
+	}
+	if _, err := c.OpenModel(context.Background(), acct, PathChat, []byte(`{"model":"x"}`), ""); err != nil {
+		t.Fatalf("OpenModel: %v", err)
+	}
+	// 桌面端走 Node fetch：UA 是 node，没有 sec-ch-ua / Accept-Language 指纹。
+	if v := got.Get("User-Agent"); v != "node" {
+		t.Errorf("推理请求的 UA 应为 node，实际 %q", v)
+	}
+	if v := got.Get("Accept-Language"); v != "*" {
+		t.Errorf("Accept-Language 应为 *，实际 %q", v)
+	}
+	for _, h := range []string{"sec-ch-ua", "sec-ch-ua-platform", "sec-ch-ua-mobile"} {
+		if v := got.Get(h); v != "" {
+			t.Errorf("推理请求不应携带 %s: %q", h, v)
+		}
+	}
+}
+
+// 注册链路继续带浏览器指纹（与网页注册时的特征保持一致）。
+func TestRegisterClientKeepsBrowserFingerprint(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClientWithFingerprint("", "agent-ua/1.0")
+	c.Origin = srv.URL
+	c.Machine = "machine-fingerprint"
+
+	acct := &Account{APIKey: "k2", SecCHUA: `"Chromium";v="156"`, Platform: `"Windows"`, AcceptLanguage: "en-US"}
+	if _, err := c.OpenModel(context.Background(), acct, PathChat, []byte(`{"model":"x"}`), ""); err != nil {
+		t.Fatalf("OpenModel: %v", err)
+	}
+	if v := got.Get("User-Agent"); v != "agent-ua/1.0" {
+		t.Fatalf("注册客户端应带 UA，实际 %q", v)
+	}
+	if got.Get("sec-ch-ua") == "" || got.Get("sec-ch-ua-platform") == "" || got.Get("Accept-Language") == "" {
+		t.Fatalf("注册客户端应带齐指纹头: %#v", got)
+	}
+}
+
+// 形状回退不能顺手改掉采样条件：seed / service_tier / stream_options
+// 会改变采样与用量上报，指纹类检测甚至会因此换一个候选模型。
+func TestChatBodyFallbackKeepsSamplingFields(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],` +
+		`"seed":7,"service_tier":"flex","stream":true,` +
+		`"stream_options":{"include_usage":true},"presence_penalty":0.5,"user":"u1"}`)
+	out, ok := ChatBodyFallback(body, "")
+	if !ok {
+		t.Fatal("应能兜底")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("兜底结果不是 JSON: %v", err)
+	}
+	for _, k := range []string{"seed", "service_tier", "stream_options"} {
+		if _, exists := got[k]; !exists {
+			t.Errorf("白名单丢了 %s，会改变采样条件或用量上报", k)
+		}
+	}
+	for _, k := range []string{"presence_penalty", "user"} {
+		if _, exists := got[k]; exists {
+			t.Errorf("非桌面字段 %s 仍应被剥离", k)
+		}
 	}
 }

@@ -33,7 +33,11 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	model := s.resolveModel(requestModelName(payload))
+	model, modelOK := s.resolveModelOK(requestModelName(payload))
+	if !modelOK {
+		writeErr(w, http.StatusNotFound, s.unknownModelMessage(requestModelName(payload)), "invalid_request_error")
+		return
+	}
 	payload["model"] = model.ID
 	stream, _ := payload["stream"].(bool)
 	affinity := affinityFor(r, payload)

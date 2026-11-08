@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -455,5 +456,40 @@ func TestAnthropicUpstreamErrorMapping(t *testing.T) {
 	errBody, _ := out["error"].(map[string]any)
 	if errBody["message"] == "" {
 		t.Fatalf("错误信息为空: %#v", out)
+	}
+}
+
+// Anthropic 的 thinking / output_config.effort 必须映射到上游的
+// reasoning_effort：此前被解析后直接丢弃，等于把调用方要求的推理强度
+// 静默降级成上游默认值。
+func TestAnthropicEffortMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"output_config 优先", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high"}}`, "high"},
+		{"thinking 关闭", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`, "none"},
+		{"预算小", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":2048}}`, "low"},
+		{"预算中", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":8000}}`, "medium"},
+		{"预算大", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":32000}}`, "high"},
+		{"只开不给预算", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}`, ""},
+		{"两者都没有", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var req anthropicRequest
+			if err := json.Unmarshal([]byte(c.body), &req); err != nil {
+				t.Fatalf("解析请求: %v", err)
+			}
+			payload, err := anthropicToChatPayload(&req, "m")
+			if err != nil {
+				t.Fatalf("翻译: %v", err)
+			}
+			got, _ := payload["reasoning_effort"].(string)
+			if got != c.want {
+				t.Fatalf("reasoning_effort = %q，期望 %q", got, c.want)
+			}
+		})
 	}
 }

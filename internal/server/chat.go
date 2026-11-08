@@ -37,7 +37,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	model := s.resolveModel(requestModelName(payload))
+	model, modelOK := s.resolveModelOK(requestModelName(payload))
+	if !modelOK {
+		writeErr(w, http.StatusNotFound, s.unknownModelMessage(requestModelName(payload)), "invalid_request_error")
+		return
+	}
 	payload["model"] = model.ID
 	stream, _ := payload["stream"].(bool)
 	// 必须显式下发 stream=false：上游在缺省该字段时默认按 SSE 返回，
