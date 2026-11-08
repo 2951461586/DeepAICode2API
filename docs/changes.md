@@ -985,3 +985,52 @@ Responses reasoning.effort=medium → reasoning_effort=medium
 > ⚠️ 体检本身会消耗签到的每日重启配额：写脚本反复「拉 nonce + 回传」会撞上
 > `403 check_in_refused`（当天不能再签到）。用网关正常跑不会，因为它每个
 > `seconds/2` 才续签一次。
+
+---
+
+## 25. 控制台：K/M 单位 + 补齐后端已就绪的模块
+
+**根因**：两类漂移。
+
+1. **可读性**：概览与日志里的 Token / 字符是纯整数（`1,234,567`），
+   一眼看不出量级；模型目录的 1,048,576 同样如此。
+2. **前后端能力脱节**：后端早就有 `assign-proxy` / `assign-machine` /
+   `set-group` / `mark-verified`、密钥 `set-group`、账号 `group/status/q` 过滤、
+   日志 `endpoint/account/min_status/q/since` 过滤，但控制台一个都没接 ——
+   这些操作只能靠 curl。
+
+决策：
+
+- **单位**：新增 `fmtCompact()` —— 3 位有效数字 + K/M/B，并修正进位边界
+  （`999999 → 1M`，不是 `1000K`）。用于「概览」的输出字符、Token 入/出，
+  以及「日志」的字符、Token 两列；**精确值放 `title`**，悬停可查。
+  模型目录按用户选择保留精确整数（对照模型规格时需要逐位）。
+- **账号**：列表加「分组 / 状态 / 关键字」筛选（直接对应服务端
+  `AccountPage` 的 `group/status/q`，分页与排序保持不变）；行内菜单新增
+  补绑代理（已有代理则 confirm 后 `reassign`）、清除代理、分配机器指纹
+  （只在 `has_machine=false` 时出现）、改分组、标记已验证
+  （只在 `email_verified=false` 时出现）。
+- **密钥**：操作菜单新增「改绑分组」，走 `POST /admin/api/keys`
+  的 `action=set-group`（列表是脱敏 Key，服务端 `resolveKeyRef` 认掩码）。
+- **日志**：筛选行接 `endpoint / account / min_status / q / since`，
+  `since` 用 `datetime-local` 转 Unix 秒。
+- **i18n**：新增 20+ 条英文字典（含模板句与占位符），`?lang=en` 下
+  筛选控件、行内动作、确认框都跟着切。
+
+**验证**（2026-11-08）：
+
+```text
+node scripts/console-e2e.mjs http://127.0.0.1:10102 ...   ✅ 全部通过
+  菜单项: 配额 停用 补绑代理 分配机器指纹 改分组 标记已验证 删除
+  排序请求: offset=0&limit=20&sort=theos&order=asc
+  EN: Overview / Account / Total requests
+CDP 实测筛选:
+  账号: offset=0&limit=20&group=default&status=ok&q=zhuhao
+  日志: limit=50&endpoint=chat&account=abc&min_status=400&q=busy&since=1794067200
+单位:
+  3726 → 3.73K（日志「字符」列），title 仍是 154 / 116 这样的精确值
+  边界: 999999 → 1M / 999999999 → 1B / 987 → 987
+```
+
+新增 `TestConsoleBackendParity` 守住这条契约：筛选参数名、四个 action 名、
+`fmtCompact` 的使用点、`strict_model` 绑定，改 HTML 时漏接会直接变红。

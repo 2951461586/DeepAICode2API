@@ -382,6 +382,19 @@
               </label>
             </div>
           </div>
+          <div class="row" id="acctFilters">
+            <input id="acctGroup" placeholder="分组（留空=全部）" style="width:150px">
+            <select id="acctStatus" style="width:140px">
+              <option value="">全部状态</option>
+              <option value="ok">ok</option>
+              <option value="error">error</option>
+              <option value="unknown">unknown</option>
+              <option value="blocked">blocked</option>
+            </select>
+            <input id="acctQuery" placeholder="搜索邮箱 / 名称 / Key / 备注" style="width:260px">
+            <button class="btn" id="acctFilterApply">筛选</button>
+            <button class="btn" id="acctFilterClear">清空</button>
+          </div>
           <div class="table-wrap">
             <table id="acctTable"><thead><tr>
               <th data-sort="account">账号</th><th data-sort="group">分组</th><th data-sort="source">来源</th><th>Key</th><th data-sort="plan">套餐 / 验证</th><th data-sort="theos">Theos</th><th data-sort="status">状态</th><th data-sort="failures">失败</th><th data-sort="last_used">最近使用</th><th>操作</th>
@@ -499,6 +512,23 @@
           </div>
         </div>
         <div class="panel">
+          <div class="row" id="logFilters">
+            <select id="logEndpoint" style="width:140px">
+              <option value="">全部端点</option>
+              <option value="chat">chat</option>
+              <option value="responses">responses</option>
+              <option value="messages">messages</option>
+              <option value="audio">audio</option>
+              <option value="theos">theos</option>
+              <option value="usage">usage</option>
+            </select>
+            <input id="logAccount" placeholder="账号" style="width:150px">
+            <input id="logMinStatus" type="number" min="100" max="599" placeholder="状态 ≥" style="width:110px">
+            <input id="logKeyword" placeholder="关键字（错误 / 模型）" style="width:220px">
+            <input id="logSince" type="datetime-local" title="起始时间" style="width:200px">
+            <button class="btn" id="logFilterApply">筛选</button>
+            <button class="btn" id="logFilterClear">重置</button>
+          </div>
           <div class="table-wrap">
             <table id="logTable"><thead><tr>
               <th data-sort="time">时间</th><th data-sort="endpoint">端点</th><th data-sort="model">模型</th><th data-sort="stream">流式</th><th data-sort="status">状态</th><th data-sort="latency">耗时</th><th data-sort="chars">字符</th><th data-sort="tokens">Token</th><th data-sort="cost">成本</th><th data-sort="account">账号</th><th data-sort="err">错误</th>
@@ -596,6 +626,20 @@
     "取消":"Cancel", "打开 DeepAI 登录页":"Open DeepAI sign-in",
     "配额":"Quota", "停用":"Disable", "启用":"Enable", "清错":"Clear errors", "删除":"Delete",
     "操作":"Actions", "配额刷新":"Quota refresh",
+    // 筛选 / 行内治理
+    "筛选":"Filter", "清空":"Clear", "重置":"Reset", "分组（留空=全部）":"Group (empty = all)",
+    "全部状态":"All statuses", "搜索邮箱 / 名称 / Key / 备注":"Search email / name / key / note",
+    "全部端点":"All endpoints", "状态 ≥":"Status ≥", "关键字（错误 / 模型）":"Keyword (error / model)",
+    "起始时间":"Since",
+    "补绑代理":"Assign proxy", "重绑代理":"Reassign proxy", "清除代理":"Clear proxy",
+    "分配机器指纹":"Assign machine ID", "改分组":"Change group", "标记已验证":"Mark verified",
+    "新分组名":"New group name", "分组不能为空":"Group cannot be empty",
+    "密钥绑定的分组（留空=全部）":"Key group (empty = all)",
+    "该账号已绑定代理（{p}），从代理池重新分配？":"This account already has a proxy ({p}); reassign from the pool?",
+    "从代理池为 {name} 分配一个出口？":"Assign an exit from the proxy pool to {name}?",
+    "清除 {name} 的代理（回到直连）？":"Clear the proxy for {name} (back to direct)?",
+    "为 {name} 生成独立机器指纹？（只补空值，不覆盖已有指纹）":"Generate a dedicated machine ID for {name}? (only fills empty values)",
+    "把 {name} 标记为邮箱已验证？":"Mark {name} as email-verified?",
     // 输入占位 / 标签
     "账号名称（可选）":"Account name (optional)",
     "API Key（DeepAI 账号密钥）":"API key (DeepAI account key)",
@@ -774,6 +818,40 @@
       if (a.failures > 0) {
         items.push({ label: "清错", fn: function(){ accountOp("clear-errors", {id:a.id}); } });
       }
+      // --- 存量账号治理（后端 action 早已就绪，之前没接） ---
+      items.push({ sep: true });
+      items.push({ label: a.proxy ? "重绑代理" : "补绑代理", fn: function(){
+        var msg = a.proxy
+          ? t("该账号已绑定代理（{p}），从代理池重新分配？", {p: a.proxy})
+          : t("从代理池为 {name} 分配一个出口？", {name: a.name || a.id});
+        if (!confirm(msg)) return;
+        accountOp("assign-proxy", {id: a.id, reassign: !!a.proxy});
+      }});
+      if (a.proxy) {
+        items.push({ label: "清除代理", fn: function(){
+          if (!confirm(t("清除 {name} 的代理（回到直连）？", {name: a.name || a.id}))) return;
+          accountOp("assign-proxy", {id: a.id, clear: true});
+        }});
+      }
+      if (!a.has_machine) {
+        items.push({ label: "分配机器指纹", fn: function(){
+          if (!confirm(t("为 {name} 生成独立机器指纹？（只补空值，不覆盖已有指纹）", {name: a.name || a.id}))) return;
+          accountOp("assign-machine", {id: a.id});
+        }});
+      }
+      items.push({ label: "改分组", fn: function(){
+        var g = prompt(t("新分组名"), a.group || "default");
+        if (g === null) return;
+        g = String(g).trim();
+        if (!g) { toast(t("分组不能为空"), "err"); return; }
+        accountOp("set-group", {id: a.id, group: g});
+      }});
+      if (!a.email_verified) {
+        items.push({ label: "标记已验证", fn: function(){
+          if (!confirm(t("把 {name} 标记为邮箱已验证？", {name: a.name || a.id}))) return;
+          accountOp("mark-verified", {id: a.id, email: a.email});
+        }});
+      }
       items.push({ sep: true });
       items.push({ label: "删除", danger: true, fn: function(){
         if (confirm(t("确定删除账号 {name}？", {name: a.name || a.email || a.id}))) {
@@ -791,6 +869,14 @@
       ev.stopPropagation();
       openMenu(m, [
         { label: k.enabled ? "停用" : "启用", fn: function(){ keyOp("toggle", k.key); } },
+        { label: "改绑分组", fn: function(){
+          var g = prompt(t("密钥绑定的分组（留空=全部）"), k.group || "");
+          if (g === null) return;
+          // 列表里是脱敏 Key；服务端 resolveKeyRef 能认出掩码形式。
+          api("/admin/api/keys", {method:"POST", body:{action:"set-group", key:k.key, group:String(g).trim()}})
+            .then(function(){ toast("操作成功", "ok"); return refresh(); })
+            .catch(function(e){ toast("失败：" + e.message, "err"); });
+        }},
         { sep: true },
         { label: "删除", danger: true, fn: function(){
           if (confirm(t("确定删除该密钥？"))) keyOp("key", k.key);
@@ -957,6 +1043,27 @@
     if (!n) return "$0";
     return "$" + Number(n).toFixed(6);
   }
+  // fmtCompact 把大数字压成 K/M/B（3 位有效数字），用于 Token / 字符这类
+  // 量级很大、不需要逐位精确的列。精确值放 title 里随悬停可见。
+  function fmtCompact(n){
+    var v = Number(n);
+    if (!isFinite(v)) return "0";
+    var abs = Math.abs(v);
+    if (abs < 1000) return String(v);
+    var units = [[1e9,"B"],[1e6,"M"],[1e3,"K"]];
+    for (var i = 0; i < units.length; i++){
+      var d = units[i][0];
+      if (abs < d) continue;
+      var x = v / d;
+      // 3 位有效数字；进位到 1000 时升一级单位（999999 → 1M，而不是 1000K）。
+      if (i > 0 && Math.abs(Number(x.toPrecision(3))) >= 1000) {
+        d = units[i-1][0];
+        return Number((v / d).toPrecision(3)).toString() + units[i-1][1];
+      }
+      return Number(x.toPrecision(3)).toString() + units[i][1];
+    }
+    return String(v);
+  }
   function theosText(al){
     if (!al) return "—";
     var v = al.balance || al.granted || "0";
@@ -992,8 +1099,8 @@
     var kpis = [
       ["总请求", fmtNum(s.total_requests)],
       ["失败请求", fmtNum(s.failed_requests)],
-      ["输出字符", fmtNum(s.total_chars_out)],
-      ["Token 入 / 出", fmtNum(s.total_tokens_in) + " / " + fmtNum(s.total_tokens_out)],
+      ["输出字符", fmtCompact(s.total_chars_out)],
+      ["Token 入 / 出", fmtCompact(s.total_tokens_in) + " / " + fmtCompact(s.total_tokens_out)],
       ["上游成本", fmtCost(s.total_cost)],
       ["账号（就绪/总）", ready + " / " + totalAccts],
       ["密钥", (d.keys||[]).length],
@@ -1166,11 +1273,15 @@
       st.appendChild(pill(l.status, l.status >= 400 ? "err" : "ok"));
       var errCell = cell(l.err || "", "muted trunc");
       if (l.err) errCell.title = l.err;
+      // 字符 / Token 用 K/M 压缩，精确值放 title。
+      var charsCell = cell(fmtCompact(l.prompt_len) + " / " + fmtCompact(l.output_len), "mono");
+      charsCell.title = fmtNum(l.prompt_len) + " / " + fmtNum(l.output_len);
+      var tokCell = cell(fmtCompact(l.tokens_in) + " / " + fmtCompact(l.tokens_out), "mono");
+      tokCell.title = fmtNum(l.tokens_in) + " / " + fmtNum(l.tokens_out);
       tb.appendChild(row([
         cell(fmtTime(l.time), "muted"), cell(l.endpoint || "-", "mono muted"), cell(l.model, "mono"),
         cell(t(l.stream ? "是" : "否"), "mono"), st, cell(l.latency_ms + "ms", "mono"),
-        cell(l.prompt_len + " / " + l.output_len, "mono"),
-        cell(fmtNum(l.tokens_in) + " / " + fmtNum(l.tokens_out), "mono"),
+        charsCell, tokCell,
         cell(fmtCost(l.cost), "mono"),
         cell(l.account, "mono"), errCell
       ]));
@@ -1209,14 +1320,35 @@
     var q = "offset=" + (acctPage * acctPageSize) + "&limit=" + acctPageSize;
     var st = sortState.accounts;
     if (st.key) q += "&sort=" + encodeURIComponent(st.key) + "&order=" + (st.desc ? "desc" : "asc");
+    // 服务端分页 + 过滤（AccountPage 支持 group / status / q）。
+    var g = String(($("#acctGroup") || {}).value || "").trim();
+    var s = String(($("#acctStatus") || {}).value || "").trim();
+    var kw = String(($("#acctQuery") || {}).value || "").trim();
+    if (g) q += "&group=" + encodeURIComponent(g);
+    if (s) q += "&status=" + encodeURIComponent(s);
+    if (kw) q += "&q=" + encodeURIComponent(kw);
     return api("/admin/api/accounts?" + q).then(function(page){
       renderAccounts(page.items, page.total);
       return page;
     });
   }
   function refreshLogs(){
-    var limit = $("#logLimit").value;
-    return api("/admin/api/logs?limit=" + encodeURIComponent(limit)).then(function(d){
+    var q = "limit=" + encodeURIComponent($("#logLimit").value);
+    // QueryLogs 支持 endpoint / account / min_status / q / since（秒）。
+    var ep = $("#logEndpoint").value;
+    if (ep) q += "&endpoint=" + encodeURIComponent(ep);
+    var acc = $("#logAccount").value.trim();
+    if (acc) q += "&account=" + encodeURIComponent(acc);
+    var minStatus = $("#logMinStatus").value.trim();
+    if (minStatus) q += "&min_status=" + encodeURIComponent(minStatus);
+    var kw = $("#logKeyword").value.trim();
+    if (kw) q += "&q=" + encodeURIComponent(kw);
+    var since = $("#logSince").value;
+    if (since) {
+      var ts = Math.floor(new Date(since).getTime() / 1000);
+      if (ts > 0) q += "&since=" + ts;
+    }
+    return api("/admin/api/logs?" + q).then(function(d){
       state.logs = d.logs || [];
       renderLogs(state.logs);
     }).catch(function(e){ toast(t("日志加载失败：") + e.message, "err"); });
@@ -1551,6 +1683,28 @@
     acctPage = 0;
     try { localStorage.setItem("deepaicode2api_acct_page_size", String(v)); } catch(e){}
     loadAccounts();
+  };
+
+  // --- 账号 / 日志筛选 ---
+  function applyAcctFilters(){ acctPage = 0; loadAccounts(); }
+  $("#acctFilterApply").onclick = applyAcctFilters;
+  $("#acctFilterClear").onclick = function(){
+    $("#acctGroup").value = ""; $("#acctStatus").value = ""; $("#acctQuery").value = "";
+    applyAcctFilters();
+  };
+  $("#acctStatus").onchange = applyAcctFilters;
+  $("#acctGroup").onkeydown = $("#acctQuery").onkeydown = function(ev){
+    if (ev.key === "Enter") applyAcctFilters();
+  };
+  $("#logFilterApply").onclick = refreshLogs;
+  $("#logFilterClear").onclick = function(){
+    $("#logEndpoint").value = ""; $("#logAccount").value = ""; $("#logMinStatus").value = "";
+    $("#logKeyword").value = ""; $("#logSince").value = "";
+    refreshLogs();
+  };
+  $("#logEndpoint").onchange = refreshLogs;
+  $("#logKeyword").onkeydown = $("#logAccount").onkeydown = function(ev){
+    if (ev.key === "Enter") refreshLogs();
   };
 
   // --- 表头排序 ---

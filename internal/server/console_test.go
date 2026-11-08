@@ -187,3 +187,46 @@ func TestConsoleFeatures(t *testing.T) {
 		t.Errorf("data-sort 表头过少（%d），排序可能没接全", n)
 	}
 }
+
+// 控制台要跟后端能力对齐：筛选、存量治理动作、K/M 单位都不能悄悄丢。
+func TestConsoleBackendParity(t *testing.T) {
+	html := string(consoleHTML)
+
+	// 筛选：后端 AccountPage / QueryLogs 支持的参数，前端必须真的发出去。
+	for _, needle := range []string{
+		`id="acctFilters"`, `id="acctGroup"`, `id="acctStatus"`, `id="acctQuery"`,
+		`id="logFilters"`, `id="logEndpoint"`, `id="logAccount"`, `id="logMinStatus"`,
+		`id="logKeyword"`, `id="logSince"`,
+		`"&group="`, `"&status="`, `"&q="`, `"&endpoint="`, `"&min_status="`, `"&since="`,
+	} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("控制台缺少筛选接线：%s", needle)
+		}
+	}
+
+	// 存量治理 / 密钥分组：后端 action 名必须与前端一致。
+	for _, action := range []string{"assign-proxy", "assign-machine", "set-group", "mark-verified"} {
+		if !strings.Contains(html, `"`+action+`"`) {
+			t.Errorf("控制台缺少 action=%s 的入口", action)
+		}
+	}
+
+	// 单位压缩：Token / 字符走 fmtCompact，且 KPI 与日志都在用。
+	if !strings.Contains(html, "function fmtCompact(") {
+		t.Fatal("缺少 fmtCompact")
+	}
+	if !strings.Contains(html, `fmtCompact(s.total_chars_out)`) ||
+		!strings.Contains(html, `fmtCompact(s.total_tokens_in)`) {
+		t.Error("概览的字符 / Token 应改用 fmtCompact")
+	}
+	for _, needle := range []string{`fmtCompact(l.prompt_len)`, `fmtCompact(l.output_len)`, `fmtCompact(l.tokens_in)`, `fmtCompact(l.tokens_out)`} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("日志应改用 fmtCompact：%s", needle)
+		}
+	}
+
+	// 严格模型模式开关要读到后端字段。
+	if !strings.Contains(html, `strict_model`) {
+		t.Error("设置页未接 strict_model")
+	}
+}
