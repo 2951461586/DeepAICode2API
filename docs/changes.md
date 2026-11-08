@@ -612,7 +612,6 @@ go test -race -count=1 ./...                    9 个包全部通过
 node --check （控制台两段内联脚本）              语法通过
 ```
 
-
 ---
 
 ## 18. 第十一批：stress-50n 全链路 + R3 上线前后的数据面对比
@@ -849,3 +848,94 @@ chat：13/13 200（2 个首发瞬时失败——读超时 / TLS EOF——重试�
 **原则**：**README 只放结论与口径，过程放 `changes.md`，数据放 `performance.md`，
 规则沉淀到 `lessons.md`**。批次日志属于「一次性证据」，写完应当场转成规则，
 否则每跑一批文档就胖一圈。
+
+---
+
+## 24. 对齐 0.3.20 + 让「模型指纹」测得准
+
+**根因**：客户端 0.3.20（2026-11-07 发布）与网关对齐的 0.3.19 相差一个版本号；
+同时用 `lm.ikale.io` 这类模型指纹检测对比「网关 vs 客户端」时，结果差异很大，
+但差异**不是**上游换模型，而是三处可解释的原因：
+
+1. **模型名被静默替换**：`registry.Resolve` 的顺序是
+   「精确 → 别名 → 内置别名 → 子串 → 默认模型」。目录外的名字（`gpt-6-sol`、
+   `mimo-v2.6-flash`）会回落到 `glm-5.3-flash`，`gpt-6` 会被子串匹配成
+   `gpt-6-luna`——测的是 A，跑的是 B；
+2. **采样条件不同**：客户端（Pi）每个请求都带 system + tools + `reasoning_effort`
+   （`thinkingLevelMap:{off:"none"}` 让「关思考」也显式发 `none`），
+   而检测器的参考库是在裸请求（无 system / tools / effort / max_tokens）下采的。
+   网关的 Anthropic / Responses 翻译又把 `thinking` / `reasoning.effort` 丢了，
+   等于把调用方要求的强度降级成上游默认；
+3. **推理请求带着注册用的浏览器指纹**：桌面端走 Node fetch，实测只发
+   `user-agent: node` / `accept: */*` / `accept-language: *` / `sec-fetch-mode: cors`，
+   从没有 Chrome UA 与 `sec-ch-ua`。
+
+决策：
+
+- `AppVersion` → `0.3.20`（只用于 `/theos` 心跳的 `v=`）；车道仍是 4，
+  wire protocol 与 0.3.19 完全一致，因此**不动**协议逻辑；
+- 新增 `Settings.StrictModel`（控制台「严格模型模式」）：解析不到就返回
+  `404 invalid_request_error` + 相近候选，不再回落。宽松路径保持原样；
+- `registry` 拆出 `ResolveStrict`（不含子串/回落）与 `Suggest`（相似度提示）；
+  `normalize` 把空白当分隔符，`Claude Opus 5.5` 与 `claude-opus-5-5` 等价；
+- Anthropic 的 `output_config.effort` / `thinking` → `reasoning_effort`
+  （预算 <4k→low、<16k→medium、其余 high；`disabled`→`none`）；
+  Responses 的 `reasoning.effort` 同样映射；
+- `ChatBodyFallback` 白名单补 `stream_options` / `seed` / `service_tier`，
+  已有 system 原样保留（只在缺失时补默认提示词）；
+- `deepai.Client.BrowserFingerprint`：注册链路 true（账号 Chrome 指纹），
+  网关推理 false（Node fetch 默认头）；`NewClient` / `NewClientWithProxy`
+  默认 false，`NewClientWithFingerprint` 保持 true。
+
+**验证**：
+
+```text
+go test ./...                                          # 全绿
+gpt-6-sol  → 严格模式 404（宽松模式仍回落 glm-5.3-flash）
+gpt-6      → 严格模式 404（不再子串命中 gpt-6-luna）
+Claude Opus 5.5 → claude-opus-5-5（名称匹配）
+推理请求头 → user-agent: node / accept: */* / 无 sec-ch-ua
+注册请求头 → Chrome UA + sec-ch-ua + Accept-Language（不变）
+Anthropic thinking{disabled} → reasoning_effort=none
+Responses reasoning.effort=medium → reasoning_effort=medium
+```
+
+> 口径提醒：模型指纹检测的置信度只是**参考库内**的相对概率，
+> 同名不代表真实、异名也不代表被替换。要比较必须固定三件事：
+> 精确目录 ID、与参考库一致的采样条件（裸请求、流式、不指定 effort）、
+> 以及同一账号/出口。判别「网关改写」还是「渠道替换」的最快办法是
+> 用同一份 body 直连 `api.deepai.org` 复测一次。
+
+### 24.1 实测：根因是 User-Agent，不是网关改写
+
+2026-11-08 用 lm-detector 的官方路径（`generateChallenges` + `complete` +
+`analyzeSharedOutputs` + `data/shared_detector.bin`）做了一次 A/B：同一批
+3 个挑战、同一账号、同一台机器，`glm-5.3-flash`：
+
+| 链路 | 请求头 | FPD 排名 |
+| --- | --- | --- |
+| 网关（改造后） | `user-agent: node` | `glm-5.3-flash` 63% / `glm-5.3-flashx` 37% |
+| 直连 | `user-agent: node` | `glm-5.3-flash` 50% / `glm-5.3-flashx` 50% |
+| 直连 | `user-agent: Go-http-client/1.1` | **`muse-wonder` 89%** |
+| 直连 | Chrome 156 UA | **`muse-wonder` 100%** |
+| 网关（改造前的旧二进制，UA 为空 → Go 默认） | `Go-http-client/1.1` | **`muse-wonder` 95%** |
+
+结论：
+
+1. **网关本身是忠实的**：同一份 body 下，网关与直连的排名一致（GLM 家族、同一对候选）；
+2. **真正的变量是 `User-Agent`**：非 `node` 的 UA 被上游换到另一条后端，
+   指纹变成 `muse-wonder`（Meta 家族），但响应 `model` 仍写 `zai/glm-5.3-flash`；
+3. 因此 `BrowserFingerprint=false`（发 `user-agent: node`）不只是“更像客户端”，
+   而是**真的决定了你拿到哪个模型**；
+4. 顺带发现：裸请求（无 system）只有在**已签到**的进程里才被接受，
+   否则 `400 This request is not one DeepAI Code sends.` —— 网关推理前
+   `EnsureCheckIn` 正好满足这个条件，直连复现时必须自己先 `GET /theos`。
+
+复现步骤（实验脚本是临时的，不入库）：
+
+1. `curl https://api.deepai.org/deepai_code/models -H 'X-DeepAI-Code-Theos: 4'` 取精确 ID；
+2. 用 `lm-detector` 仓库的 `generateChallenges(3)` 生成 3 道挑战并**固定**；
+3. 两条链路各发 3 次：`complete()`（chat 协议、`stream:true`、`stream_options`、
+   无 system/tools/effort）+ 同一个 `analyzeSharedOutputs()` 打分；
+4. 直连侧先 `GET /theos` 拿 `check_in.nonce` 并在 chat 上回传（否则裸请求 400）；
+5. 只改 `User-Agent` 再跑一轮，对比排名。

@@ -110,6 +110,24 @@
 - **代码落点**：`internal/register/proxy.go`、`/admin/api/accounts`
   的 `assign-proxy`。
 
+### 2.7 请求头也是协议的一部分：UA 决定上游给你哪个模型
+
+- **现象**：同一把 Key、同一台机器、同一份 body，经网关测出的模型指纹是
+  `muse-wonder`（Meta 家族），客户端直测是 `glm-5.3-flash`。`Accept` /
+  `Accept-Language` / `sec-fetch-mode` 全试过，只换 `User-Agent` 就能复现。
+- **根因**：上游按 `User-Agent` 分流到不同后端 —— `node`（桌面端 Node fetch）
+  走真实模型；`Go-http-client/1.1` 或 Chrome UA 被换到另一条后端，而响应里的
+  `model` 仍写 `zai/glm-5.3-flash`，所以只校验 `model` 永远发现不了。
+- **规则**：**推理请求的每个头都要能对上桌面端**。注册链路（网页 UA +
+  `sec-ch-ua`）与推理链路（Node fetch 默认头）必须分成两套；
+  判定是否被换模型的最省事旁路判据：响应里出现 `provider` 且没有
+  `system_fingerprint`。
+- **代码落点**：`deepai.Client.BrowserFingerprint`（`internal/deepai/client.go`，
+  `NewClient` / `NewClientWithProxy` = 推理形态，`NewClientWithFingerprint`
+  = 注册形态）、`desktopInferenceHeaders`。
+- **代价**：`user-agent: node` 是 Node fetch 的默认值，桌面端换 HTTP 栈后
+  这条要跟着改（见 `docs/recon.md` §3.1）。
+
 ---
 
 ## 3. 额度与调度

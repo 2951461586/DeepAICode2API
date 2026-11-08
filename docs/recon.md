@@ -4,7 +4,9 @@
 以及 `deepai.org.har` 抓包。**本文件是 HAR 的替代品**：HAR 体积大且含本人
 凭据，不入库；结论以文本形式沉淀在这里，便于检索与 diff。
 
-> 抓包时间：应用版本 **0.3.19**（车道 4）。0.3.17（车道 2）已不再被上游接受：
+> 抓包时间：应用版本 **0.3.20**（车道 4，2026-11-07 发布）。0.3.19 与 0.3.20 的
+> wire protocol 逐项比对后完全一致（车道 / 实例 / 机器指纹 / 签到形态），
+> 只有 beacon 里的 `v=` 版本号变了。0.3.17（车道 2）已不再被上游接受：
 > 所有 `/deepai_code` 端点返回 `426 lane_version_unsupported`。
 > 上游随时可能变，字段以代码为准。
 
@@ -35,6 +37,7 @@
 | GET | `/deepai_code/sessions/list` | 会话列表 |
 | GET | `/deepai_code/sessions/get?uuid=…` | 会话详情 |
 | POST | `/deepai_code/sessions/delete` | 删除会话 |
+| POST | `/deepai_code/sessions/save` | 会话 / 偏好上传（0.3.20 新增，云端同步） |
 | POST | `/deepai_code/session_turn` | 会话轮次上报（202/204 视为成功） |
 | GET | `/deepai_code/desktop_auth/?state=…&port=…` | 浏览器登录起点 |
 | POST | `/deepai_code/desktop_auth/exchange/` | 用 code 换 Key |
@@ -57,6 +60,20 @@
 | `X-DeepAI-Code-Check-In` | 上一次 `/theos` 下发的 32 位 hex nonce | **仅 `/theos`**：签到回传 |
 | `X-DeepAI-Code-Beacon` | `v=<版本>;up=<秒>;pi=<0|1>;focus=<0|1>` | **仅 `/theos`**：客户端心跳 |
 
+普通 HTTP 头（很容易忽略，但它是“像不像桌面端”的一部分）：
+
+| 头 | 桌面端（Node fetch）实测值 |
+| --- | --- |
+| `User-Agent` | `node`（**不是**浏览器 UA） |
+| `Accept` / `Accept-Language` | `*/*` / `*` |
+| `sec-fetch-mode` | `cors` |
+| `sec-ch-ua*` | **不发** |
+| `Content-Type` | `application/json`（上传/转写走 multipart） |
+
+> 浏览器 UA + `sec-ch-ua` 只在**网页注册**链路需要（和网页端保持一致）；
+> 带到推理请求上等于在 `Api-Key` 接口自报“我不是客户端”。
+> 网关的 `deepai.Client.BrowserFingerprint` 就是这条开关：注册 true、推理 false。
+
 要点：
 
 - 车道 4 是硬门槛：对 `/models` `/theos` `/chat/completions` 一视同仁，
@@ -68,6 +85,27 @@
 - 原始 UUID 来源：Windows `Win32_ComputerSystemProduct.UUID`（失败回退 `MachineGuid`）、
   macOS `IOPlatformUUID`、Linux `/sys/class/dmi/id/product_uuid` 或 `/etc/machine-id`。
 - 固件占位 UUID（全 0 / 全 f / `03000200-…`）必须过滤，否则指纹不稳定。
+
+### 3.1 User-Agent 决定服务哪个模型（2026-11-08 实测）
+
+这是本项目最重要的一条逆向结论：**上游按 `User-Agent` 分流**，同一个
+`model` 会因为 UA 不同而落到不同的后端，且响应里的 `model` 字段照样写
+`zai/glm-5.3-flash`，肉眼看不出来。
+
+| 请求特征 | 响应 | FPD 指纹（同一批挑战） |
+| --- | --- | --- |
+| `user-agent: node`（桌面端 Node fetch） | 有 `system_fingerprint: fp_…`，**无** `provider` | `glm-5.3-flash` / `glm-5.3-flashx` |
+| `user-agent: Go-http-client/1.1` | **无** `system_fingerprint`，有 `provider: DeepAI` | `muse-wonder` 89–100% |
+| `user-agent: Mozilla/…Chrome/156…`（注册链路指纹） | **无** `system_fingerprint`，有 `provider: DeepAI` | `muse-wonder` 100% |
+
+- 判定开关是 **UA**，与 `Accept` / `Accept-Language` / `sec-fetch-mode` 无关
+  （实测 `node` + `application/json` 仍在 GLM 分支）；
+- 便宜的旁路判据：**响应里出现 `provider` 且没有 `system_fingerprint`**
+  = 被换到了另一条后端；这条在响应体里直接可读，不必跑指纹检测；
+- 被替换的分支更慢（同请求 37–52s vs 8–22s），且 `max_tokens` 更容易被
+  `finish_reason=length` 截断；
+- 推论：**推理请求必须发 `user-agent: node`**（网关 `BrowserFingerprint=false`
+  那条路径），带 Chrome UA 或 Go 默认 UA 都会被换模型。
 
 ## 4. 错误语义
 
@@ -127,10 +165,18 @@
 上游会以 `400 invalid_request_error` 拒绝「不是 DeepAI Code 会发的」请求体：
 
 - 桌面端每个 chat 请求都带 **system 消息**与 **tools**；
+- 裸请求（无 system）只有在**本进程已签到**（`/theos` 回传过
+  `X-DeepAI-Code-Check-In`）时才被接受；否则回
+  `400 This request is not one DeepAI Code sends.`。补一条 system 也能过校验，
+  但那是改采样条件——指纹类检测要的是“发得起 + 条件不变”，所以要先签到；
+- 每个 reasoning 模型都会带 `reasoning_effort`：`deepAIPiModels` 给它设了
+  `thinkingLevelMap:{off:"none"}`，所以「关思考」时发的是 `"none"`，选了档位就发档位值；
+  翻译层（Anthropic 的 `thinking`/`output_config.effort`、Responses 的 `reasoning.effort`）
+  必须把它映射到 `reasoning_effort`，丢掉就是静默降级成上游默认值；
 - 白名单外字段（`user` / `n` / `presence_penalty` 等）在严格节点上可能被拒；
 - 网关的兜底策略：仍先原样透传；只有命中该 400 时，才按
-  `model/messages/tools/tool_choice/max_tokens/temperature/stream/…` 白名单
-  重排一次，并补齐 system 消息（`deepai.ChatBodyFallback`）。
+  `model/messages/tools/tool_choice/max_tokens/temperature/stream_options/seed/…` 白名单
+  重排一次，并补齐 system 消息（`deepai.ChatBodyFallback`，已有 system 时原样保留）。
 
 ## 6. 复现方法
 

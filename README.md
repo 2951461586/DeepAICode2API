@@ -40,7 +40,7 @@
 
 ## 一、逆向结论
 
-DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 0.3.19，车道 4）。
+DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 0.3.20，车道 4）。
 真正干活的不是桌面壳，而是 `resources/server.asar` 里的 t3code server；
 它把上游能力封装成本地回环 HTTP 服务，再交给 Pi（编码 agent）调用。
 
@@ -62,7 +62,7 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 0.3.19
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
 | 协议头 | `X-DeepAI-Code-Theos: 4`（计费车道版本；2/3/5 一律 426） |
 | 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每进程随机一次，随所有 JSON 请求发出） |
-| 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0|1;focus=0|1` |
+| 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1;focus=0\|1` |
 | **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
 | 会话粘性 | `X-Session-Affinity`（body 里的 `prompt_cache_key` 也会被上游使用） |
 | 容量拒绝 | `409 {"error":{"code":"session_busy"}}` + `Retry-After` |
@@ -98,7 +98,7 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 
 ## 二、支持的模型
 
-模型目录**完全由上游下发**（当前 18 个，下表是 2026-11-07 的快照），
+模型目录**完全由上游下发**（当前 18 个，下表是 2026-11-08 实测的快照），
 网关只做缓存与别名，上游新增模型无需改代码。`Theos/次` 取自上游
 `theosPerRequest`，`0` 即免费（9 个免费 / 9 个付费）。
 
@@ -136,8 +136,9 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 - `gpt-4o` / `gpt-4` / `gpt-3.5-turbo` / `claude-3-5-sonnet` / `deepseek-chat` … → `glm-5.3-flash`
 - `deepai/<id>`、`openai/<id>` 前缀会被自动剥离
 
-无法识别的模型名**不会报错**，而是回落到「兜底模型」→ 目录默认模型，
-保证任意客户端开箱即用。
+无法识别的模型名**默认**回落到「兜底模型」→ 目录默认模型，保证任意客户端开箱即用；
+控制台打开「**严格模型模式**」后改为返回 `404 invalid_request_error`，并列出相近的
+目录 ID，不再静默替换（模型指纹 / 渠道核对场景一定要开）。
 
 ---
 
@@ -557,7 +558,7 @@ curl -s -X POST localhost:10087/admin/api/checkin \
   **未签发任何密钥时，仅本机回环允许无密钥调用；非回环来源一律 `503 setup_required`。**
   若监听非回环地址且尚无密钥，启动时会自动生成一个 `bootstrap` 密钥并打印一次。
 - **日志**：端点、模型、流式、状态、耗时、字符数、token、成本、账号。
-- **设置**：超时、重试、日志保留、CORS、兜底模型、模型别名、管理密码。
+- **设置**：超时、重试、日志保留、CORS、兜底模型、严格模型模式、模型别名、管理密码。
 
 安全默认值：
 
@@ -652,7 +653,9 @@ docker run -d --name deepaicode2api \
 
 ## 十、限制与说明
 
-- `X-DeepAI-Code-Theos` 必须是 `4`（0.3.19 客户端对齐值）；车道不符时上游对所有端点返回 426，需要升级网关；
+- `X-DeepAI-Code-Theos` 必须是 `4`（0.3.19 / 0.3.20 客户端对齐值，两版 wire protocol 一致）；车道不符时上游对所有端点返回 426，需要升级网关；
+- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（0.3.20）；
+- 推理请求按桌面端实测值发 `user-agent: node` + `accept: */*`，**不带** Chrome UA / `sec-ch-ua` / `Accept-Language`（那些只用于注册链路）；
 - `X-DeepAI-Code-Machine` 缺失时计量模型返回 `machine_required`，因此无 SMBIOS 的环境必须设置 `DEEPAI_MACHINE_ID`；
 - 上游 0.3.19 起把 DeepAI Code 推理收窄到 **Google/Apple 登录**的账号：
   邮箱密码注册的号会在 `/theos` 或推理端点拿到 `403 social_login_required`。
@@ -677,6 +680,8 @@ docker run -d --name deepaicode2api \
 | 现象 | 原因 | 不要“修”成什么样 |
 | --- | --- | --- |
 | 无效 Key 返回 200 且是 HTML | 上游 302 到登录页 | 不要 `CheckRedirect` 跟随；`ErrUseLastResponse` 是刻意的 |
+| 换用别的 UA 后「模型变了」 | 上游按 `User-Agent` 分流：非 `node` 的 UA 会被换到另一个后端，但响应 `model` 仍写原名 | 不要“优化”成浏览器 UA；推理必须发 `user-agent: node`（见 `docs/recon.md` §3.1） |
+| 响应里出现 `provider: DeepAI` 且没有 `system_fingerprint` | 说明这次请求落在了被替换的后端 | 这是最省事的旁路判据，别只信响应里的 `model` |
 | 上游模型目录默认模型为空 | 字段叫 `default` 不是 `default_model` | 不要加 `default_model` 兼容，会静默拿不到值 |
 | 池内账号 `granted=0` | 共用机器指纹，每日额度只发一次 | 不要去掉 `Account.MachineID` 回退逻辑 |
 | 长响应被掐断 | 上游心跳 `: keep-alive` 被丢弃 | `streamChat` 要原样透传注释行 |
