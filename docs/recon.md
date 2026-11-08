@@ -115,6 +115,7 @@
 | 401 | — | 鉴权失败 | 记失败、换号 |
 | 403 + `email_unverified` | — | 邮箱未验证 | 视为鉴权失败 |
 | 403 + `social_login_required` | — | 账号只能用 Google/Apple 登录 | **策略终态**：标记 blocked、换号不再打它 |
+| 403 + `check_in_refused` | `DeepAI Code has restarted its check-in too many times today. Try again tomorrow.` | **签到当日次数用尽** | 不改账号状态（推理仍可用，但落在替身分支）；今天不要再重启签到 |
 | 403 + `network_bound` | `Today's free Theos for your network have all been claimed. More become available at <RFC3339>` | **网络级**免费额度已领完 | 按 message 里的时间等 `refresh_at`；换号通常无效（同出口 IP） |
 | 400 + `machine_required` | — | 计量模型缺机器指纹 | 不重试，提示配置 `DEEPAI_MACHINE_ID` |
 | 426 + `lane_version_unsupported` | — | 车道版本不对 | 不重试，提示升级网关 |
@@ -159,6 +160,28 @@
   与心跳 `X-DeepAI-Code-Beacon: v=<版本>;up=<秒>;pi=<0|1>;focus=<0|1>`。
 - 重新签到的时机是 `seconds/2`（默认 300s）；推理前会先确保签到（失败不阻塞）。
 - 推理请求本身**不带** check-in / beacon，只带车道、实例、机器指纹与 `Api-Key`。
+
+### 签到是「真实模型分支」的准入条件（2026-11-08 实测）
+
+配合 §3.1（UA 分流）一起看：**`node` UA + 完成签到**，两条都满足才拿到真模型。
+
+| 观测 | 结果（14 个号池账号，免费模型 `glm-5.3-flash`） |
+| --- | --- |
+| 只拉 `/theos`（不回传 nonce） | **0/14 对齐**，14 个全是 `provider: DeepAI` 替身分支 |
+| 拉 nonce + 回传（完整签到） | **14/14 对齐**（`system_fingerprint` 有、`provider` 无） |
+| 完整签到但 14 个号**共用同一个新机器指纹** | 10–12/14 对齐（其余落替身分支） |
+| 经网关（每号自己的机器指纹 + 推理前签到） | **30 次请求 / 14 个账号，30/30 对齐** |
+
+- 判定按 **(账号, 机器指纹)** 记忆：换机器指纹等于冷启动，必须重新签到；
+- 替身分支明显更慢（3–9s vs 对齐后 1–2s），响应里 `model` 仍写 `zai/glm-5.3-flash`；
+- 网关的 `EnsureCheckIn`：拿到 nonce 但**还没回传**时立刻补一次 `/theos`
+  （`ackedNonce` 记住已回传的那个）；之后才退回 `seconds/2` 的续签节奏。
+- 冷启动仍有**一次性**窗口：某账号还没有任何挑战时，第一次推理只来得及拉 nonce，
+  这一次会落在替身分支，从第二次起对齐（实测 12 次请求里只有第 1 次是替身）。
+- **签到是有限资源**：`403 check_in_refused` 表示当天「重启签到」次数用尽，
+  要等到明天。所以不要用脚本反复跑「拉 nonce + 回传」；网关的节奏
+  （启动探测一次 + 每 `seconds/2` 续签）是安全的。被限流的账号仍能推理，
+  只是继续落在替身分支（`provider: DeepAI`）。
 
 ## 5.2 请求体形状
 

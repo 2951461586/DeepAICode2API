@@ -125,6 +125,12 @@
 - **代码落点**：`deepai.Client.BrowserFingerprint`（`internal/deepai/client.go`，
   `NewClient` / `NewClientWithProxy` = 推理形态，`NewClientWithFingerprint`
   = 注册形态）、`desktopInferenceHeaders`。
+- **另一个准入条件**：光有 `node` UA 还不够，还得**完成签到**（`/theos` 拉
+  nonce 再回传）。实测只拉不回传 = 0/14 对齐，完整签到 = 14/14 对齐；
+  判定按 (账号, 机器指纹) 记忆，换指纹等于冷启动。
+- **签到是有限资源**：`403 check_in_refused`（"restarted its check-in too many
+  times today"）说明当天重启次数用尽，要等明天。别写脚本反复「拉 nonce + 回传」
+  做体检；被限流的号仍能推理，只是一直落在替身分支。
 - **代价**：`user-agent: node` 是 Node fetch 的默认值，桌面端换 HTTP 栈后
   这条要跟着改（见 `docs/recon.md` §3.1）。
 
