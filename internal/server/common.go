@@ -125,6 +125,15 @@ func (s *Server) unknownModelMessage(name string) string {
 	return msg
 }
 
+// admissionWait / admissionPoll 是「池里暂时没有空槽」时的排队上限与轮询间隔。
+//
+// 以前槽位不够就立刻 429（见 docs/performance.md §14：14 号 / 28 并发时
+// 成功率只有 48~70%）。短暂排队能把突发流量摊平，又不至于把调用方挂死。
+const (
+	admissionWait = 2 * time.Second
+	admissionPoll = 50 * time.Millisecond
+)
+
 // maxInFlightPerAccount 是单账号同时进行的上游请求上限。
 //
 // 调度只决定「这一轮选到谁」，不保证并发不会集中到少数账号；
@@ -149,6 +158,27 @@ type releaseBody struct {
 func (b *releaseBody) Close() error {
 	b.once.Do(b.release)
 	return b.ReadCloser.Close()
+}
+
+// pickFreeAccount 扫一圈号池，找一个还有在途槽位的账号。
+//
+// 不能用 max_retries 次贪心选号：饱和时几次尝试大概率全撞在忙号上，
+// 于是对外 429 而池里其实还有空槽（docs/performance.md §14）。
+// 返回值第三个标记池里是否有可选账号：区分「全忙」与「没有可调度账号」，
+// 后者要交给 noAccountError 给出可行动的原因（social_login / 未验证…）。
+func (s *Server) pickFreeAccount(group string) (*deepai.Account, bool, bool) {
+	candidates := false
+	for i, n := 0, len(s.Store.Accounts()); i < n; i++ {
+		a := s.Store.NextAccountGroup(group)
+		if a == nil {
+			return nil, false, false
+		}
+		candidates = true
+		if s.acquireAccount(a.ID) {
+			return a, true, true
+		}
+	}
+	return nil, false, candidates
 }
 
 // acquireAccount 尝试占用一个账号的在途槽位；已满时返回 false。
@@ -215,7 +245,8 @@ func errAllAccountsBusy() error {
 //   - 2xx：立即返回响应，调用方负责关闭 Body；
 //   - 400/404/422 等请求错误：不重试，直接返回 *deepai.HTTPError；
 //   - 401/403/429/5xx：记录账号失败并换号重试；
-//   - 409 session_busy：按 Retry-After 等待后重试。
+//   - 409 session_busy：池里有空号就立刻换号，整池都满才按 Retry-After 等一次；
+//   - 槽位不够：短暂排队（admissionWait），超时才回 429。
 func (s *Server) openModel(ctx context.Context, path string, body []byte, affinity, group string) (*http.Response, *deepai.Account, error) {
 	accts := s.Store.Accounts()
 	if len(accts) == 0 {
@@ -234,20 +265,31 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		lastErr error
 		used    *deepai.Account
 	)
+	deadline := time.Now().Add(s.admissionWait)
 	for i := 0; i < maxTries; i++ {
-		acct := s.Store.NextAccountGroup(group)
-		if acct == nil {
+		acct, ok, candidates := s.pickFreeAccount(group)
+		if !candidates {
+			// 池里没有可调度账号（全被拦 / 分组为空）：交给 noAccountError 说明原因。
 			break
+		}
+		if !ok {
+			// 全忙：短暂排队而不是立刻 429；等槽位不消耗重试预算。
+			lastErr = errAllAccountsBusy()
+			if !time.Now().Before(deadline) {
+				break
+			}
+			select {
+			case <-time.After(admissionPoll):
+			case <-ctx.Done():
+				return nil, used, ctx.Err()
+			}
+			i--
+			continue
 		}
 		// 额度快照过旧时顺手异步刷新：只刷新「已经探过、但结果过期」的账号，
 		// 不在热点路径上给从未探测的号新增上游请求（那些交给入池复探 / 后台守护）。
 		if acct.Theos != nil && quotaNeedsRefresh(acct, time.Now(), quotaStaleAfter) {
 			s.probeAsync(acct)
-		}
-		if !s.acquireAccount(acct.ID) {
-			// 该账号已有足够多请求在跑：换下一个号。
-			lastErr = errAllAccountsBusy()
-			continue
 		}
 		used = acct
 

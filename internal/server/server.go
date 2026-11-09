@@ -41,6 +41,9 @@ type Server struct {
 	laneMu        sync.Mutex
 	laneCheckedAt time.Time
 
+	// admissionWait 是「槽位全满」时的排队上限（测试可注入 0 立即 429）。
+	admissionWait time.Duration
+
 	// quotaWG 跟踪已排期的异步配额复探。
 	//
 	// 复探 goroutine 在写完内存后还要 Save() 落盘；测试必须等它完全收尾
@@ -72,6 +75,7 @@ func New(st *store.Store) *Server {
 		probing:            map[string]struct{}{},
 		probeSem:           make(chan struct{}, probeWorkers),
 		quotaReprobeDelays: quotaReprobeDelays,
+		admissionWait:      admissionWait,
 	}
 	// 上次探测到的车道优先（跨重启保留），否则用编译期默认值。
 	if lane := strings.TrimSpace(st.Settings().Lane); lane != "" {
