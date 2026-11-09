@@ -138,8 +138,8 @@ func TestRetryAfter(t *testing.T) {
 		{"3", 3 * time.Second},
 		{"1", time.Second},
 		{"999", 30 * time.Second}, // 上限 30s，避免被上游拖死
-		{"0", fallback},           // 非正数视为无效
-		{"-5", fallback},          // 解析失败回退
+		{"0", time.Second},        // 与桌面端一致：夹到下限 1s
+		{"-5", time.Second},       // 负数同样夹到 1s
 		{"abc", fallback},         // 非数字回退
 		{"Wed, 21 Oct", fallback}, // HTTP-date 不支持，回退
 	}
@@ -585,9 +585,10 @@ func TestRegisterClientKeepsBrowserFingerprint(t *testing.T) {
 
 // 形状回退不能顺手改掉采样条件：seed / service_tier / stream_options
 // 会改变采样与用量上报，指纹类检测甚至会因此换一个候选模型。
+// store 则是桌面端每次请求都带的字段，必须同样保留。
 func TestChatBodyFallbackKeepsSamplingFields(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],` +
-		`"seed":7,"service_tier":"flex","stream":true,` +
+		`"seed":7,"service_tier":"flex","stream":true,"store":false,` +
 		`"stream_options":{"include_usage":true},"presence_penalty":0.5,"user":"u1"}`)
 	out, ok := ChatBodyFallback(body, "")
 	if !ok {
@@ -597,14 +598,58 @@ func TestChatBodyFallbackKeepsSamplingFields(t *testing.T) {
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("兜底结果不是 JSON: %v", err)
 	}
-	for _, k := range []string{"seed", "service_tier", "stream_options"} {
+	for _, k := range []string{"seed", "service_tier", "stream_options", "store"} {
 		if _, exists := got[k]; !exists {
 			t.Errorf("白名单丢了 %s，会改变采样条件或用量上报", k)
 		}
 	}
+	if v, exists := got["store"]; exists && v != false {
+		t.Errorf("store 应原值保留，实际 %#v", v)
+	}
 	for _, k := range []string{"presence_penalty", "user"} {
 		if _, exists := got[k]; exists {
 			t.Errorf("非桌面字段 %s 仍应被剥离", k)
+		}
+	}
+}
+
+// GET 请求也要与桌面端同形：requestDeepAIJson 的 header 字面量对无 body 的
+// /models、/theos、/get_usage_summary 一样带 Content-Type: application/json，
+// 且 /get_usage_summary 不覆盖 UA（只有 /gravity-display-proxy 用 DeepAI-Code）。
+func TestGetRequestsMatchDesktopHeaders(t *testing.T) {
+	type seen struct {
+		path        string
+		contentType string
+		userAgent   string
+	}
+	var got []seen
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, seen{r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("User-Agent")})
+		if r.URL.Path == ModelBasePath+PathModels {
+			_, _ = io.WriteString(w, `{"models":[{"id":"glm-5.3-flash","name":"GLM","reasoning":true,"input":["text"],"contextWindow":1000,"maxTokens":100}],"default":"glm-5.3-flash"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"enabled":true}`)
+	})
+	c.BrowserFingerprint = false // 推理形态：UA 应为 node
+	acct := &Account{APIKey: "k"}
+
+	if _, _, err := c.FetchModels(context.Background()); err != nil {
+		t.Fatalf("FetchModels: %v", err)
+	}
+	if _, err := c.Theos(context.Background(), acct); err != nil {
+		t.Fatalf("Theos: %v", err)
+	}
+	if _, err := c.UsageSummary(context.Background(), acct); err != nil {
+		t.Fatalf("UsageSummary: %v", err)
+	}
+
+	for _, s := range got {
+		if s.contentType != "application/json" {
+			t.Errorf("GET %s 的 Content-Type = %q，期望 application/json", s.path, s.contentType)
+		}
+		if s.userAgent != "node" {
+			t.Errorf("GET %s 的 User-Agent = %q，期望 node", s.path, s.userAgent)
 		}
 	}
 }

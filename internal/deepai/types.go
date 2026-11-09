@@ -33,7 +33,11 @@ const (
 	// 只有心跳里的版本号需要跟上，否则 /theos 上自报的是旧客户端。
 	AppVersion = "0.3.20"
 
-	// DesktopUserAgent 是桌面端访问赞助类根路径时使用的 User-Agent。
+	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
+	// 使用的 User-Agent。
+	//
+	// 注意：它**只**用在这一个路径上；/get_usage_summary 等其它根路径请求仍发
+	// Node fetch 的 `node`（见 deepai.Client.UsageSummary）。
 	DesktopUserAgent = "DeepAI-Code"
 
 	// 请求头名称。
@@ -47,6 +51,9 @@ const (
 	// HeaderCheckIn 是 /theos 响应下发的签到 nonce，仅 /theos 请求回传。
 	HeaderCheckIn = "X-DeepAI-Code-Check-In"
 	// HeaderBeacon 是 /theos 请求上的客户端心跳。
+	//
+	// 形态 `v=<版本>;up=<秒>;pi=<0|1>;focus=<0|1>`，其中 focus 只在
+	// 焦点状态已知时出现（见 deepaiBeacon）：网关没有窗口焦点，因此省略。
 	HeaderBeacon = "X-DeepAI-Code-Beacon"
 
 	// 上游错误码。

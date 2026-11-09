@@ -139,14 +139,20 @@ func (e *HTTPError) CapacityWaiting() bool {
 }
 
 // RetryAfter 解析 Retry-After 头（秒），默认 fallback。
+//
+// 与桌面端 waitForDeepAICapacity 同形：可解析的秒数夹到 [1, 30]，
+// 头部缺失 / 非数字（含 HTTP-date）时才用调用方的 fallback。
 func RetryAfter(resp *http.Response, fallback time.Duration) time.Duration {
 	raw := strings.TrimSpace(resp.Header.Get("Retry-After"))
 	if raw == "" {
 		return fallback
 	}
 	var secs int
-	if _, err := fmt.Sscanf(raw, "%d", &secs); err != nil || secs <= 0 {
+	if _, err := fmt.Sscanf(raw, "%d", &secs); err != nil {
 		return fallback
+	}
+	if secs < 1 {
+		secs = 1
 	}
 	if secs > 30 {
 		secs = 30
@@ -317,8 +323,12 @@ var desktopInferenceHeaders = map[string]string{
 	"Sec-Fetch-Mode":  "cors",
 }
 
-// commonHeaders 写入所有上游请求的公共头。
+// commonHeaders 写入所有上游 JSON 请求的公共头。
+//
+// Content-Type 无条件设置（含无 body 的 GET）：桌面端 requestDeepAIJson 的
+// header 字面量对 /models、/theos、/get_usage_summary 同样带 application/json。
 func (c *Client) commonHeaders(req *http.Request, acct *Account) {
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(HeaderLane, LaneVersion)
 	if c.Instance != "" {
 		req.Header.Set(HeaderInstance, c.Instance)
@@ -435,7 +445,6 @@ func (c *Client) OpenModel(ctx context.Context, acct *Account, path string, body
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
 	c.commonHeaders(req, acct)
 	// 桌面端在转发推理前会记一次 lastRelayAt，心跳里的 pi 字段由此得来。
 	c.markRelay(acct)
@@ -484,13 +493,16 @@ func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 }
 
 // UsageSummary 查询账号订阅 / 用量。
+//
+// 与桌面端一致：这个根路径请求**不覆盖** User-Agent（保持 Node fetch 的
+// `node`）。`DeepAI-Code` 这个 UA 只属于 /gravity-display-proxy 赞助位渲染
+// （见 DesktopUserAgent），带到用量接口上反而又是一个异常信号。
 func (c *Client) UsageSummary(ctx context.Context, acct *Account) (*UsageSummary, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.RootURL(PathUsageSummary), nil)
 	if err != nil {
 		return nil, err
 	}
 	c.commonHeaders(req, acct)
-	req.Header.Set("User-Agent", "DeepAI-Code")
 
 	resp, err := c.do(req)
 	if err != nil {
@@ -526,7 +538,6 @@ func (c *Client) postJSON(ctx context.Context, acct *Account, path string, paylo
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
 	c.commonHeaders(req, acct)
 
 	resp, err := c.do(req)

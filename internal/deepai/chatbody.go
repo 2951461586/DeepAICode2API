@@ -10,14 +10,20 @@ import "encoding/json"
 // 请求里已经有 system / developer 消息时原样保留，绝不替换。
 const DefaultSystemPrompt = "You are a helpful AI assistant. Answer the user's request directly."
 
-// desktopChatKeys 是桌面端 chat/completions 实际会发送的字段白名单。
+// desktopChatKeys 是「桌面端会发的字段 ∪ 会改变采样/用量的旋钮」。
 //
 // 仅在上游以 “This request is not one DeepAI Code sends.” 拒绝后作为兜底
 // 重试使用；正常路径仍然透传客户端的原始字段。
 //
-// 采样参数必须在白名单里：形状回退是为了让请求被接受，不是为了把它改成
-// 另一个请求。丢掉 seed / service_tier / stream_options 会改变采样条件与
-// 用量上报，指纹类检测甚至会因此换一个候选模型。
+// 实测桌面端（0.3.20，pi 1.3.0 的 openai-completions）每个 chat 请求发的是：
+//
+//	model / messages / stream / stream_options / store=false /
+//	max_completion_tokens / temperature / tools / tool_choice /
+//	reasoning_effort（reasoning 模型关思考时发 "none"）
+//
+// 因此 store 必须留在白名单里（早期漏了它，重排后反而比桌面端少一个字段）。
+// 至于 seed / service_tier / top_p / stop / prompt_cache_key：桌面端本身不发，
+// 但它们是网关调用方显式给的采样/用量参数，丢掉会静默改掉请求语义，所以保留。
 var desktopChatKeys = map[string]bool{
 	"model":                 true,
 	"messages":              true,
@@ -31,6 +37,7 @@ var desktopChatKeys = map[string]bool{
 	"stop":                  true,
 	"stream":                true,
 	"stream_options":        true,
+	"store":                 true,
 	"seed":                  true,
 	"service_tier":          true,
 	"reasoning_effort":      true,

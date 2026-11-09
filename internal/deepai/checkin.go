@@ -153,8 +153,11 @@ func (c *Client) applyCheckInHeaders(req *http.Request, acct *Account) {
 	if !relayed.IsZero() && time.Since(relayed) < time.Duration(ttl)*time.Second {
 		pi = 1
 	}
-	// 与桌面端 deepAIBeacon 同形：v=<版本>;up=<秒>;pi=<0|1>;focus=<0|1>。
-	req.Header.Set(HeaderBeacon, fmt.Sprintf("v=%s;up=%d;pi=%d;focus=1", AppVersion, UptimeSeconds(), pi))
+	// 与桌面端 deepAIBeacon 同形：v=<版本>;up=<秒>;pi=<0|1>。
+	//
+	// 桌面端只在焦点状态已知时追加 `;focus=<0|1>`（deepAIBeacon 把未知事实
+	// 直接省略）。网关是服务端进程，没有窗口焦点，所以不伪造这个字段。
+	req.Header.Set(HeaderBeacon, fmt.Sprintf("v=%s;up=%d;pi=%d", AppVersion, UptimeSeconds(), pi))
 }
 
 // EnsureCheckIn 在推理前补一次签到（对应桌面端的 ensureCheckedIn）。
