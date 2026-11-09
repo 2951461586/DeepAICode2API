@@ -532,7 +532,9 @@ func (s *Server) scheduleQuotaReprobe(id string) {
 	if len(delays) == 0 {
 		return
 	}
+	s.quotaWG.Add(1)
 	go func() {
+		defer s.quotaWG.Done()
 		for _, d := range delays {
 			time.Sleep(d)
 			a := s.Store.Account(id)
@@ -556,3 +558,10 @@ func (s *Server) scheduleQuotaReprobe(id string) {
 		}
 	}()
 }
+
+// waitQuotaReprobe 阻塞到已排期的配额复探全部收尾（测试用）。
+//
+// 复探先把额度写进内存、再 Save() 落盘；测试若只等「额度已更新」就返回，
+// 后台 goroutine 的落盘会与 t.TempDir() 清理竞争，在 CI 上偶发
+// "TempDir RemoveAll cleanup: directory not empty"。
+func (s *Server) waitQuotaReprobe() { s.quotaWG.Wait() }

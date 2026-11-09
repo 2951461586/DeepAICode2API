@@ -35,6 +35,13 @@ type Server struct {
 	// quotaReprobeDelays 是入池后 0 额度的复探退避序列（测试可注入短值）。
 	quotaReprobeDelays []time.Duration
 
+	// quotaWG 跟踪已排期的异步配额复探。
+	//
+	// 复探 goroutine 在写完内存后还要 Save() 落盘；测试必须等它完全收尾
+	// 再结束，否则 t.TempDir() 的清理会和落盘撞上（CI 上表现为
+	// "TempDir RemoveAll cleanup: directory not empty"）。
+	quotaWG sync.WaitGroup
+
 	// probing 是配额探测的在途去重表（按账号 ID）。
 	//
 	// 三条路径会同时探同一批账号：手动 checkin、入池后延迟复探、

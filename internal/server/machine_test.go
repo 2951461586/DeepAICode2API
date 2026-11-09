@@ -231,6 +231,10 @@ func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if a := s.Store.Account(id); a != nil && a.Theos != nil && a.Theos.Balance == "200.00000" {
+			// 额度是复探 goroutine 先写内存、再 Save() 落盘的：只等内存就返回
+			// 会和 t.TempDir() 的清理抢同一批文件（CI 上偶发
+			// "TempDir RemoveAll cleanup: directory not empty"）。
+			s.waitQuotaReprobe()
 			return // ok
 		}
 		time.Sleep(20 * time.Millisecond)
