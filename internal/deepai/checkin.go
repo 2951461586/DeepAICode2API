@@ -24,6 +24,15 @@ const checkInMinInterval = 30 * time.Second
 // checkInAttemptTimeout 是补签到的超时预算：签到只是上下文，失败不影响推理。
 const checkInAttemptTimeout = 10 * time.Second
 
+// CheckInRefusedLock 是命中 check_in_refused 后的静默锁时长。
+//
+// 上游当天的「重启签到」次数用尽后，403 里仍然会下发新的 nonce；若不停手，
+// needAck 会让 EnsureCheckIn 每 30s（checkInMinInterval）再撞一次，变成一个
+// 自己制造的签到风暴。锁一段时间比“识别错误码后仍然重试”克制得多。
+// 上游的拒绝文案是 “Try again tomorrow”，这里取 6h（与客户端的日额度节奏一致），
+// 到期后允许再试一次；如果仍被拒，锁会重新续上。
+const CheckInRefusedLock = 6 * time.Hour
+
 // newInstanceID 生成进程级实例号（16 字节随机数的 hex，32 个字符）。
 func newInstanceID() string {
 	var buf [16]byte
@@ -49,6 +58,12 @@ type checkInState struct {
 	// 没有这个字段时，EnsureCheckIn 会在 seconds/2 内直接返回，导致冷启动后
 	// 前 300s 的推理都还没签到。
 	ackedNonce string
+
+	// refusedUntil 是 check_in_refused 的静默锁（零值 = 未锁）。
+	//
+	// 被上游按天限流的账号当天拿不到真模型分支，但推理仍可用；
+	// 继续打 /theos 只会浪费请求并可能加深风控。
+	refusedUntil time.Time
 }
 
 type checkInStore struct {
@@ -134,6 +149,27 @@ func (c *Client) markRelay(acct *Account) {
 	c.checkIns.mu.Unlock()
 }
 
+// lockCheckIn 给某个账号的签到加静默锁（命中 check_in_refused 时使用）。
+func (c *Client) lockCheckIn(acct *Account, d time.Duration) {
+	if acct == nil || d <= 0 {
+		return
+	}
+	st := c.stateFor(acct)
+	c.checkIns.mu.Lock()
+	st.refusedUntil = time.Now().Add(d)
+	c.checkIns.mu.Unlock()
+}
+
+// CheckInRefusedUntil 返回账号的签到静默锁到期时间（零值 = 未锁）。
+//
+// 控制台诊断 / 测试用：被锁的账号当天不会再打 /theos，但推理照常。
+func (c *Client) CheckInRefusedUntil(acct *Account) time.Time {
+	st := c.stateFor(acct)
+	c.checkIns.mu.Lock()
+	defer c.checkIns.mu.Unlock()
+	return st.refusedUntil
+}
+
 // applyCheckInHeaders 写入签到 nonce 与心跳（仅 /theos 使用）。
 func (c *Client) applyCheckInHeaders(req *http.Request, acct *Account) {
 	st := c.stateFor(acct)
@@ -175,6 +211,11 @@ func (c *Client) EnsureCheckIn(ctx context.Context, acct *Account) {
 	c.checkIns.mu.Unlock()
 
 	now := time.Now()
+	// 被 check_in_refused 锁住的账号当天不再签到：推理仍可走替身分支，
+	// 继续打 /theos 只会浪费时间与风控预算（见 CheckInRefusedLock）。
+	if !st.refusedUntil.IsZero() && now.Before(st.refusedUntil) {
+		return
+	}
 	// 有挑战但没回传过 → 先补一次（这是上游判定“真实客户端”的依据）。
 	// 否则才退回半衰期节奏（seconds/2，默认 300s）。
 	needAck := ci != nil && ci.Valid() && ci.Nonce != acked

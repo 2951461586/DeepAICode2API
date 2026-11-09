@@ -482,7 +482,12 @@ func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 	// 无论成功还是拒绝，都先吃掉签到挑战：上游在 403 里也会下发。
 	c.captureCheckIn(acct, body)
 	if resp.StatusCode/100 != 2 {
-		return nil, &HTTPError{Op: "查询 Theos", Status: resp.StatusCode, Body: body}
+		httpErr := &HTTPError{Op: "查询 Theos", Status: resp.StatusCode, Body: body}
+		// 签到被当日限流：给账号上静默锁，避免 EnsureCheckIn 每 30s 再撞一次。
+		if httpErr.CheckInRefused() {
+			c.lockCheckIn(acct, CheckInRefusedLock)
+		}
+		return nil, httpErr
 	}
 	var out Allowance
 	if err := json.Unmarshal(body, &out); err != nil {

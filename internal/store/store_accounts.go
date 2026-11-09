@@ -344,6 +344,9 @@ func (s *Store) MarkAccountResult(id string, ok bool, note string) {
 			a.Failures = 0
 			a.Status = "ok"
 			a.LastErr = ""
+			// 注意：不在这里清 ProbeAfter —— 推理成功不等于 /theos 会成功。
+			// 签到限流的账号正是“能推理、不能签到”，清掉冷却会让后台守护
+			// 每分钟又去磕一次 403。探测成功后由 SetAccountAllowance 清零。
 			if note != "" {
 				a.Note = note
 			}
@@ -378,24 +381,6 @@ func (s *Store) BlockAccount(id, reason string) {
 }
 
 // SetAccountAllowance 缓存一次配额探测结果。
-// NoteAccountIssue 只更新备注，不改状态与失败计数。
-//
-// 用于「账号本身没坏、只是这件事今天做不了」的错误。典型是
-// check_in_refused：签到被上游按当天重启次数限流，但推理照常 200
-// （只是会落在替身模型分支），把账号标成 error 会把好号从调度里踢掉。
-func (s *Store) NoteAccountIssue(id, note string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, a := range s.st.Accounts {
-		if a.ID != id {
-			continue
-		}
-		a.LastErr = note
-		a.LastUsed = time.Now().Unix()
-		return
-	}
-}
-
 func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -408,12 +393,54 @@ func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) 
 			a.Status = "error"
 			a.LastErr = err.Error()
 			a.Failures++
+			a.ProbeFailures++
+			a.ProbeAfter = time.Now().Add(probeBackoff(a.ProbeFailures)).Unix()
 			return
 		}
 		a.Theos = al
 		a.Status = "ok"
 		a.LastErr = ""
 		a.Failures = 0
+		a.ProbeFailures = 0
+		a.ProbeAfter = 0
+		return
+	}
+}
+
+// probeBackoff 给出连续探测失败后的冷却时长：2min → 10min → 1h（封顶）。
+//
+// 不缓存失败结果时，后台守护每 5 分钟会把同一批失败号全部重探一遍；
+// 而失败往往是成片的（出口故障 / 上游抖动），653 号规模下就是持续的
+// /theos 风暴。与 docs/recon.md 的「签到是有限资源」是同一条约束。
+func probeBackoff(consecutive int) time.Duration {
+	switch {
+	case consecutive <= 1:
+		return 2 * time.Minute
+	case consecutive == 2:
+		return 10 * time.Minute
+	default:
+		return time.Hour
+	}
+}
+
+// LockAccountProbe 给账号的额度探测加静默锁（目前来源：check_in_refused）。
+//
+// 与普通失败的区别：上游没坏、账号也能推理，只是当天的「重启签到」次数用尽；
+// 锁住探测可以避免后台守护与推理前签到反复撞 403。
+func (s *Store) LockAccountProbe(id string, until time.Time, note string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.st.Accounts {
+		if a.ID != id {
+			continue
+		}
+		a.LastUsed = time.Now().Unix()
+		if until.Unix() > a.ProbeAfter {
+			a.ProbeAfter = until.Unix()
+		}
+		if note != "" {
+			a.LastErr = note
+		}
 		return
 	}
 }

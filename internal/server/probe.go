@@ -81,6 +81,11 @@ func quotaNeedsRefresh(a *deepai.Account, now time.Time, staleAfter time.Duratio
 	if a == nil || !a.Enabled {
 		return false
 	}
+	// 探测失败后的冷却：失败往往是成片的（出口故障 / 上游抖动），
+	// 不缓存失败结果就会让后台守护每 5 分钟把同一批失败号全部重探一遍。
+	if a.ProbeAfter > now.Unix() {
+		return false
+	}
 	if a.Theos == nil || a.Theos.CheckedAt <= 0 {
 		return true
 	}
@@ -212,8 +217,9 @@ func (s *Server) probeBatch(ctx context.Context, accts []*deepai.Account, timeou
 			return
 		}
 		// 签到被限流也不是账号坏：推理照常，只是当天别想再签到。
+		// 锁住额度探测，避免后台守护每 5 分钟再来磕一次 403。
 		if deepai.IsCheckInRefused(err) {
-			s.Store.NoteAccountIssue(a.ID, err.Error())
+			s.Store.LockAccountProbe(a.ID, time.Now().Add(deepai.CheckInRefusedLock), err.Error())
 			return
 		}
 		s.Store.SetAccountAllowance(a.ID, al, err)

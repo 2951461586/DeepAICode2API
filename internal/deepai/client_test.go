@@ -720,3 +720,59 @@ func TestCheckInRefusedDetection(t *testing.T) {
 		t.Fatal("social_login_required 不应识别为 check_in_refused")
 	}
 }
+
+// check_in_refused 之后必须静默锁住签到：403 里仍会下发新的 check_in，
+// 不锁的话 needAck 分支会让 EnsureCheckIn 每 30s（checkInMinInterval）
+// 再撞一次 /theos —— 自己制造一场签到风暴（docs/recon.md §5.1）。
+func TestEnsureCheckInHonorsRefusalLock(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"type":"check_in_refused","code":"check_in_refused"},`+
+			`"check_in":{"nonce":"0123456789abcdef0123456789abcdef","seconds":600}}`)
+	})
+	acct := &Account{APIKey: "k-refused"}
+	ctx := context.Background()
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits
+	}
+	// 绕过 checkInMinInterval（30s）的节流：本用例只验证「锁」本身。
+	resetAttempt := func() {
+		st := c.stateFor(acct)
+		c.checkIns.mu.Lock()
+		st.attemptAt = time.Time{}
+		c.checkIns.mu.Unlock()
+	}
+
+	c.EnsureCheckIn(ctx, acct)
+	if got := count(); got != 1 {
+		t.Fatalf("首次应触发一次 /theos，实际 %d", got)
+	}
+	until := c.CheckInRefusedUntil(acct)
+	if until.IsZero() || time.Until(until) < 5*time.Hour {
+		t.Fatalf("应锁约 6h，实际剩余 %v", time.Until(until))
+	}
+
+	resetAttempt()
+	c.EnsureCheckIn(ctx, acct)
+	if got := count(); got != 1 {
+		t.Fatalf("锁期内不应再打 /theos，实际 %d 次", got)
+	}
+
+	// 锁到期后允许再试一次（仍被拒就重新续锁）。
+	st := c.stateFor(acct)
+	c.checkIns.mu.Lock()
+	st.refusedUntil = time.Now().Add(-time.Second)
+	c.checkIns.mu.Unlock()
+	resetAttempt()
+	c.EnsureCheckIn(ctx, acct)
+	if got := count(); got != 2 {
+		t.Fatalf("锁到期后应允许重试，实际 %d 次", got)
+	}
+}

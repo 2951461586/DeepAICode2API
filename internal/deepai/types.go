@@ -256,6 +256,15 @@ type Account struct {
 	LastErr  string `json:"last_err"`
 	Failures int    `json:"failures"`
 
+	// ProbeAfter 是额度探测的下次允许时间（Unix 秒，0 = 无冷却）。
+	//
+	// 探测失败后按次退避：没有这个字段时，后台额度守护每 5 分钟会把同一批
+	// 失败号全部重探一遍（docs/performance.md §14 之外的另一条写放大），
+	// 而失败往往是成片的（出口故障 / 上游抖动）。
+	ProbeAfter int64 `json:"probe_after,omitempty"`
+	// ProbeFailures 是连续探测失败次数（探测成功即清零）。
+	ProbeFailures int `json:"probe_failures,omitempty"`
+
 	// Theos 是最近一次 /theos 探测结果（只做展示，不做调度）。
 	Theos *Allowance `json:"theos,omitempty"`
 }
@@ -294,6 +303,8 @@ func (a *Account) MergeFrom(ex *Account) {
 	a.Status = ex.Status
 	a.LastErr = ex.LastErr
 	a.Theos = ex.Theos
+	a.ProbeAfter = ex.ProbeAfter
+	a.ProbeFailures = ex.ProbeFailures
 
 	fill := []struct {
 		dst *string
