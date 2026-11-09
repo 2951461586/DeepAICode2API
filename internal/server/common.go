@@ -179,6 +179,25 @@ func (s *Server) releaseAccount(id string) {
 	}
 }
 
+// hasFreeAccount 报告池里是否还有账号有空在途槽位。
+//
+// 409 之后用它区分「立即换号」与「整池都满，等一等」：以前一律先
+// sleep(Retry-After) 再换号，最坏白等 30s，还把非流式预算（90s）吃掉。
+func (s *Server) hasFreeAccount() bool {
+	for _, a := range s.Store.Accounts() {
+		if !a.Enabled || a.Status == deepai.StatusBlocked {
+			continue
+		}
+		s.inflightMu.Lock()
+		busy := s.inflight[a.ID] >= maxInFlightPerAccount
+		s.inflightMu.Unlock()
+		if !busy {
+			return true
+		}
+	}
+	return false
+}
+
 // errAllAccountsBusy 表示所有候选账号都达到了并发上限。
 //
 // 用 429 而不是 502：这是可重试的背压，客户端应稍后重试。
@@ -317,9 +336,13 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			return nil, acct, httpErr
 		}
 
-		// 容量拒绝：按上游建议等待后重试（不换号，保持会话粘性）。
+		// 容量拒绝：池里还有空槽就立刻换号（粘性由 X-Session-Affinity 保证，
+		// 不需要在同一个号上干等）；整池都满了才按 Retry-After 等一次。
 		if httpErr.CapacityWaiting() {
 			lastErr = httpErr
+			if s.hasFreeAccount() {
+				continue
+			}
 			wait := deepai.RetryAfter(resp, 2*time.Second)
 			select {
 			case <-time.After(wait):

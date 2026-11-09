@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"deepaicode2api/internal/deepai"
 )
@@ -115,5 +116,46 @@ func TestEmailUnverifiedBlocksAndSkips(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "email_unverified") {
 		t.Fatalf("全池被拦时应说明是 email_unverified: %s", rec.Body.String())
+	}
+}
+
+// 409 session_busy：池里还有空号时应立刻换号，不能先 sleep(Retry-After)。
+// 以前一律等待再换号，最坏白等 30s（docs/performance.md §14 的并发问题之一）。
+func TestSessionBusySwitchesImmediatelyWhenAnotherAccountIsFree(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]int{}
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("Api-Key")
+		mu.Lock()
+		seen[key]++
+		mu.Unlock()
+		if key == "busy-key" {
+			w.Header().Set("Retry-After", "30") // 真等就是 30s
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"error":{"code":"session_busy","message":"busy"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, okChatResponse)
+	})
+	s, key := newTestServer(t, u)
+	s.Store.UpdateAccount("acc-1", func(a *deepai.Account) { a.APIKey = "busy-key" })
+	s.Store.UpsertAccount(&deepai.Account{
+		ID: "acc-free", Name: "free", APIKey: "free-key", Enabled: true, Status: "ok",
+	})
+
+	begin := time.Now()
+	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key, chatProbeBody)
+	elapsed := time.Since(begin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应换号成功，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("不应等待 Retry-After（耗时 %v）", elapsed)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seen["free-key"] == 0 {
+		t.Fatal("应换到空闲账号")
 	}
 }
