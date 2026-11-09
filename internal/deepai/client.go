@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -228,6 +229,10 @@ type Client struct {
 	UserAgent string
 	Proxy     string
 
+	// lane 是当前使用的 Theos 车道版本（atomic：探测/换道时会被并发读取）。
+	// 零值表示用编译期的 LaneVersion。
+	lane atomic.Value
+
 	// Instance 是进程级实例号（16 字节随机 hex），随所有 JSON 请求发出。
 	Instance string
 
@@ -335,7 +340,7 @@ var desktopInferenceHeaders = map[string]string{
 // header 字面量对 /models、/theos、/get_usage_summary 同样带 application/json。
 func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(HeaderLane, LaneVersion)
+	req.Header.Set(HeaderLane, c.laneVersion())
 	if c.Instance != "" {
 		req.Header.Set(HeaderInstance, c.Instance)
 	}
@@ -385,6 +390,69 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 	if acct != nil && acct.APIKey != "" {
 		req.Header.Set(HeaderKeyName, acct.APIKey)
 	}
+}
+
+// LaneCandidates 是车道探测的候选序列。
+//
+// 上游每抬一次车道就把旧值一律回 426（0.3.17 是 2，0.3.19 起是 4）。
+// 按「新版优先、旧版兜底」试：命中即用，这样上游升级车道时网关不需要改代码。
+var LaneCandidates = []string{"4", "5", "6", "7", "8", "9", "10", "11", "12", "3", "2"}
+
+// SetLane 设置当前车道（空串 = 用编译期默认值）。
+func (c *Client) SetLane(lane string) {
+	c.lane.Store(strings.TrimSpace(lane))
+}
+
+// laneVersion 返回本次请求要发的车道版本。
+func (c *Client) laneVersion() string {
+	if v, ok := c.lane.Load().(string); ok && v != "" {
+		return v
+	}
+	return LaneVersion
+}
+
+// Lane 返回当前生效的车道版本。
+func (c *Client) Lane() string { return c.laneVersion() }
+
+// DetectLane 用免鉴权的 /models 探测可用的车道版本。
+//
+// /models 不需要 API Key 与签到，所以启动时探测几乎零成本；一旦命中就把结果
+// 写回 Client，后续请求自动带上新车道。全部候选都失败时返回最后一个错误。
+func (c *Client) DetectLane(ctx context.Context) (string, error) {
+	var lastErr error
+	for _, lane := range LaneCandidates {
+		ok, err := c.laneWorks(ctx, lane)
+		if ok {
+			c.SetLane(lane)
+			return lane, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("所有候选车道都被上游拒绝（426）")
+	}
+	return "", lastErr
+}
+
+// laneWorks 用候选车道请求一次 /models。
+//
+// 只有 2xx 才算通过：5xx 说明上游抖动而不是车道不对，继续试下一个候选。
+func (c *Client) laneWorks(ctx context.Context, lane string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ModelURL(PathModels), nil)
+	if err != nil {
+		return false, err
+	}
+	c.commonHeaders(req, nil)
+	req.Header.Set(HeaderLane, lane) // 覆盖成待测值
+	resp, err := c.do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode/100 == 2, nil
 }
 
 // do 发送请求并返回原样响应（调用方负责关闭 Body）。

@@ -149,6 +149,16 @@ func main() {
 	// 有意放在监听之前启动：首个目录拉取可能与上游耗上 20s 超时，
 	// 先起它、再起监听，两者并行，互不阻塞。
 	stopBG := make(chan struct{})
+	// 车道探测：只打免鉴权的 /models，命中即落盘；失败沿用旧值，不阻塞启动。
+	go func() {
+		lane, err := srv.RefreshLane(context.Background())
+		if err != nil {
+			log.Printf("车道探测失败（沿用 %s）: %v", srv.CurrentLane(), err)
+			return
+		}
+		log.Printf("车道版本: %s（免鉴权 /models 探测）", lane)
+	}()
+
 	go background(st, srv, stopBG)
 	go quotaGuard(srv, stopBG)
 

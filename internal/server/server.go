@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,11 @@ type Server struct {
 	// quotaReprobeDelays 是入池后 0 额度的复探退避序列（测试可注入短值）。
 	quotaReprobeDelays []time.Duration
 
+	// laneMu / laneCheckedAt 是车道探测的节流：426 会成批出现，
+	// 没有冷却就会把一次车道升级变成一轮探测风暴。
+	laneMu        sync.Mutex
+	laneCheckedAt time.Time
+
 	// quotaWG 跟踪已排期的异步配额复探。
 	//
 	// 复探 goroutine 在写完内存后还要 Save() 落盘；测试必须等它完全收尾
@@ -59,7 +65,7 @@ type Server struct {
 
 // New 构造服务。
 func New(st *store.Store) *Server {
-	return &Server{
+	s := &Server{
 		Store: st, Up: deepai.NewClient(), Login: newLoginSessions(),
 		Registers: newRegisterJobs(), proxyClients: map[string]*deepai.Client{},
 		inflight:           map[string]int{},
@@ -67,6 +73,11 @@ func New(st *store.Store) *Server {
 		probeSem:           make(chan struct{}, probeWorkers),
 		quotaReprobeDelays: quotaReprobeDelays,
 	}
+	// 上次探测到的车道优先（跨重启保留），否则用编译期默认值。
+	if lane := strings.TrimSpace(st.Settings().Lane); lane != "" {
+		s.Up.SetLane(lane)
+	}
+	return s
 }
 
 // Handler 返回完整路由。

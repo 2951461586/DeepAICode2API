@@ -302,8 +302,18 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
 			return nil, acct, httpErr
 		}
-		// 客户端配置问题：车道不对 / 缺机器指纹，换号也没用。
-		if httpErr.LaneUnsupported() || httpErr.MachineRequired() {
+		// 缺机器指纹：换号也没用（所有账号共用同一个探测结果）。
+		if httpErr.MachineRequired() {
+			return nil, acct, httpErr
+		}
+		// 车道不对：先用免鉴权的 /models 探一次，命中新车道就换道重试；
+		// 仍在冷却期 / 探测失败时把 426 原样交给调用方（提示升级网关）。
+		if httpErr.LaneUnsupported() {
+			before := s.CurrentLane()
+			if lane, lerr := s.RefreshLane(ctx); lerr == nil && lane != "" && lane != before {
+				lastErr = httpErr
+				continue
+			}
 			return nil, acct, httpErr
 		}
 

@@ -34,6 +34,12 @@ type Settings struct {
 	// StrictModel 关闭「解析不到就回落」的行为：模型名不在目录里时返回 404，
 	// 而不是静默换成默认模型。默认关闭，保持开箱即用。
 	StrictModel bool `json:"strict_model"`
+
+	// Lane 是探测到的 Theos 车道版本（空 = 用编译期默认值）。
+	//
+	// 上游抬车道时旧值一律回 426；网关启动时用免鉴权的 /models 探测一次，
+	// 命中就写在这里，升级不用改代码。
+	Lane string `json:"lane,omitempty"`
 }
 
 // LogEntry 是一条请求日志（只记元信息，不落对话内容）。

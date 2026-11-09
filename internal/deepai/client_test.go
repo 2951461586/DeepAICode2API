@@ -781,3 +781,61 @@ func TestEnsureCheckInHonorsRefusalLock(t *testing.T) {
 		t.Fatalf("锁到期后应允许重试，实际 %d 次", got)
 	}
 }
+
+// 车道探测：只有 /models 接受的车道才算命中，命中后所有请求自动带上它。
+func TestDetectLanePicksAcceptedLane(t *testing.T) {
+	var mu sync.Mutex
+	var lanes []string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		lane := r.Header.Get(HeaderLane)
+		mu.Lock()
+		lanes = append(lanes, lane)
+		mu.Unlock()
+		if lane != "5" {
+			w.WriteHeader(http.StatusUpgradeRequired)
+			_, _ = io.WriteString(w, `{"error":{"code":"lane_version_unsupported"}}`)
+			return
+		}
+		if r.URL.Path == ModelBasePath+PathModels {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"models":[{"id":"glm-5.3-flash","name":"GLM","reasoning":true,`+
+				`"input":["text"],"contextWindow":1000,"maxTokens":100}],"default":"glm-5.3-flash"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"enabled":true}`)
+	})
+
+	lane, err := c.DetectLane(context.Background())
+	if err != nil {
+		t.Fatalf("DetectLane: %v", err)
+	}
+	if lane != "5" || c.Lane() != "5" {
+		t.Fatalf("命中车道 = %q / Lane() = %q，期望 5", lane, c.Lane())
+	}
+
+	// 之后的请求直接带新车道。
+	if _, err := c.Theos(context.Background(), &Account{APIKey: "k"}); err != nil {
+		t.Fatalf("Theos: %v", err)
+	}
+	mu.Lock()
+	last := lanes[len(lanes)-1]
+	mu.Unlock()
+	if last != "5" {
+		t.Fatalf("后续请求车道 = %q，期望 5", last)
+	}
+}
+
+// 所有候选车道都被拒时返回错误，且不改变当前车道。
+func TestDetectLaneAllRejected(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUpgradeRequired)
+		_, _ = io.WriteString(w, `{"error":{"code":"lane_version_unsupported"}}`)
+	})
+	if _, err := c.DetectLane(context.Background()); err == nil {
+		t.Fatal("全部候选被拒应返回错误")
+	}
+	if c.Lane() != LaneVersion {
+		t.Fatalf("失败不应改车道，实际 %q", c.Lane())
+	}
+}

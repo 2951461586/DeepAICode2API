@@ -21,6 +21,7 @@ func sanitizedSettings(st store.Settings) map[string]any {
 		"cors_origin":         st.CORSOrigin,
 		"fallback_model":      st.FallbackModel,
 		"strict_model":        st.StrictModel,
+		"lane":                st.Lane,
 		"admin_password_set":  st.AdminPassword != "",
 	}
 }
