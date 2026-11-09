@@ -220,8 +220,10 @@ func TestClientEmptyAffinityOmitsHeader(t *testing.T) {
 	}
 }
 
+// 上游对无效 Key 会 302 到登录页：既不跟随（会把鉴权失败伪装成 200），
+// 也不透传裸 3xx（API 客户端拿到没有 Location 的 302 无法处理），
+// 而是归一成 401 auth_required —— 调用方才能标账号失败并换号。
 func TestClientDoesNotFollowRedirects(t *testing.T) {
-	// 上游对无效 Key 会 302 到登录页；跟随只会把鉴权失败伪装成 200。
 	var finalHits int
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login" {
@@ -232,13 +234,16 @@ func TestClientDoesNotFollowRedirects(t *testing.T) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 	})
 
-	resp, err := c.OpenModel(context.Background(), &Account{APIKey: "bad"}, PathChat, []byte(`{}`), "")
-	if err != nil {
-		t.Fatalf("OpenModel: %v", err)
+	_, err := c.OpenModel(context.Background(), &Account{APIKey: "bad"}, PathChat, []byte(`{}`), "")
+	if err == nil {
+		t.Fatal("302 应归一成鉴权错误")
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		t.Fatalf("状态码 = %d，期望 302（不跟随）", resp.StatusCode)
+	var he *HTTPError
+	if !errors.As(err, &he) {
+		t.Fatalf("错误类型 = %T，期望 *HTTPError", err)
+	}
+	if he.Status != http.StatusUnauthorized || !he.AuthFailed() || he.Code() != CodeAuthRequired {
+		t.Fatalf("应归一成 401 auth_required，实际 %+v", he)
 	}
 	if finalHits != 0 {
 		t.Fatal("不应跟随重定向到登录页")

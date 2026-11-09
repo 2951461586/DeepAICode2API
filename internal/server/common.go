@@ -289,9 +289,17 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		}
 		s.releaseAccount(acct.ID)
 
+		// 邮箱未验证：账号登录态无效，换号也救不了它。
+		// 标记后继续试下一个号（下次 /theos 成功会自动解封）；
+		// 不要把它当普通 403 反复重试。
+		if httpErr.EmailUnverified() {
+			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
+			lastErr = httpErr
+			continue
+		}
 		// 账号级策略拦截：记 blocked 后直接回传（下一次请求调度会跳过它）。
 		if httpErr.SocialLoginRequired() {
-			s.Store.BlockAccount(acct.ID, httpErr.Error())
+			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
 			return nil, acct, httpErr
 		}
 		// 客户端配置问题：车道不对 / 缺机器指纹，换号也没用。
@@ -328,6 +336,17 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 	return nil, used, lastErr
 }
 
+// blockedReason 把上游错误码拼进账号的 last_err。
+//
+// 光存 message 会丢掉 code：全池被拦时要靠它区分 social_login_required /
+// email_unverified，才能给调用方一个能行动的错误。
+func blockedReason(he *deepai.HTTPError) string {
+	if code := he.Code(); code != "" {
+		return code + ": " + he.Error()
+	}
+	return he.Error()
+}
+
 // noAccountError 在没有可选账号时给出可执行的错误。
 //
 // 池里全部账号都被上游要求改用 Google/Apple 登录时，不能只回一句
@@ -344,10 +363,34 @@ func (s *Server) noAccountError() error {
 		}
 	}
 	if blocked > 0 && blocked == len(accts) {
+		// 全部被拦时要把原因说清楚：只报“全部不可用”会让人以为网关坏了。
+		social, unverified := 0, 0
+		for _, a := range accts {
+			switch {
+			case strings.Contains(a.LastErr, deepai.CodeSocialLogin):
+				social++
+			case strings.Contains(a.LastErr, deepai.CodeEmailUnverified):
+				unverified++
+			}
+		}
+		if unverified > 0 && social == 0 {
+			return &deepai.HTTPError{
+				Op:     "账号调度",
+				Status: http.StatusServiceUnavailable,
+				Body:   []byte(`{"error":{"message":"全部账号都被上游判定为邮箱未验证（email_unverified），请先验证邮箱后重试","type":"email_unverified","code":"email_unverified"}}`),
+			}
+		}
+		if social > 0 {
+			return &deepai.HTTPError{
+				Op:     "账号调度",
+				Status: http.StatusServiceUnavailable,
+				Body:   []byte(`{"error":{"message":"全部账号已被上游要求改用 Google/Apple 登录（social_login_required）；邮箱密码注册的账号无法再推理","type":"social_login_required","code":"social_login_required"}}`),
+			}
+		}
 		return &deepai.HTTPError{
 			Op:     "账号调度",
 			Status: http.StatusServiceUnavailable,
-			Body:   []byte(`{"error":{"message":"全部账号已被上游要求改用 Google/Apple 登录（social_login_required）；邮箱密码注册的账号无法再推理","type":"social_login_required","code":"social_login_required"}}`),
+			Body:   []byte(`{"error":{"message":"全部账号都被上游拦截（策略 / 登录态），请到控制台查看各账号的 last_err","type":"account_blocked","code":"account_blocked"}}`),
 		}
 	}
 	return errors.New("全部账号均不可用")

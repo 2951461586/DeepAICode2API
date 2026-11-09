@@ -99,6 +99,12 @@ func (e *HTTPError) SocialLoginRequired() bool { return e.Code() == CodeSocialLo
 // MachineRequired 报告是否因缺少机器指纹被拒（计量模型专属）。
 func (e *HTTPError) MachineRequired() bool { return e.Code() == CodeMachineRequired }
 
+// EmailUnverified 报告上游是否因邮箱未验证拒绝该账号。
+//
+// 与普通 403 不同：账号的登录态无效，换不换号都一样，
+// 应标记后跳过（而不是当成可重试失败反复换号）。
+func (e *HTTPError) EmailUnverified() bool { return e.Code() == CodeEmailUnverified }
+
 // LaneUnsupported 报告车道版本不再被上游接受（426）。
 func (e *HTTPError) LaneUnsupported() bool {
 	return e.Status == http.StatusUpgradeRequired || e.Code() == CodeLaneUnsupported
@@ -382,8 +388,28 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 }
 
 // do 发送请求并返回原样响应（调用方负责关闭 Body）。
+//
+// 3xx 一律归一成 401：上游对无效 Key 会 302 跳到登录页。跟随会把鉴权失败
+// 伪装成 200（所以 CheckRedirect 返回 ErrUseLastResponse），而原样透传在
+// API 客户端那边又是个没有 Location 的裸 3xx。统一成 auth_required 后，
+// 调用方会标账号失败并换号，客户端拿到的是可识别的 401。
 func (c *Client) do(req *http.Request) (*http.Response, error) {
-	return c.HTTP.Do(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 == 3 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return nil, &HTTPError{
+			Op:     "上游鉴权",
+			Status: http.StatusUnauthorized,
+			Body: []byte(fmt.Sprintf(
+				`{"error":{"type":%q,"code":%q,"message":"上游把请求重定向到登录页（API Key 无效或已失效，status=%d）"}}`,
+				CodeAuthRequired, CodeAuthRequired, resp.StatusCode)),
+		}
+	}
+	return resp, nil
 }
 
 // FetchModels 拉取上游模型目录（无需 API Key，但需要机器指纹）。
