@@ -141,13 +141,33 @@ func (s *Server) proxyExtension(w http.ResponseWriter, r *http.Request, path str
 	_, _ = io.Copy(w, bytes.NewReader(raw))
 }
 
-// handleTheos 返回当前账号的 Theos 配额。
+// theosCacheTTL 是 /v1/theos 的快照缓存时长。
+//
+// /theos 同时是签到通道：面板 / 脚本高频轮询会持续消耗上游按天限流的
+// 「重启签到」次数（403 check_in_refused）。10 分钟内直接回缓存，
+// 需要强制刷新时带 ?force=1。
+const theosCacheTTL = 10 * time.Minute
+
+// handleTheos 返回当前账号的 Theos 配额（10 分钟内走缓存）。
 func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	key := extractKey(r)
 	acct := s.nextAccount(r)
 	if acct == nil {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
+		return
+	}
+	force := r.URL.Query().Get("force") == "1"
+	if !force && acct.Theos != nil && acct.Theos.CheckedAt > 0 &&
+		time.Since(time.Unix(acct.Theos.CheckedAt, 0)) < theosCacheTTL {
+		rl := s.newReqLog(key, acct, "-", "theos", false, start, 0)
+		rl.done(0, Usage{}, nil)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"account":  acct.ID,
+			"username": acct.Username,
+			"theos":    acct.Theos,
+			"cached":   true,
+		})
 		return
 	}
 	ctx, cancel := contextWithTimeout(r, 30*time.Second)
