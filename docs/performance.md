@@ -398,3 +398,174 @@ POST https://api.deepai.org/daily-time-sync/registration/ → 504 Gateway Timeou
   批量会放大回滚难度；`enroll` 真实成本只有 2.0s，且 P0-1 后更低。
 - **不要靠提高并发掩盖单号耗时**：出口只有 12 条，并发 20 以上会开始排队，
   表现是 p95 暴涨而不是吞吐提升。
+
+## 14. 单账号在途上限对照压测（2026-11-09）
+
+**问题**：号池并发上限 = `账号数 × maxInFlightPerAccount`，后者是编译期常量
+（`internal/server/common.go:132`，默认 **2**）。14 个号 = 28 个槽位，但**客户端
+并发 28 时成功率只有 48~70%**：槽位不够时网关不会排队，而是换号重试，重试预算
+（`max_retries`，默认 3）用尽就秒回 `429 rate_limit_error`（`所有账号并发已满，请稍后重试`）。
+
+这轮只做测量，用来决定「常量 2 → 3」值不值，以及「加号 / 调设置 / 改代码」哪条路更划算。
+
+### 方法与口径
+
+- 池子 **14 个号**（`/health`：`accounts=14 ready=14`），模型 `glm-5.3-flash`
+  （`theosPerRequest=0`，不消耗 Theos），`stream=false`、`max_tokens=16`、带一条 system；
+- 客户端固定并发 `C`、总请求 `N`（约 2 个请求/并发位，保证能跑满两波）；
+- 统计口径：`ok` = 200；`429` 单独计，且只统计 `error.type=rate_limit_error`
+  —— 它**是网关自己的背压**，不是上游 `409 session_busy`（那条会内部等待重试，
+  只表现为延迟变长）；
+- `cap=3` 变体：临时把常量改成 3、编成独立二进制，**立刻 `git checkout` 还原**，
+  仓库不留改动；两轮**交替**跑（cap2→cap3，再 cap3→cap2），抵消上游时段漂移；
+- 每轮之间重启网关（换二进制 + 复位轮询游标），状态文件用副本，真实号池不动。
+
+### 14.1 cap = 2（现状：28 槽位）
+
+| 客户端并发 | 请求 | 成功 | 429(容量) | 墙钟 | 成功率 | P50 | P95 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 14 | 42 | 42 | 0 | 7.0s | **100%** | 1.18s | 3.97s |
+| 20 | 40 | 40 | 0 | 5.1s | **100%** | 2.34s | 4.29s |
+| 24 | 48 | 42 | 6 | 5.5s | 87.5% | 2.15s | 4.49s |
+| 28 | 56 | 39 | 17 | 6.5s | 70% | 2.65s | 5.50s |
+| 28 | 56 | 27 | 29 | 19.5s | 48% | 0.36s | 5.37s |
+
+> 最后两行是同配置的两轮，差别来自上游时段（第二轮墙钟 19.5s，明显更慢）；
+> 两轮都出现了成规模拒绝，说明饱和不是偶发。
+
+### 14.2 cap = 3（42 槽位）
+
+| 客户端并发 | 请求 | 成功 | 429 | 墙钟 | 成功率 | P50 | P95 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 28 | 56 | **56** | 0 | 7.7s | **100%** | 2.09s | 5.65s |
+| 28 | 56 | **56** | 0 | 11.7s | **100%** | 2.70s | 9.42s |
+
+### 14.3 只改设置：`max_retries 3 → 16`（不动代码）
+
+| 客户端并发 | 请求 | 成功 | 429 | 墙钟 | 成功率 | P50 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 28 | 56 | 26 | 30 | 6.0s | 46% | **30ms** |
+| 28 | 56 | 26 | 30 | 4.7s | 46% | 28ms |
+
+### 14.4 结论
+
+1. **cap 2 的有效并发不是 28，而是 ~20**（≈1.4 条/号）：24 开始漏，28 只剩 48~70%；
+2. **cap 3 在 28 并发下零拒绝**（两轮 56/56），P95 与 cap 2 同量级——涨的是容量，不是延迟；
+3. **调 `max_retries` 没用**（46%，且 429 的 P50 只有 30ms）：429 是槽位不够，
+   被拒的请求在几十毫秒内就把重试预算烧完。这是纯容量问题，不是重试策略问题；
+4. 28 并发下 cap2 打不满 28 个理论槽位，代码路径上有两个放大器：
+   - `acquireAccount` 失败也算一次重试预算（`common.go:227` 的 `continue`），
+     饱和时贪心选号只试 `max_retries` 个号就放弃；
+   - 槽位在 handler 返回时才归还（`releaseBody`），客户端拿到响应立刻发下一个请求时，
+     会撞上「响应已收到、槽位未归位」的窗口。
+   所以对客户端的要求是：**遇到 `429 rate_limit_error` 立即退避**，重试风暴只会放大拒绝。
+
+按目标并发选杠杆：
+
+| 目标并发 | 做法 |
+| --- | --- |
+| ≤ 20 | 不用改（cap 2 已足够） |
+| 24 ~ 28 | 常量 `maxInFlightPerAccount 2 → 3`（需重编），实测零拒绝 |
+| > 28 | **加号**（每号 +2 槽位）比继续抬常量稳：上游单号容量（`409 session_busy`）才是硬约束 |
+
+### 14.5 复现
+
+两个脚本，`scripts/` 下可直接跑（需先按 §1 的方式把网关跑起来，真实号池建议用副本）。
+
+```js
+// scripts/ab-load.mjs — 固定并发压测，输出一行 JSON
+// 用法: BASE=http://127.0.0.1:10087 KEY=sk-... CONC=28 TOTAL=56 node scripts/ab-load.mjs
+const BASE = process.env.BASE || 'http://127.0.0.1:10087';
+const KEY = process.env.KEY;
+const CONC = Number(process.env.CONC || 28);
+const TOTAL = Number(process.env.TOTAL || 56);
+const MODEL = process.env.MODEL || 'glm-5.3-flash';
+
+const body = JSON.stringify({
+  model: MODEL, stream: false, max_tokens: 16, temperature: 0,
+  messages: [
+    { role: 'system', content: 'You are a helpful AI assistant.' },
+    { role: 'user', content: 'Reply with exactly: OK' },
+  ],
+});
+
+async function one() {
+  const t0 = performance.now();
+  try {
+    const r = await fetch(BASE + '/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
+      body, signal: AbortSignal.timeout(180000),
+    });
+    const text = await r.text();
+    let j = null; try { j = JSON.parse(text); } catch {}
+    return { status: r.status, ms: performance.now() - t0, type: j?.error?.type || '' };
+  } catch {
+    return { status: 0, ms: performance.now() - t0, type: 'client_error' };
+  }
+}
+
+const t0 = performance.now();
+let next = 0;
+const out = [];
+const workers = [];
+for (let w = 0; w < Math.min(CONC, TOTAL); w++) {
+  workers.push((async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= TOTAL) return;
+      out.push(await one());
+    }
+  })());
+}
+await Promise.all(workers);
+const wall = performance.now() - t0;
+
+const ms = out.map(r => r.ms).sort((a, b) => a - b);
+const q = p => ms.length ? Math.round(ms[Math.min(ms.length - 1, Math.floor(ms.length * p))]) : 0;
+const byStatus = {}, byType = {};
+for (const r of out) {
+  byStatus[r.status] = (byStatus[r.status] || 0) + 1;
+  if (r.status !== 200) byType[`${r.status} ${r.type || '-'}`] = (byType[`${r.status} ${r.type || '-'}`] || 0) + 1;
+}
+console.log(JSON.stringify({
+  conc: CONC, total: TOTAL, wall_s: +(wall / 1000).toFixed(1),
+  rps: +(out.length / (wall / 1000)).toFixed(2), ok: byStatus[200] || 0,
+  byStatus, p50: q(0.5), p95: q(0.95), p99: q(0.99), errors: byType,
+}));
+```
+
+```bash
+#!/usr/bin/env bash
+# scripts/ab-arm.sh — 起网关 → 建临时 Key → 压测 → 停网关（一轮）
+# 用法: CONC=28 TOTAL=56 ./scripts/ab-arm.sh ./bin/deepaicode2api
+set -euo pipefail
+BIN=${1:?用法: ab-arm.sh <binary>}
+WORK=$(mktemp -d)
+cp deepaicode2api-data.json "$WORK/state.json"    # 副本：不动真实号池
+"$BIN" -data "$WORK/state.json" -port 10087 >"$WORK/gw.log" 2>&1 &
+GW=$!
+trap 'kill $GW 2>/dev/null || true; rm -rf "$WORK"' EXIT
+until curl -sf -m1 -o /dev/null http://127.0.0.1:10087/healthz; do sleep 0.5; done
+KEY=$(curl -sS -X POST -H 'Content-Type: application/json' -d '{"name":"ab","group":""}' \
+  http://127.0.0.1:10087/admin/api/keys | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')
+# 只测 max_retries 时，在这里插一句（不需要重编）：
+# curl -sS -X POST -H 'Content-Type: application/json' -d '{"max_retries":16}' \
+#   http://127.0.0.1:10087/admin/api/settings >/dev/null
+BASE=http://127.0.0.1:10087 KEY="$KEY" CONC=${CONC:-28} TOTAL=${TOTAL:-56} node scripts/ab-load.mjs
+```
+
+```bash
+# cap=3 变体：临时改常量 → 编独立二进制 → 立刻还原（仓库不留改动）
+python - <<'PY'
+p='internal/server/common.go'
+s=open(p, encoding='utf-8').read()
+open(p,'w',encoding='utf-8',newline='').write(s.replace(
+    'const maxInFlightPerAccount = 2', 'const maxInFlightPerAccount = 3'))
+PY
+go build -o /tmp/gw-cap3 . && git checkout -- internal/server/common.go
+go build -o /tmp/gw-cap2 .
+git status --short        # 应为空
+```
+
+复跑时按「cap2 → cap3 → cap3 → cap2」交替，每轮 `CONC=28 TOTAL=56`，取成功率与 P95 对照。
