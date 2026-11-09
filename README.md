@@ -66,8 +66,8 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 0.3.20
 | 联网搜索 | `POST https://api.deepai.org/deepai_code/web_search` |
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
 | 协议头 | `X-DeepAI-Code-Theos: 4`（计费车道版本；2/3/5 一律 426） |
-| 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每进程随机一次，随所有 JSON 请求发出） |
-| 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1;focus=0\|1` |
+| 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每个出口代理随机一次，随该代理的所有 JSON 请求发出；桌面端是每进程一次） |
+| 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1`（`focus` 只在焦点状态已知时才追加） |
 | **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
 | 会话粘性 | `X-Session-Affinity`（body 里的 `prompt_cache_key` 也会被上游使用） |
 | 容量拒绝 | `409 {"error":{"code":"session_busy"}}` + `Retry-After` |
@@ -77,7 +77,10 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 0.3.20
 ### 1.2 上游本身就是 OpenAI 兼容的
 
 `chat/completions` 的请求 / 响应与 OpenAI 完全一致，响应还额外带了
-OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等字段。
+OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等字段
+（`id: gen-…`、`usage.cost_details.upstream_inference_*`、`native_finish_reason`）。
+注意 `provider` 是**真实推理后端名**（`InferenceNet` / `Wafer` / `Reka` / …），
+只有它等于 `"DeepAI"` 才代表这次请求被换到了替身后端（见 §10.1）。
 因此本网关不需要做复杂的协议还原，重点在：
 
 1. **凭据导入**：从桌面端明文凭据文件读取并去重；
@@ -691,7 +694,7 @@ docker run -d --name deepaicode2api \
 | --- | --- | --- |
 | 无效 Key 返回 200 且是 HTML | 上游 302 到登录页 | 不要 `CheckRedirect` 跟随；`ErrUseLastResponse` 是刻意的 |
 | 换用别的 UA 后「模型变了」 | 上游按 `User-Agent` 分流：非 `node` 的 UA 会被换到另一个后端，但响应 `model` 仍写原名 | 不要“优化”成浏览器 UA；推理必须发 `user-agent: node`（见 `docs/recon.md` §3.1） |
-| 响应里出现 `provider: DeepAI` 且没有 `system_fingerprint` | 说明这次请求落在了被替换的后端 | 这是最省事的旁路判据，别只信响应里的 `model` |
+| 响应里出现 `provider: DeepAI` | 说明这次请求落在了被替换的后端（替身实际是 `crouton-alpha` 的 stealth 通道） | 判据是 **`provider` 是否等于 `"DeepAI"`**，别再单看 `system_fingerprint`：真分支也会带 `provider`，且只有 vLLM 后端才给指纹 |
 | 号池「指纹突然变差」 | 没完成签到：只拉 `/theos` 不回传 nonce 等于没签到，会落到替身分支 | 等一轮 `EnsureCheckIn` 续签即可；换机器指纹会重新变成冷状态 |
 | `403 check_in_refused` | 当天「重启签到」次数用尽（`restarted its check-in too many times today`） | 不要重试、不要把账号标 error：推理仍可用，明天自动恢复；也别再跑签到体检 |
 | 上游模型目录默认模型为空 | 字段叫 `default` 不是 `default_model` | 不要加 `default_model` 兼容，会静默拿不到值 |

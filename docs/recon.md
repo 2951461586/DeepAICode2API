@@ -9,6 +9,10 @@
 > 只有 beacon 里的 `v=` 版本号变了。0.3.17（车道 2）已不再被上游接受：
 > 所有 `/deepai_code` 端点返回 `426 lane_version_unsupported`。
 > 上游随时可能变，字段以代码为准。
+>
+> 2026-11-09 用 0.3.20 的 `server.asar` 做了白盒复核（请求头 / 机器指纹 /
+> 签到 / 响应判据），并重测了 UA 分流：**推理响应已改成 OpenRouter 形状**，
+> 「`provider` 出现 = 替身」的旧判据失效 —— 见 §3.1。
 
 ## 1. 进程与数据目录
 
@@ -58,7 +62,7 @@
 | `X-DeepAI-Code-Machine` | `sha256(小写原始机器 UUID)` | 按天发放免费额度；计量模型缺失时 `machine_required` |
 | `X-Session-Affinity` | 任意会话 id | 会话粘性（body 的 `prompt_cache_key` 同效） |
 | `X-DeepAI-Code-Check-In` | 上一次 `/theos` 下发的 32 位 hex nonce | **仅 `/theos`**：签到回传 |
-| `X-DeepAI-Code-Beacon` | `v=<版本>;up=<秒>;pi=<0|1>;focus=<0|1>` | **仅 `/theos`**：客户端心跳 |
+| `X-DeepAI-Code-Beacon` | `v=<版本>;up=<秒>;pi=<0\|1>`（焦点已知时才有 `;focus=<0\|1>`） | **仅 `/theos`**：客户端心跳 |
 
 普通 HTTP 头（很容易忽略，但它是“像不像桌面端”的一部分）：
 
@@ -68,8 +72,15 @@
 | `Accept` / `Accept-Language` | `*/*` / `*` |
 | `sec-fetch-mode` | `cors` |
 | `sec-ch-ua*` | **不发** |
-| `Content-Type` | `application/json`（上传/转写走 multipart） |
+| `Content-Type` | `application/json`（**无 body 的 GET 也带**；上传/转写走 multipart） |
 
+> 2026-11-09 用 0.3.20 的 `server.asar`（`src/deepai/api.ts`）逐项复核：
+> `requestDeepAIJson` 的 header 字面量无条件带 `Content-Type: application/json`，
+> 即使 `/models`、`/theos`、`/get_usage_summary` 是 GET；`User-Agent: DeepAI-Code`
+> **只**出现在 `/gravity-display-proxy` 一个路径上，`/get_usage_summary` 仍是
+> undici 默认的 `node`。心跳 `focus` 由窗口焦点事件决定，未知时整段省略
+> （`deepAIBeacon`），所以网关发 `v=…;up=…;pi=…` 即可。
+>
 > 浏览器 UA + `sec-ch-ua` 只在**网页注册**链路需要（和网页端保持一致）；
 > 带到推理请求上等于在 `Api-Key` 接口自报“我不是客户端”。
 > 网关的 `deepai.Client.BrowserFingerprint` 就是这条开关：注册 true、推理 false。
@@ -78,34 +89,64 @@
 
 - 车道 4 是硬门槛：对 `/models` `/theos` `/chat/completions` 一视同仁，
   不匹配直接 426「This version of DeepAI Code is no longer supported」。
-- `X-DeepAI-Code-Instance` 只在进程启动时生成一次；网关按进程生成一份即可，
-  不要每请求换值（桌面端也不是每请求换）。
+- `X-DeepAI-Code-Instance` 只在进程启动时生成一次；网关按「进程 / 出口代理」
+  各生成一份即可（`clientFor` 按代理缓存 Client），**不要每请求换值**
+  （桌面端也不是每请求换）。
 - 机器指纹是**额度分配键**：多个账号共用一个指纹时，只有第一个能拿到当日额度。
   本项目因此给每个账号分配独立 UUID（见 README §6.9）。
 - 原始 UUID 来源：Windows `Win32_ComputerSystemProduct.UUID`（失败回退 `MachineGuid`）、
   macOS `IOPlatformUUID`、Linux `/sys/class/dmi/id/product_uuid` 或 `/etc/machine-id`。
 - 固件占位 UUID（全 0 / 全 f / `03000200-…`）必须过滤，否则指纹不稳定。
 
-### 3.1 User-Agent 决定服务哪个模型（2026-11-08 实测）
+### 3.1 User-Agent 决定服务哪个模型（2026-11-08 实测，2026-11-09 重测并修正判据）
 
 这是本项目最重要的一条逆向结论：**上游按 `User-Agent` 分流**，同一个
 `model` 会因为 UA 不同而落到不同的后端，且响应里的 `model` 字段照样写
-`zai/glm-5.3-flash`，肉眼看不出来。
+`z-ai/glm-5.3-flash`，肉眼看不出来。
 
-| 请求特征 | 响应 | FPD 指纹（同一批挑战） |
-| --- | --- | --- |
-| `user-agent: node`（桌面端 Node fetch） | 有 `system_fingerprint: fp_…`，**无** `provider` | `glm-5.3-flash` / `glm-5.3-flashx` |
-| `user-agent: Go-http-client/1.1` | **无** `system_fingerprint`，有 `provider: DeepAI` | `muse-wonder` 89–100% |
-| `user-agent: Mozilla/…Chrome/156…`（注册链路指纹） | **无** `system_fingerprint`，有 `provider: DeepAI` | `muse-wonder` 100% |
+**2026-11-09 重测：分流依然生效，但响应形状变了** —— 上游现在把请求转给
+OpenRouter 一类路由（响应带 `id: gen-…`、`usage.cost_details.upstream_inference_*`、
+`is_byok`、`native_finish_reason`、`service_tier`），**`provider` 字段变成了
+真实后端名**，于是「有 `provider` 就是替身」这条旧判据**已经失效**。
 
-- 判定开关是 **UA**，与 `Accept` / `Accept-Language` / `sec-fetch-mode` 无关
-  （实测 `node` + `application/json` 仍在 GLM 分支）；
-- 便宜的旁路判据：**响应里出现 `provider` 且没有 `system_fingerprint`**
-  = 被换到了另一条后端；这条在响应体里直接可读，不必跑指纹检测；
-- 被替换的分支更慢（同请求 37–52s vs 8–22s），且 `max_tokens` 更容易被
-  `finish_reason=length` 截断；
-- 推论：**推理请求必须发 `user-agent: node`**（网关 `BrowserFingerprint=false`
+同一账号、同一机器指纹、同一请求体（`glm-5.3-flash`，已签到），只换 UA：
+
+| `user-agent` | 状态 | `provider` | `system_fingerprint` | 分支 |
+| --- | --- | --- | --- | --- |
+| `node`（桌面端 Node fetch） | 200 | `InferenceNet` / `Inceptron` / `Wafer` … | 仅 vLLM 后端有（`vllm-0.33.0rc1…`），其余 `null` | **真模型** |
+| `Go-http-client/1.1` | 200 | **`DeepAI`** | `null` | 替身 |
+| `Mozilla/…Chrome/156…` | 200 | **`DeepAI`** | `null` | 替身 |
+
+真 / 替身现在的判据（按可靠度排序）：
+
+1. **`provider == "DeepAI"` → 替身**；其它名字（`InferenceNet` / `Wafer` /
+   `Reka` / `BaseTen` / `CoreWeave` / `Makora` / `Modal` / `Morph` /
+   `Inceptron` / `OpenInference` …）→ 真模型；
+2. `service_tier`：`null` = 真，`"default"` = 替身；
+3. `usage.cost_details.upstream_inference_cost`：>0 = 真（实测 0.000019575），
+   `0` = 替身（stealth 路由不花钱）；
+4. `message.reasoning_details[0].format == "openrouter-stealth-v1"` = 替身，
+   它的 `data` 是 JWE，payload 里 base64 解出 `{"endpoint_slug":
+   "stealth/crouton-alpha|stealth"}` —— **今天的替身实际是 `crouton-alpha`
+   在 stealth 通道上冒充 GLM**（2026-11-08 记录的 FPD 指纹是 `muse-wonder`，
+   换了后端）；
+5. `system_fingerprint` **不再是判据**：真分支只有 vLLM 系后端才给，替身恒为 `null`。
+
+其它要点：
+
+- 判定开关仍然是 **UA**，与 `Accept` / `Accept-Language` / `sec-fetch-mode`
+  无关（实测 `node` + `application/json` 仍在真分支）；
+- 两条分支的 `model` 字段都回 `z-ai/glm-5.3-flash`，**不能**拿它判断；
+- 替身分支仍更容易被 `finish_reason=length` / `native_finish_reason=max_output_tokens`
+  截断（reasoning 吃 token 却不计 content）；
+- 推论不变：**推理请求必须发 `user-agent: node`**（网关 `BrowserFingerprint=false`
   那条路径），带 Chrome UA 或 Go 默认 UA 都会被换模型。
+
+**网关链路实测（2026-11-09）**：本地起网关（14 个账号、每号独立机器指纹），
+用 `glm-5.3-flash` 非流式打 12 次：`200 × 12`，**12/12 真分支**，
+`provider` 在 `Wafer` / `InferenceNet` / `Reka` / `BaseTen` / `CoreWeave` /
+`Makora` / `Modal` / `Morph` 之间轮换，单次 1.5–4.7s；日志里 14 个账号
+各命中一次（轮询公平）。
 
 ## 4. 错误语义
 
@@ -157,11 +198,16 @@
 - `/theos` 是签到通道：成功（200）与拒绝（403）都会带
   `check_in:{nonce,seconds=600}`。
 - 桌面端缓存 nonce，下一次 `/theos` 带上 `X-DeepAI-Code-Check-In: <nonce>`
-  与心跳 `X-DeepAI-Code-Beacon: v=<版本>;up=<秒>;pi=<0|1>;focus=<0|1>`。
+  与心跳 `X-DeepAI-Code-Beacon: v=<版本>;up=<秒>;pi=<0\|1>`（`focus` 可选，
+  只在窗口焦点状态已知时才出现）。
 - 重新签到的时机是 `seconds/2`（默认 300s）；推理前会先确保签到（失败不阻塞）。
 - 推理请求本身**不带** check-in / beacon，只带车道、实例、机器指纹与 `Api-Key`。
 
 ### 签到是「真实模型分支」的准入条件（2026-11-08 实测）
+
+> ⚠ 2026-11-09 起响应形状变了（见 §3.1），下表当时的「对齐」是按
+> 「有 `system_fingerprint`、无 `provider`」判的，今天要改成
+> **`provider != "DeepAI"`**。结论（签到是准入条件）尚未用新判据重测。
 
 配合 §3.1（UA 分流）一起看：**`node` UA + 完成签到**，两条都满足才拿到真模型。
 
@@ -173,7 +219,7 @@
 | 经网关（每号自己的机器指纹 + 推理前签到） | **30 次请求 / 14 个账号，30/30 对齐** |
 
 - 判定按 **(账号, 机器指纹)** 记忆：换机器指纹等于冷启动，必须重新签到；
-- 替身分支明显更慢（3–9s vs 对齐后 1–2s），响应里 `model` 仍写 `zai/glm-5.3-flash`；
+- 替身分支明显更慢（3–9s vs 对齐后 1–2s），响应里 `model` 仍写 `z-ai/glm-5.3-flash`；
 - 网关的 `EnsureCheckIn`：拿到 nonce 但**还没回传**时立刻补一次 `/theos`
   （`ackedNonce` 记住已回传的那个）；之后才退回 `seconds/2` 的续签节奏。
 - 冷启动仍有**一次性**窗口：某账号还没有任何挑战时，第一次推理只来得及拉 nonce，

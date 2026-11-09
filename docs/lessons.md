@@ -117,17 +117,29 @@
   `Accept-Language` / `sec-fetch-mode` 全试过，只换 `User-Agent` 就能复现。
 - **根因**：上游按 `User-Agent` 分流到不同后端 —— `node`（桌面端 Node fetch）
   走真实模型；`Go-http-client/1.1` 或 Chrome UA 被换到另一条后端，而响应里的
-  `model` 仍写 `zai/glm-5.3-flash`，所以只校验 `model` 永远发现不了。
+  `model` 仍写 `z-ai/glm-5.3-flash`，所以只校验 `model` 永远发现不了。
 - **规则**：**推理请求的每个头都要能对上桌面端**。注册链路（网页 UA +
-  `sec-ch-ua`）与推理链路（Node fetch 默认头）必须分成两套；
-  判定是否被换模型的最省事旁路判据：响应里出现 `provider` 且没有
-  `system_fingerprint`。
+  `sec-ch-ua`）与推理链路（Node fetch 默认头）必须分成两套。
+- **判据（2026-11-09 更新）**：上游现在把请求转给 OpenRouter 一类路由，
+  真分支的 `provider` 是**真实后端名**（`InferenceNet` / `Wafer` / `Reka` /
+  `BaseTen` / `CoreWeave` / `Makora` / `Modal` / `Morph` / `Inceptron` …），
+  所以旧判据「出现 `provider` 且没有 `system_fingerprint`」会把真分支全部误判
+  成替身。现在只看 **`provider` 是否等于 `"DeepAI"`**：等于 = 替身，不等于 = 真。
+  - 交叉验证：`service_tier`（真 `null` / 替身 `"default"`）、
+    `usage.cost_details.upstream_inference_cost`（真 >0 / 替身 `0`）、
+    `reasoning_details[*].format == "openrouter-stealth-v1"`（替身）；
+  - `system_fingerprint` **不再是判据**：真分支里只有 vLLM 系后端才给；
+  - 两条分支的 `model` 都回 `z-ai/glm-5.3-flash`，**不能**用它判断；
+  - 2026-11-09 的替身是 `crouton-alpha` 的 stealth 通道（11-08 是 `muse-wonder`）：
+    换后端但机制未变。详见 `docs/recon.md` §3.1。
 - **代码落点**：`deepai.Client.BrowserFingerprint`（`internal/deepai/client.go`，
   `NewClient` / `NewClientWithProxy` = 推理形态，`NewClientWithFingerprint`
   = 注册形态）、`desktopInferenceHeaders`。
 - **另一个准入条件**：光有 `node` UA 还不够，还得**完成签到**（`/theos` 拉
   nonce 再回传）。实测只拉不回传 = 0/14 对齐，完整签到 = 14/14 对齐；
   判定按 (账号, 机器指纹) 记忆，换指纹等于冷启动。
+  > 这两个数字是 2026-11-08 按「有 `system_fingerprint`、无 `provider`」判的；
+  > 11-09 响应形状变了，用新判据（`provider != "DeepAI"`）需重测。
 - **签到是有限资源**：`403 check_in_refused`（"restarted its check-in too many
   times today"）说明当天重启次数用尽，要等明天。别写脚本反复「拉 nonce + 回传」
   做体检；被限流的号仍能推理，只是一直落在替身分支。

@@ -1034,3 +1034,82 @@ CDP 实测筛选:
 
 新增 `TestConsoleBackendParity` 守住这条契约：筛选参数名、四个 action 名、
 `fmtCompact` 的使用点、`strict_model` 绑定，改 HTML 时漏接会直接变红。
+
+## 26. 0.3.20 客户端源码复核：请求头保真度五连修
+
+**根因**：此前的协议细节来自 HAR + 线上实测，属于黑盒推断。0.3.20 的
+`server.asar` 里 `src/deepai/api.ts` / `machineId.ts` / `DeepAIAccount.ts`
+是**未混淆**的（带注释），可以当白盒基准直接对着看。逐项比对后确认
+车道 4、实例号、机器指纹算法、签到形态全部一致（`latest.yml` 仍是
+0.3.20，`GET /deepai_code/models` 用车道 4 实测 200），但请求头有五处不保真：
+
+| # | 偏差 | 真实客户端 | 修法 |
+| --- | --- | --- | --- |
+| 1 | `/get_usage_summary` 带 `User-Agent: DeepAI-Code` | 只有 `/gravity-display-proxy` 覆盖 UA，其余是 undici 的 `node` | 删掉覆盖（`client.go`） |
+| 2 | GET 请求不带 `Content-Type` | `requestDeepAIJson` 的 header 字面量对所有方法都带 `application/json` | 挪进 `commonHeaders` |
+| 3 | 心跳写死 `focus=1` | `deepAIBeacon` 对未知事实直接省略，只有窗口焦点已知才发 `focus=0/1` | 发 `v=…;up=…;pi=…` |
+| 4 | 形状白名单缺 `store` | 桌面端每个 chat 请求都带 `store:false`（`supportsStore=true`） | 补进 `desktopChatKeys` |
+| 5 | `Retry-After` 只夹上限 | `min(30, max(1, retry))` | 补 1s 下限 |
+
+`seed` / `service_tier` / `top_p` / `stop` / `prompt_cache_key` 桌面端不发，
+但它们是网关调用方显式给的采样/用量旋钮，**故意保留**在兜底白名单里：
+形状回退是为了让请求被接受，不是为了把它改成另一个请求。
+
+顺带记录（不改代码，属于有意偏离）：每账号机器指纹、首次无挑战也补签到、
+错误码超集（`check_in_refused` / `network_bound` / `social_login_required` ——
+**0.3.20 客户端源码里一个都没有**，它只特判 `session_busy`）。
+
+**验证**（2026-11-09）：
+
+```text
+go test ./...                                    ✅ 全绿
+TestGetRequestsMatchDesktopHeaders  GET /models /theos /get_usage_summary
+  → Content-Type: application/json、User-Agent: node
+TestRetryAfter                      0 → 1s、-5 → 1s、999 → 30s、abc → fallback
+TestChatBodyFallbackKeepsSamplingFields   store:false 原值保留
+```
+
+客户端复核方法（当时用，不入库）：`app.asar`/`server.asar` 头部 16 字节
+（4 + pickle 长度 + JSON 长度 + JSON），数据区从 `8+pickle` 开始；
+`server.asar` 里的 `apps/server/dist/binCli-*.mjs` 就是整套协议实现。
+
+## 27. 渠道模型指纹实测：12/12 真分支，判据要改
+
+**背景**：§26 改完请求头后要验证「渠道是否还在真模型分支」，顺带发现
+2026-11-09 起上游的响应形状变了。
+
+**实测方法**（本地网关 + 直连对照）：
+
+```text
+网关（14 账号 / 每号独立机器指纹 / 已签到），glm-5.3-flash 非流式 ×12
+  → 200 × 12，12/12 真分支
+  provider 轮换: Wafer / InferenceNet / Reka / BaseTen / CoreWeave /
+                  Makora / Modal / Morph
+  单次 1.5–4.7s；日志里 14 个账号各命中一次（轮询公平）
+直连对照（同一账号 / 同一机器指纹 / 同一请求体，只换 UA）
+  user-agent: node          → provider=InferenceNet   真
+  user-agent: Go-http-client→ provider=DeepAI         替身
+  user-agent: Chrome/156    → provider=DeepAI         替身
+替身响应解包: message.reasoning_details[0] = {type:"reasoning.encrypted",
+  format:"openrouter-stealth-v1"}，data 的 JWE payload base64 解出
+  {"endpoint_slug":"stealth/crouton-alpha|stealth"}
+```
+
+**结论**：
+
+- UA 分流仍然生效（`node` 才进真分支），网关 `BrowserFingerprint=false` 是对的；
+- 但**旧旁路判据失效**：「有 `provider` 就是替身」不再成立 —— 上游现在把请求
+  转给 OpenRouter 一类路由，真分支的 `provider` 就是真实后端名；
+- 新判据（按可靠度）：`provider == "DeepAI"` → 替身；`service_tier == "default"`
+  → 替身；`usage.cost_details.upstream_inference_cost == 0` → 替身；
+  `reasoning_details[*].format == "openrouter-stealth-v1"` → 替身；
+  `system_fingerprint` **不再是判据**（真分支只有 vLLM 后端才给）；
+- 两条分支的 `model` 都回 `z-ai/glm-5.3-flash`，不能用来判断；
+- 替身今天实际是 `crouton-alpha` 的 stealth 通道（11-08 记录的是 `muse-wonder`），
+  换后端了但机制没变。
+
+**改动**：只改文档（`docs/recon.md` §3.1 / §5.1、README §1.2 与 §10.1），
+代码不依赖这两个字段。
+
+**未做**：用新判据重测「签到是不是准入条件」（§5.1 的表格是按旧判据测的，
+需要冷启动一对新的 (账号, 机器指纹)）。签到是有限资源，没在这轮消耗。
