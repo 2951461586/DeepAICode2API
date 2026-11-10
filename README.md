@@ -200,6 +200,9 @@ export ANTHROPIC_MODEL=glm-5.3-flash
 | --- | --- | --- |
 | POST | `/admin/api/accounts` | `action=enroll`：验活并写入号池 |
 | POST | `/admin/api/checkin` | 配额探测。可选 `id` / `group` / `stale_only` / `limit`；响应带 `total` / `probed` / `remaining`，按批推进 |
+| POST | `/admin/api/login/start` | 发起浏览器登录，返回 `session_id` / `port` / `loopback` / `expires_in` |
+| POST | `/admin/api/login/poll` | 轮询登录结果（本机回调自动收，`status=pending\|ok\|error\|expired`） |
+| POST | `/admin/api/login/callback` | **粘贴回调 URL 完成登录**（`{session_id, callback}`）。Docker / 远程部署必用：浏览器落在 `127.0.0.1:<port>/auth-callback?code=…&state=…` 打不开时，把地址栏完整 URL 粘回来即可 |
 
 ### 控制台
 
@@ -544,6 +547,18 @@ docker run -d --name deepaicode2api \
 > `X-DeepAI-Code-Machine` 仍是计量模型的必需头：缺失时返回 `400 machine_required`。
 > 容器里通常读不到宿主机的 SMBIOS UUID，因此 `DEEPAI_MACHINE_ID` 在容器部署时**必填**。
 > 填桌面端所在机器的原始 UUID 即可复用同一份每日免费额度。
+>
+> **容器里的「浏览器登录」要走粘贴回调**：上游把浏览器送到
+> `http://127.0.0.1:<随机会话端口>/auth-callback?code=…&state=…`，而这个
+> `127.0.0.1` 是**宿主机自己的回环**；网关监听在容器内（而且端口是每次登录
+> 随机分配的），`-p` 也映射不到容器的 loopback。所以浏览器会停在“无法访问”
+> 的页面上 —— 这是预期行为，不是网关坏了。把**地址栏里的完整 URL**粘到控制台
+> 「浏览器登录 → 粘贴回调 URL」里（`POST /admin/api/login/callback`），由网关
+> 完成 code → Key 兑换并入池。`code` 是一次性的，同一段 URL 只能兑换一次；
+> `state` 必须与本次会话匹配（只粘 `code` 会被拒）。
+>
+> Linux 上也可以用 `--network host` 让容器共享宿主回环，本机回调就能直接工作；
+> Docker Desktop（Windows/macOS）不具备这个语义。
 
 ---
 

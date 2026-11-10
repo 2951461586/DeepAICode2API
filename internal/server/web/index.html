@@ -413,6 +413,9 @@
             <input type="hidden" name="id" id="oauthId" value="">
             <button class="btn" type="submit">打开 DeepAI 登录页</button>
           </form>
+          <div class="hint" style="margin-top:14px">Docker / 远程部署时浏览器回调打不开（127.0.0.1 指的是你自己的机器）：把地址栏里的完整 URL 粘到下面，由网关完成兑换。</div>
+          <textarea id="oauthCallback" spellcheck="false" placeholder="http://127.0.0.1:34105/auth-callback?code=…&amp;state=…" style="margin-top:6px;min-height:64px"></textarea>
+          <button class="btn" id="oauthPaste" style="margin-top:8px">粘贴回调 URL 完成登录</button>
           <button class="btn danger" id="oauthCancel" style="margin-top:10px">取消</button>
         </div>
       </section>
@@ -623,6 +626,11 @@
     "等待浏览器完成登录…":"Waiting for browser sign-in…",
     "登录页会在新标签页打开；如果没有自动打开，请点击下面的按钮。":
       "The sign-in page opens in a new tab; use the button below if it did not.",
+    "Docker / 远程部署时浏览器回调打不开（127.0.0.1 指的是你自己的机器）：把地址栏里的完整 URL 粘到下面，由网关完成兑换。":
+      "In Docker or on a remote host the callback cannot open (127.0.0.1 is your own machine): paste the full URL from the address bar below and let the gateway finish the exchange.",
+    "粘贴回调 URL 完成登录":"Finish sign-in with pasted URL",
+    "先粘贴回调 URL":"Paste the callback URL first",
+    "正在用粘贴的回调兑换…":"Exchanging the pasted callback…",
     "凭据已脱敏展示；完整 API Key 仅存于本机状态文件（权限 0600）。":
       "Credentials are masked; full keys live only in the local state file (mode 0600).",
     "目录由上游":"Catalog comes from upstream",
@@ -1455,6 +1463,7 @@
       oauthSid = r.session_id;
       oauthDeadline = Date.now() + (r.expires_in || 600) * 1000;
       $("#oauthId").value = r.session_id;
+      $("#oauthCallback").value = "";
       $("#oauthStatus").textContent = "等待浏览器完成登录…";
       $("#oauthPanel").style.display = "block";
       // 目标是一个固定的相对路径 + 随机会话 id，浏览器新标签页打开。
@@ -1463,6 +1472,31 @@
     }).catch(function(e){ toast("发起登录失败：" + e.message, "err"); });
   };
   $("#oauthCancel").onclick = function(){ stopOAuth(); $("#oauthPanel").style.display = "none"; };
+
+  // 粘贴回调 URL：Docker / 远程部署时浏览器停在 127.0.0.1:<port> 打不开，
+  // 地址栏里的 code/state 仍然有效，交给网关兑换并完成入池。
+  $("#oauthPaste").onclick = function(){
+    var raw = String(($("#oauthCallback") || {}).value || "").trim();
+    if (!raw) { toast("先粘贴回调 URL", "err"); return; }
+    if (!oauthSid) { toast("登录会话已过期，请重新发起。", "err"); return; }
+    $("#oauthStatus").textContent = "正在用粘贴的回调兑换…";
+    api("/admin/api/login/callback", {method:"POST", body:{session_id: oauthSid, callback: raw}}).then(function(r){
+      if (r.status === "expired") {
+        stopOAuth();
+        $("#oauthStatus").textContent = "登录会话已过期，请重新发起。";
+        return;
+      }
+      if (r.status !== "ok") {
+        $("#oauthStatus").textContent = "登录失败：" + (r.error || "未知错误");
+        return;
+      }
+      stopOAuth();
+      $("#oauthPanel").style.display = "none";
+      $("#oauthCallback").value = "";
+      toast("登录成功：" + (r.username || "") + (r.is_pro ? "（Pro）" : ""), "ok");
+      refresh();
+    }).catch(function(e){ $("#oauthStatus").textContent = "兑换失败：" + e.message; });
+  };
 
   try {
     var saved = sessionStorage.getItem("deepaicode2api_pw");

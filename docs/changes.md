@@ -1296,3 +1296,59 @@ go test ./...    OK
 **影响**：号池、调度、翻译层零改动；过期的是“看到 `provider: DeepAI` 才叫替身”
 这条口头判据 —— 还在用旧判据做渠道体检的脚本/文档需要同步，否则会把替身
 记成真模型。
+
+---
+
+## 31. 浏览器登录支持「粘贴回调 URL」，Docker 部署不再卡在回调页
+
+**根因**：浏览器登录走的是 RFC 8252 本机回调 —— 网关在**自己进程内**监听
+`127.0.0.1:<随机端口>`，把这个端口写进上游的
+`/deepai_code/desktop_auth/?state=…&port=…`，等浏览器回调
+`http://127.0.0.1:<port>/auth-callback?code=…&state=…`。
+
+Docker 部署下这条链路必然断：
+
+1. 监听发生在**容器内**的 loopback，宿主机浏览器打不开；
+2. 端口是**每次登录随机分配**的，`-p` 发布静态端口也映射不到容器的
+   `127.0.0.1`（Docker 的 DNAT 目标是容器 eth0，不是它自己的回环）；
+3. 于是浏览器停在“无法访问此页面”，而控制台那头只能一直 `pending`。
+
+`code` 与 `state` 在地址栏里是完好的，兑换接口
+（`POST /deepai_code/desktop_auth/exchange/`）也只认 `code`、不需要端口 ——
+也就是说这条路本来就能走「授权 → 贴回调 URL」，只是之前没实现。
+
+**改动**：
+
+- `internal/server/login.go`
+  - 新增 `POST /admin/api/login/callback`：接受完整回调 URL（或裸 query 串），
+    校验 `state` 与本次会话一致后兑换 `code` 并入池；
+  - 登录会话加 `exchanging` / `consumed` 两个状态：本机回调与粘贴是两条并行
+    入口，**同一个 code 只能兑换一次**（并发时后者 409），入池也只做一次；
+  - `poll` 里的入池逻辑抽成 `completeLogin`，两条入口共用（机器指纹、代理池
+    分配、探活、关监听、删会话的语义完全一致）；
+  - 本机监听绑不上回环时不再 500 直接失败，改为回退一个高位端口（回调必然
+    打不开，正好走粘贴），响应新增 `loopback` 字段；
+  - 兑换失败按上游状态码给可读提示（400/401/403 → “已用过或已过期”，
+    429 → “登录尝试过多”）。
+- `internal/server/server.go`：注册新路由。
+- `internal/server/web/index.html`：登录面板加“粘贴回调 URL”输入框 + 按钮 +
+  英文词条；发起新登录时清空输入框。
+- `README.md`：管理接口表补三条登录接口；Docker 章节补“容器里必须走粘贴回调”
+  的说明与 `--network host` 的例外。
+
+**验证**：
+
+```text
+go build ./... / go vet ./...   OK
+go test ./internal/server/ -run Login -v
+  TestLoginPollAssignsMachineID            PASS
+  TestLoginPollAssignsProxyFromPool        PASS
+  TestLoginCallbackPasteCompletesLogin     PASS   # 贴 URL → 入池 → 二次粘贴被拒
+  TestLoginCallbackRejectsForeignState     PASS   # state 不匹配 400
+  TestLoginCallbackRejectsBareCode         PASS   # 只粘 code 400（拿不到 state）
+  TestLoginCallbackExchangeFailure         PASS   # code 过期 → 400 + 可读提示
+```
+
+**影响**：非容器部署（本机直跑）体验不变，回调自动收；Docker / 远程部署从
+“无解”变成“复制地址栏 → 粘贴一次”。注意 `code` 一次性：粘贴成功后同一段 URL
+再粘会被拒（会话已结束，返回 404），需要重新发起登录。

@@ -137,6 +137,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/api/models", s.withAdminAuth(s.handleAdminModels))
 	mux.HandleFunc("/admin/api/login/start", s.withAdminAuth(s.handleLoginStart))
 	mux.HandleFunc("/admin/api/login/poll", s.withAdminAuth(s.handleLoginPoll))
+	// 粘贴回调 URL：Docker / 远程部署时浏览器回调打不开，用这条入口完成兑换。
+	mux.HandleFunc("/admin/api/login/callback", s.withAdminAuth(s.handleLoginCallback))
 	// 浏览器登录跳转：session id 是一次性随机数，服务端只跳到固定的上游登录页。
 	mux.HandleFunc("/login/open", s.handleLoginOpen)
 
