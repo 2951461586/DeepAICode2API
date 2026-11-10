@@ -7,7 +7,6 @@
 [![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#三接口清单)
 [![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/2951461586/DeepAICode2API)
 
 把本机 **DeepAI Code 桌面端**的上游模型服务，逆向复刻成一个
 **OpenAI / Anthropic 双协议兼容的 Go 网关**。
