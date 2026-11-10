@@ -282,10 +282,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         账号池
       </button>
-      <button data-tab="register">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
-        批量注册
-      </button>
       <button data-tab="keys">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="17.5" r="3.5"/><path d="M9 15 20 4"/><path d="M17 7l2.5 2.5"/><path d="M14 10l2.5 2.5"/></svg>
         密钥
@@ -421,56 +417,6 @@
         </div>
       </section>
 
-      <section id="tab-register" class="tab">
-        <div class="page-head">
-          <div>
-            <h1>批量注册</h1>
-            <p class="sub">临时邮箱 → 注册 → 取 Key → 收信验证 → 入池</p>
-          </div>
-          <div class="actions">
-            <button class="btn primary" id="startRegister">开始注册</button>
-            <span id="regStatus" class="badge">空闲</span>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-head"><h2>任务参数</h2></div>
-          <div class="grid2">
-            <div><label>数量（1-50）</label><input id="regCount" type="number" min="1" max="50" value="1"></div>
-            <div><label>并发（1-5）</label><input id="regConcurrency" type="number" min="1" max="5" value="1"></div>
-            <div><label>邮箱域名（可选）</label><input id="regDomain" placeholder="留空使用配置域名"></div>
-            <div><label>邮箱后端</label><select id="regBackend">
-              <option value="">自动</option><option value="cf">CF Temp Email</option>
-              <option value="static">静态域名（无收件箱）</option><option value="none">固定邮箱</option>
-            </select></div>
-            <div><label>号池分组</label><input id="regGroup" value="default"></div>
-            <div><label>指定邮箱（可选，数量必须为 1）</label><input id="regEmail" placeholder="留空自动创建临时邮箱"></div>
-            <div><label>指定密码（可选）</label><input id="regPassword" placeholder="留空自动生成"></div>
-            <div><label>自动收信验证</label><select id="regVerify">
-              <option value="true">开启（验证后 +200 Theos）</option><option value="false">关闭</option>
-            </select></div>
-          </div>
-          <label>代理池（每行一个，http://user:pass@host:port；留空使用服务端 .env）</label>
-          <textarea id="regProxyPool" placeholder="http://user:pass@host:port"></textarea>
-          <label style="display:flex;gap:7px;align-items:center;margin-top:10px">
-            <input type="checkbox" id="regNoFingerprint" style="width:auto"> 关闭浏览器指纹库（使用固定 UA）
-          </label>
-        </div>
-
-        <div class="panel">
-          <div class="panel-head">
-            <h2>进度</h2>
-            <div class="actions"><span id="regStats" class="muted" style="font-size:11.5px"></span></div>
-          </div>
-          <div class="table-wrap">
-            <table><thead><tr>
-              <th>邮箱</th><th>状态</th><th>阶段</th><th>Key</th><th>Theos</th><th>账号</th><th>代理 / 指纹</th><th>错误</th>
-            </tr></thead><tbody id="regRows"></tbody></table>
-          </div>
-          <div class="hint">链路：创建临时邮箱 → 注册 → 登录 → 取 Session/API Key → 收信验证 → <code>/theos</code> 验活 → 写入 2API 号池（按分组轮询）。</div>
-        </div>
-      </section>
-
       <section id="tab-keys" class="tab">
         <div class="page-head">
           <div>
@@ -597,7 +543,7 @@
    */
   var I18N_EN = {
     // 导航 / 品牌
-    "概览":"Overview", "账号池":"Accounts", "批量注册":"Register", "密钥":"API Keys",
+    "概览":"Overview", "账号池":"Accounts", "密钥":"API Keys",
     "日志":"Logs", "设置":"Settings", "控制台":"Console",
     // 顶栏
     "管理密码（如已设置）":"Admin password (if set)", "记住":"Remember", "刷新":"Refresh",
@@ -608,9 +554,6 @@
     "导入本机桌面端":"Import desktop creds",
     "浏览器登录":"Browser sign-in",
     "刷新全部配额":"Refresh all quota",
-    "临时邮箱 → 注册 → 取 Key → 收信验证 → 入池":"Temp mailbox → register → key → verify → enroll",
-    "开始注册":"Start",
-    "空闲":"Idle",
     "网关对外签发的调用凭据，可绑定号池分组":"Gateway client keys, optionally bound to a pool group",
     "只记录元信息，不落对话内容":"Metadata only, no conversation content",
     "清空":"Clear",
@@ -688,9 +631,6 @@
       "Keys are masked. A full key is returned only once at creation — save it now.",
     "未签发任何密钥时，":"When no key exists, ",
     "允许无密钥调用。":"allows keyless calls.",
-    "链路：创建临时邮箱 → 注册 → 登录 → 取 Session/API Key → 收信验证 → ":
-      "Flow: temp mailbox → register → login → session/API key → email verify → ",
-    "验活 → 写入 2API 号池（按分组轮询）。":"check → enroll into the pool (round-robin by group).",
     "日志落在":"Logs are written to", "超过":"rotating at", "自动轮转；支持":"and support",
     "过滤。":"filters.",
     // toast / 对话框
@@ -713,11 +653,10 @@
     "单号平均 {mean}s · p50 {p50}s · p95 {p95}s · 入池 {ok}/{n}":
       "avg {mean}s · p50 {p50}s · p95 {p95}s · enrolled {ok}/{n}",
     "确定删除账号 {name}？":"Delete account {name}?",
-    "运行中":"Running", "已完成":"Done", "阶段：":"stages: ",
     "不可用":"unavailable", "不可达":"unreachable",
     "加载失败：":"Load failed: ", "失败：":"Failed: ", "日志加载失败：":"Logs failed: ",
     "查询失败：":"Query failed: ", "刷新失败：":"Refresh failed: ", "创建失败：":"Create failed: ",
-    "保存失败：":"Save failed: ", "启动失败：":"Start failed: ", "注册任务已启动：":"Register job started: ",
+    "保存失败：":"Save failed: ",
     "配额刷新完成：":"Quota refresh done: ",
     "请在右上角填写管理密码":"Enter the admin password at top right",
     "登录成功：":"Signed in: ", "运行中…":"Running…",
@@ -1406,7 +1345,6 @@
       b.classList.add("on");
       $("#tab-" + b.dataset.tab).classList.add("on");
       if (b.dataset.tab === "logs") refreshLogs();
-      if (b.dataset.tab === "register") loadRegisterJobs();
     };
   });
 
@@ -1477,123 +1415,6 @@
     }).catch(function(e){ toast("保存失败：" + e.message, "err"); });
   };
   $("#logLimit").onchange = refreshLogs;
-
-  // --- 批量注册 ---
-  var regTimer = null, regId = null;
-
-  // 单号端到端速率与阶段耗时：批量压测的核心指标，放在记录表上方。
-  function renderRegStats(recs){
-    var el = $("#regStats");
-    if (!el) return;
-    var e2e = recs
-      .filter(function(r){ return r.finished_at && r.created_at && r.finished_at > r.created_at; })
-      .map(function(r){ return r.finished_at - r.created_at; });
-    if (!e2e.length) { el.textContent = ""; return; }
-    e2e.sort(function(a, b){ return a - b; });
-    var sum = e2e.reduce(function(a, b){ return a + b; }, 0);
-    var mean = sum / e2e.length;
-    var p50 = e2e[Math.floor((e2e.length - 1) * 0.5)];
-    var p95 = e2e[Math.floor((e2e.length - 1) * 0.95)];
-    var enrolled = recs.filter(function(r){ return r.status === "enrolled"; }).length;
-    var agg = {}, cnt = {};
-    recs.forEach(function(r){
-      var t = r.timings || {};
-      Object.keys(t).forEach(function(k){
-        if (!(t[k] > 0)) return;
-        agg[k] = (agg[k] || 0) + t[k];
-        cnt[k] = (cnt[k] || 0) + 1;
-      });
-    });
-    var stages = Object.keys(agg).map(function(k){
-      return { k: k, v: agg[k] / cnt[k] };
-    }).sort(function(a, b){ return b.v - a.v; }).slice(0, 4);
-    var text = t("单号平均 {mean}s · p50 {p50}s · p95 {p95}s · 入池 {ok}/{n}",
-      {mean: mean.toFixed(1), p50: p50.toFixed(1), p95: p95.toFixed(1), ok: enrolled, n: recs.length});
-    if (stages.length) {
-      text += " · " + t("阶段：") + stages.map(function(s){ return s.k + " " + s.v.toFixed(1) + "s"; }).join(" / ");
-    }
-    el.textContent = text;
-  }
-
-  function renderRegister(job){
-    var tb = $("#regRows");
-    tb.textContent = "";
-    var recs = (job && job.records) || [];
-    renderRegStats(recs);
-    if (!recs.length) { tb.append(emptyRow(8, "暂无记录")); return; }
-    recs.forEach(function(rec){
-      var st = cell("");
-      var cls = "warn";
-      if (rec.status === "enrolled" || rec.status === "keyed") cls = "ok";
-      else if (rec.status === "failed") cls = "err";
-      st.append(pill(rec.status || "-", cls));
-      var errCell = cell(rec.error || rec.last_error || "", "muted trunc");
-      if (rec.error || rec.last_error) errCell.title = rec.error || rec.last_error;
-      tb.append(row([
-        cell(rec.email, "mono"), st, cell(rec.stage || "-", "mono"),
-        cell(rec.key || "-", "mono"), cell(rec.theos_granted || "-", "mono"),
-        cell(rec.account_id || "-", "mono"),
-        cell((rec.proxy || "-") + (rec.fingerprint ? " · " + rec.fingerprint : ""), "mono"),
-        errCell
-      ]));
-    });
-    translateDom(tb);
-  }
-
-  function regStatusText(job){
-    var text = t(job.running ? "运行中" : "已完成") + " " + job.done + "/" + job.count;
-    if (job.error) text += " · " + job.error;
-    return text;
-  }
-
-  function pollRegister(id){
-    if (regTimer) { clearTimeout(regTimer); regTimer = null; }
-    regId = id;
-    api("/admin/api/register?id=" + encodeURIComponent(id)).then(function(job){
-      renderRegister(job);
-      $("#regStatus").textContent = regStatusText(job);
-      if (job.running) {
-        regTimer = setTimeout(function(){ pollRegister(id); }, 2000);
-      } else {
-        regTimer = null;
-        refresh();
-      }
-    }).catch(function(e){
-      $("#regStatus").textContent = "查询失败：" + e.message;
-    });
-  }
-
-  function loadRegisterJobs(){
-    api("/admin/api/register").then(function(r){
-      var jobs = r.jobs || [];
-      if (!jobs.length) return;
-      jobs.sort(function(a,b){ return (b.started_at||0) - (a.started_at||0); });
-      var job = jobs[0];
-      renderRegister(job);
-      $("#regStatus").textContent = regStatusText(job);
-      if (job.running && regId !== job.id) pollRegister(job.id);
-    }).catch(function(){});
-  }
-
-  $("#startRegister").onclick = function(){
-    var body = {
-      count: parseInt($("#regCount").value, 10) || 1,
-      concurrency: parseInt($("#regConcurrency").value, 10) || 1,
-      domain: $("#regDomain").value.trim(),
-      mail_backend: $("#regBackend").value,
-      group: $("#regGroup").value.trim() || "default",
-      email: $("#regEmail").value.trim(),
-      password: $("#regPassword").value.trim(),
-      verify: $("#regVerify").value === "true",
-      proxy_pool: $("#regProxyPool").value.trim(),
-      no_fingerprint: $("#regNoFingerprint").checked
-    };
-    api("/admin/api/register", {method:"POST", body:body}).then(function(r){
-      toast("注册任务已启动：" + r.id, "ok");
-      $("#regStatus").textContent = "运行中…";
-      pollRegister(r.id);
-    }).catch(function(e){ toast("启动失败：" + e.message, "err"); });
-  };
 
   // --- 浏览器登录 ---
   var oauthTimer = null, oauthSid = null, oauthDeadline = 0;
@@ -1730,7 +1551,6 @@
     applyLang();
     refresh();
     if ($("#tab-logs").classList.contains("on")) refreshLogs();
-    if ($("#tab-register").classList.contains("on")) loadRegisterJobs();
   };
 
   applyLang();

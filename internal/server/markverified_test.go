@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"net/http"
 	"testing"
 
@@ -47,18 +46,5 @@ func TestMarkVerifiedMissingAccount(t *testing.T) {
 	rec := postAdmin(t, s, "/admin/api/accounts", `{"action":"mark-verified","id":"nope"}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("不存在的账号应 404，实际 %d：%s", rec.Code, rec.Body.String())
-	}
-}
-
-// 入池器必须同时能回填验证状态（后台流程依赖 register.VerifiedMarker 断言）。
-func TestLocalEnrollerImplementsMarker(t *testing.T) {
-	s := newEmptyServer(t)
-	s.Store.UpsertAccount(&deepai.Account{ID: "acc-z", Name: "n", APIKey: "sk-z", Email: "z@b.com"})
-
-	if err := (localEnroller{s: s}).MarkVerified(context.Background(), "acc-z", ""); err != nil {
-		t.Fatalf("MarkVerified: %v", err)
-	}
-	if a := s.Store.Account("acc-z"); a == nil || !a.EmailVerified {
-		t.Fatal("本地入池器未回填 email_verified")
 	}
 }

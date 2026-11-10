@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/proxy"
 	"deepaicode2api/internal/registry"
 	"deepaicode2api/internal/store"
 )
@@ -20,12 +21,17 @@ type Server struct {
 	Up    *deepai.Client
 	// Login 保存进行中的浏览器登录会话（内存态）。
 	Login *loginSessions
-	// Registers 保存批量注册任务（内存态）。
-	Registers *registerJobs
 
 	refreshMu    sync.Mutex
 	proxyMu      sync.Mutex
 	proxyClients map[string]*deepai.Client
+
+	// enrollPool 是入池自动分配代理用的进程内单例。
+	//
+	// 浏览器登录一次只入一个号；若每次新建池，轮询游标都会从 0 开始，
+	// 所有号就都落在第一个出口上（等于没分配）。单例让连续入池能真正轮转。
+	enrollPoolOnce sync.Once
+	enrollPool     *proxy.ProxyPool
 
 	// inflight 限制单账号同时进行的上游请求数。
 	// 调度只保证「这一轮选到谁」，不保证不会把并发全压在少数账号上：
@@ -70,7 +76,7 @@ type Server struct {
 func New(st *store.Store) *Server {
 	s := &Server{
 		Store: st, Up: deepai.NewClient(), Login: newLoginSessions(),
-		Registers: newRegisterJobs(), proxyClients: map[string]*deepai.Client{},
+		proxyClients:       map[string]*deepai.Client{},
 		inflight:           map[string]int{},
 		probing:            map[string]struct{}{},
 		probeSem:           make(chan struct{}, probeWorkers),
@@ -131,7 +137,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/api/models", s.withAdminAuth(s.handleAdminModels))
 	mux.HandleFunc("/admin/api/login/start", s.withAdminAuth(s.handleLoginStart))
 	mux.HandleFunc("/admin/api/login/poll", s.withAdminAuth(s.handleLoginPoll))
-	mux.HandleFunc("/admin/api/register", s.withAdminAuth(s.handleAdminRegister))
 	// 浏览器登录跳转：session id 是一次性随机数，服务端只跳到固定的上游登录页。
 	mux.HandleFunc("/login/open", s.handleLoginOpen)
 

@@ -242,6 +242,20 @@ func (s *Server) handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
 	}
+	// 浏览器登录（含 Google/Apple）只换来 API Key，不带机器指纹。若沿用本机
+	// 指纹，多个号会共用同一份每日免费额度，只有第一个能领到；入池时补一个
+	// 独立 UUID，与 action=enroll 的规则保持一致。
+	if strings.TrimSpace(acct.MachineID) == "" {
+		acct.MachineID = deepai.NewMachineUUID()
+	}
+	// 浏览器登录默认走直连；同一直连 IP 的每日免费额度是共享的，
+	// 配了代理池就按轮询分一个出口，避免多号挤在同一个 IP 上。
+	// 必须在 UpsertAccount 前写入：入池后的探活会直接复用它。
+	if strings.TrimSpace(acct.Proxy) == "" {
+		if pool := s.enrollProxyPool(); pool.Len() > 0 {
+			acct.Proxy = pool.Next()
+		}
+	}
 	isNew := s.Store.UpsertAccount(acct)
 	_ = s.Store.Save()
 	go s.probeAndSave(acct)

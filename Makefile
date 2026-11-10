@@ -10,19 +10,14 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 GOFILES := find . -name '*.go' -not -path './.git/*'
 
-.PHONY: all build register probe test test-race race-shim vet fmt lint cover docker clean
+.PHONY: all build probe test test-race race-shim vet fmt lint cover docker clean
 
-all: build register
+all: build
 
 ## build: 构建网关
 build:
 	@mkdir -p $(BIN)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN)/deepaicode2api .
-
-## register: 构建批量注册 CLI
-register:
-	@mkdir -p $(BIN)
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN)/register ./cmd/register
 
 ## probe: 构建上游探测 CLI
 probe:

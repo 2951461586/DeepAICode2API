@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
-	"deepaicode2api/internal/register"
+	"deepaicode2api/internal/proxy"
 )
 
 // --- 账号管理接口与配额巡检 ---
@@ -220,14 +220,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
 			return
 		}
-		cfg := register.LoadConfig()
-		raw := cfg.ProxyPool
-		if strings.TrimSpace(raw) == "" && strings.TrimSpace(cfg.ProxyFile) != "" {
-			if fileRaw, err := register.ReadProxyFile(cfg.ProxyFile); err == nil {
-				raw = fileRaw
-			}
-		}
-		pool, err := register.NewProxyPool(raw)
+		pool, err := loadProxyPool()
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "代理池配置错误: "+err.Error(), "invalid_request_error")
 			return
@@ -249,7 +242,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 				return false
 			}
 			a.Proxy = p
-			dist[register.ProxyLabel(p)]++
+			dist[proxy.ProxyLabel(p)]++
 			return true
 		})
 		_ = s.Store.Save()
