@@ -8,10 +8,25 @@ import (
 
 // 控制台是内嵌单页，改动容易静默回归（例如前后端字段名不一致）。
 // 这里守住几条关键约定：主题、分页、以及模型字段的 camelCase。
+
+// consoleSource 返回「标记 + 全部 ES module 脚本 + 样式」的拼接。
+//
+// 前端已拆成多个 module：只扫 index.html 会让「某函数名 / 选择器存在」
+// 这类断言静默失效（测试全绿但检查早已落空）。
+func consoleSource() string {
+	return consoleMarkup() + "\n" + consoleStyle() + "\n" + consoleJS()
+}
+
+// consoleMarkup 只返回页面标记（id 定义、标签页结构这类纯标记断言）。
+func consoleMarkup() string { return string(consoleHTML) }
+
+// consoleStyle 返回抽出的样式表。
+func consoleStyle() string { return string(consoleCSS) }
+
 func TestConsoleHTMLContracts(t *testing.T) {
-	html := string(consoleHTML)
+	html := consoleSource()
 	if html == "" {
-		t.Fatal("consoleHTML 为空")
+		t.Fatal("控制台资源为空")
 	}
 
 	must := map[string]string{
@@ -49,8 +64,9 @@ func TestConsoleHTMLContracts(t *testing.T) {
 
 // 分页默认 20，且只在 20/50/100 里取值。
 func TestConsoleDefaultPageSize(t *testing.T) {
-	html := string(consoleHTML)
-	if !strings.Contains(html, "var acctPageSize = 20;") {
+	html := consoleSource()
+	// 分页状态已搬到 js/state.js：默认值在 ui 对象里。
+	if !strings.Contains(html, "acctPageSize: 20") {
 		t.Error("分页默认值应为 20")
 	}
 	// 只看 acctSize 这个 select 内部的选项（页面别处也有 value="200" 的控件）。
@@ -78,17 +94,16 @@ func TestConsoleDefaultPageSize(t *testing.T) {
 // 这是最容易静默回归的一类改动：改标记时漏一个 id，控制台不报错，
 // 只是某个功能永远不生效（按钮点了没反应、渲染函数写进 null）。
 func TestConsoleScriptIDsExist(t *testing.T) {
-	html := string(consoleHTML)
+	markup := consoleMarkup()
 	defined := map[string]bool{}
-	for _, m := range regexp.MustCompile(`id="([A-Za-z0-9_-]+)"`).FindAllStringSubmatch(html, -1) {
+	for _, m := range regexp.MustCompile(`id="([A-Za-z0-9_-]+)"`).FindAllStringSubmatch(markup, -1) {
 		defined[m[1]] = true
 	}
 
-	idx := strings.Index(html, "<script>")
-	if idx < 0 {
-		t.Fatal("找不到 <script>")
+	script := consoleJS()
+	if script == "" {
+		t.Fatal("没有嵌入任何脚本（consoleJS 为空）")
 	}
-	script := html[idx:]
 
 	refs := map[string]bool{}
 	for _, re := range []*regexp.Regexp{
@@ -115,7 +130,7 @@ func TestConsoleScriptIDsExist(t *testing.T) {
 // 脚本用 querySelectorAll("section") 切页：多出来的 <section>（比如把卡片
 // 写成 section）会被当成标签页，切页时被摘掉 .on 而一起隐藏。
 func TestConsoleTabsHavePanels(t *testing.T) {
-	html := string(consoleHTML)
+	html := consoleSource()
 	tabs := regexp.MustCompile(`data-tab="([A-Za-z0-9_-]+)"`).FindAllStringSubmatch(html, -1)
 	if len(tabs) == 0 {
 		t.Fatal("没有导航按钮")
@@ -132,7 +147,7 @@ func TestConsoleTabsHavePanels(t *testing.T) {
 
 // 外壳布局与响应式收列的关键钩子。
 func TestConsoleShellHooks(t *testing.T) {
-	html := string(consoleHTML)
+	html := consoleSource()
 	for name, needle := range map[string]string{
 		"侧边栏":      `class="sidebar"`,
 		"移动端开关":    `id="navToggle"`,
@@ -153,7 +168,7 @@ func TestConsoleShellHooks(t *testing.T) {
 // 这三块都是「静默失效」型功能：字典少一条不会报错，只是英文界面里
 // 冒出一句中文；表头没有 wireSort 也不会报错，只是点了没反应。
 func TestConsoleFeatures(t *testing.T) {
-	html := string(consoleHTML)
+	html := consoleSource()
 
 	for name, needle := range map[string]string{
 		"语言按钮":      `id="lang"`,
@@ -190,7 +205,7 @@ func TestConsoleFeatures(t *testing.T) {
 
 // 控制台要跟后端能力对齐：筛选、存量治理动作、K/M 单位都不能悄悄丢。
 func TestConsoleBackendParity(t *testing.T) {
-	html := string(consoleHTML)
+	html := consoleSource()
 
 	// 筛选：后端 AccountPage / QueryLogs 支持的参数，前端必须真的发出去。
 	for _, needle := range []string{
@@ -235,7 +250,7 @@ func TestConsoleBackendParity(t *testing.T) {
 //   - 主题图标是内联 SVG（不再用 emoji），文案仍走 i18n 的「深色 / 浅色」；
 //   - 浏览器登录面板要能把登录链接复制走（绝对地址），供另一个浏览器/机器打开。
 func TestConsoleThemeAndLoginLink(t *testing.T) {
-	html := string(consoleHTML)
+	html := consoleSource()
 
 	for name, needle := range map[string]string{
 		"太阳图标":  `id="themeIconSun"`,
