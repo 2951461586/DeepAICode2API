@@ -60,10 +60,16 @@ jobs:
           report=$(go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./... 2>&1)
           code=$?
           set -e
-          printf '%s\n' "$report"
-          case "$code" in
-            0) echo "govulncheck: 未发现可达漏洞" ;;
-            3) echo "::warning::govulncheck 发现可达漏洞（多为 Go 工具链 stdlib），详见日志；不阻塞 CI" ;;
-            *) echo "::warning::govulncheck 退出码 $code（工具或网络问题），不阻塞 CI" ;;
-          esac
+          # 每行加前缀：runner 会把“文件:行:列: 说明”形式的日志行转成 failure 级注解，
+          # 一次扫描动辄十几条，run 页面看着像 CI 挂了。
+          printf '%s\n' "$report" | sed 's/^/[vuln] /'
+          # `go run` 会把子进程的任何非 0 退出码压成 1，真正的 3（发现漏洞）只
+          # 留在输出文本里，所以按内容判而不是只看退出码。
+          if [ "$code" -eq 0 ]; then
+            echo "govulncheck: 未发现可达漏洞"
+          elif printf '%s' "$report" | grep -q '^exit status 3$'; then
+            echo "::warning::govulncheck 发现可达漏洞（多为 Go 工具链 stdlib），详见日志；不阻塞 CI"
+          else
+            echo "::warning::govulncheck 运行失败（go run 退出码 $code），详见日志；不阻塞 CI"
+          fi
           exit 0
