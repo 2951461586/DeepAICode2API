@@ -103,7 +103,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		isNew := s.Store.UpsertAccount(acct)
 		_ = s.Store.Save()
-		go s.probeAndSave(acct)
+		s.probeAndSaveAsync(acct)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "new": isNew, "id": acct.ID})
 	case actionEnroll:
 		reg := deepai.Registration{

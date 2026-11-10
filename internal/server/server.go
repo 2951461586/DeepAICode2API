@@ -50,9 +50,9 @@ type Server struct {
 	// admissionWait 是「槽位全满」时的排队上限（测试可注入 0 立即 429）。
 	admissionWait time.Duration
 
-	// quotaWG 跟踪已排期的异步配额复探。
+	// quotaWG 跟踪已排期的后台落盘工作（配额复探 / 入池探活）。
 	//
-	// 复探 goroutine 在写完内存后还要 Save() 落盘；测试必须等它完全收尾
+	// 这些 goroutine 在写完内存后还要 Save() 落盘；测试必须等它完全收尾
 	// 再结束，否则 t.TempDir() 的清理会和落盘撞上（CI 上表现为
 	// "TempDir RemoveAll cleanup: directory not empty"）。
 	quotaWG sync.WaitGroup

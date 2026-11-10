@@ -146,9 +146,9 @@ func (s *Server) scheduleQuotaReprobe(id string) {
 	}()
 }
 
-// waitQuotaReprobe 阻塞到已排期的配额复探全部收尾（测试用）。
+// waitQuotaReprobe 阻塞到已排期的后台落盘工作（配额复探 / 入池探活）全部收尾。
 //
-// 复探先把额度写进内存、再 Save() 落盘；测试若只等「额度已更新」就返回，
-// 后台 goroutine 的落盘会与 t.TempDir() 清理竞争，在 CI 上偶发
-// "TempDir RemoveAll cleanup: directory not empty"。
+// 这两类 goroutine 都先把额度写进内存、再 Save() 落盘；测试若只等「额度已更新」
+// 就返回，后台的落盘会与 t.TempDir() 清理竞争，在 CI 上偶发
+// "TempDir RemoveAll cleanup: directory not empty"（-race 下更容易命中）。
 func (s *Server) waitQuotaReprobe() { s.quotaWG.Wait() }

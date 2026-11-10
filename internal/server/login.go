@@ -438,7 +438,7 @@ func (s *Server) completeLogin(session *loginSession) map[string]any {
 	}
 	isNew := s.Store.UpsertAccount(acct)
 	_ = s.Store.Save()
-	go s.probeAndSave(acct)
+	s.probeAndSaveAsync(acct)
 
 	return map[string]any{
 		"status": "ok", "new": isNew, "id": acct.ID,

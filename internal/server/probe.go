@@ -242,6 +242,22 @@ func (s *Server) probeAndSave(a *deepai.Account) {
 	s.probeAccounts([]*deepai.Account{a})
 }
 
+// probeAndSaveAsync 在后台探测一个账号并落盘，把这次异步工作登记到 quotaWG。
+//
+// 登记（Add）必须在起 goroutine 之前：探测会先写内存再 Save()，测试若只等
+// 接口返回就中途退出，后台的落盘会与 t.TempDir() 清理撞上，在 CI 上表现为
+// “TempDir RemoveAll cleanup: directory not empty”。
+func (s *Server) probeAndSaveAsync(a *deepai.Account) {
+	if a == nil {
+		return
+	}
+	s.quotaWG.Add(1)
+	go func() {
+		defer s.quotaWG.Done()
+		s.probeAndSave(a)
+	}()
+}
+
 // probeAsync 异步刷新单个账号的额度；返回是否真正发起。
 //
 // 先同步占用槽位再起 goroutine：否则每个请求都会起一个立刻退出的 goroutine，
