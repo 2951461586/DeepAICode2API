@@ -1113,3 +1113,186 @@ TestChatBodyFallbackKeepsSamplingFields   store:false 原值保留
 
 **未做**：用新判据重测「签到是不是准入条件」（§5.1 的表格是按旧判据测的，
 需要冷启动一对新的 (账号, 机器指纹)）。签到是有限资源，没在这轮消耗。
+
+---
+
+## 28. 实测复核：策略已放开 + Google 登录回调边界 + oauth 入池补全
+
+**背景**：`accounts/` 新增两个 11-09 的 HAR（`pwvjkhiq1hwz@lmoir.com`、
+`zupxzenogljb@lmoir.com`），需要入池；同时确认能否用 Google OAuth 登录
+取代私域邮箱注册。
+
+**实测（2026-11-09，直连上游）**：
+
+1. **`social_login_required` 已解除**。7 个账号（2 个 11-09 新号 + 5 个 11-07
+   旧号，全部邮箱/密码注册）`/theos` 全部 200（lane 4、check_in 正常，
+   余额 50/200）；其中 3 个做了真实推理，`glm-5.3-flash` 全部 200。
+   结论：0.3.19 的收窄是阶段性策略，邮箱注册链路重新可用。
+2. **Google 登录无法服务端代办**。allauth 端点
+   `https://deepai.org/accounts/google/login/?process=login` 302 到 Google，
+   `redirect_uri` 固定为 `https://deepai.org/accounts/google/login/callback/`，
+   `state` 绑定 deepai.org 的 `sessionid`，code 换 token 需要 DeepAI 的
+   `client_secret`；GIS 按钮的 `id_token` 又要求 `aud` 是 DeepAI 的 client_id。
+   浏览器那一跳无法绕过。
+3. **我们的回调本来就存在**：控制台「浏览器登录」→
+   `GET /deepai_code/desktop_auth/?state&port` → 浏览器完成 Google 登录 →
+   DeepAI 回跳本机 `http://127.0.0.1:<port>/auth-callback?code=…` →
+   `POST /deepai_code/desktop_auth/exchange/` 换 Key（`internal/server/login.go`）。
+   实测把链路走到登录页：页面 200、含 `Continue with Google` 与
+   `google_client_id=465558899080-…`。
+
+**HAR 入池结果**：
+
+```text
+POST /admin/api/accounts action=enroll（每号独立 machine_id）
+  pwvjkhiq1hwz@lmoir.com → id 48a58e6465179d1a，ok，200 Theos
+  zupxzenogljb@lmoir.com → id 517eea0453c5f38a，ok，200 Theos
+action=assign-proxy（12 个出口轮询）→ :10001 / :10002
+action=checkin → 2/2 ok；重启后回读仍为 2 个，状态 ok
+```
+
+**决策 / 改动**：
+
+- `oauth` 入池（`handleLoginPoll`）此前不写机器指纹与代理：前者会让多个
+  Google 号共用本机指纹、只有第一个能领每日额度；后者让所有号挤在同一个
+  直连 IP（`network_bound` 是 IP 级共享）。现在两处都补齐：
+  - 无 `machine_id` → `deepai.NewMachineUUID()`（与 `action=enroll` 一致）；
+  - 有代理池 → 入池前 `pool.Next()` 写入 `acct.Proxy`，探活直接复用该出口；
+- 代理池改为 **进程内单例**（`Server.enrollPool`）：浏览器登录一次只入一个号，
+  每次新建池会让轮询游标从 0 开始，等于所有号都分到第一个出口；
+- 配置解析抽成 `loadProxyPool()`（`PROXY_POOL` → `PROXY_POOL_FILE`），
+  与 `action=assign-proxy` 共用，避免两处漂移；
+- 文档口径修正：README 顶部与 §10.1、`docs/lessons.md` 不再把「邮箱号不可用」
+  当现状；`docs/recon.md` 新增 §4.1（策略放开实测）与 §4.2（Google 回调边界）。
+
+**验证**：
+
+```text
+go build ./...            OK
+go vet ./internal/server  OK
+go test ./internal/server OK（新增 2 个用例）
+  TestLoginPollAssignsMachineID  → 来源 oauth、machine_id 非空
+  TestLoginPollAssignsProxyFromPool → 连续两次入池轮询到不同出口
+```
+
+**未做**：真机上用 Google 账号走一遍控制台登录（需要人工完成 Google 侧
+登录/2FA），以及把浏览器登录做成批量队列——Google 的风控决定了它只能
+一号一次人工点击。
+
+---
+
+## 29. 移除私域邮箱注册模块（前端 + 后端 + CLI）
+
+**背景**：账号接入已收敛到「浏览器登录 / 桌面端导入 / 手工 Key」三种方式。
+邮箱注册链路（临时邮箱 → 注册 → 收信验证）与上游策略耦合深，且 0.3.19 的
+`social_login_required` 随时可能再次收紧；产品决定整体移除，不再保留双轨。
+
+**改动**：
+
+- 前端 `internal/server/web/index.html`：删除「批量注册」导航、整页面板、
+  轮询/渲染/启动 JS 与 8 条 i18n 词条；控制台只剩概览 / 账号池 / 密钥 /
+  日志 / 设置。
+- 后端：删除 `/admin/api/register`（GET / POST / DELETE）与任务调度
+  （`registerJob` / `runRegisterJob` / `reverifyPending` / `localEnroller` /
+  `enrollRecord` / `sanitizeRegisterRecord`）；保留号池写入口
+  `enrollRegistration`、`markAccountVerified`、`allowanceFromEnroll`、
+  `scheduleQuotaReprobe`，迁到 `internal/server/enroll.go`。
+- 删除 `cmd/register` 与 `internal/register` 整个包（pipeline / mailbox /
+  web / ledger / deliver / reverify / fingerprints / types 及其测试）。
+- 号池仍在用的代理池拆到 `internal/proxy`（`ProxyPool` / `ParseProxyList` /
+  `ProxyLabel` / `ReadProxyFile` / `LoadConfig`）；`DEEPAI_REGISTER_PROXY_POOL`
+  作为 `PROXY_POOL` 的兼容别名保留。
+- `Makefile` 去掉 `register` 目标；`.env.example` 删除 TEMPMAIL / 注册行为
+  变量；README §六改写为「账号接入与号池治理」，管理接口、环境变量、目录树、
+  已知坑同步收敛。
+
+**验证**：
+
+```text
+go build ./...   OK
+go vet ./...     OK
+go test ./...    OK（internal/proxy 新增 5 个用例）
+控制台 grep：register / 批量注册 / tab-register = 0
+```
+
+**影响**：不再具备自动批量产号能力；每个 Google/邮箱账号需要在浏览器完成
+一次登录（边界见 `docs/recon.md` §4.2）。代理池、机器指纹、额度复探、
+分组轮询均保留。
+
+---
+
+## 30. 客户端 0.3.30 / 0.3.32 复核：协议未变，真/替身判据重写
+
+**根因**：仓库对齐的客户端版本停在 **0.3.20**（`AppVersion`、README、recon 都是
+2026-11-07 的快照）。2026-11-10 复核发现上游已发到 **0.3.32**，且推理响应的
+替身分支换了形状 —— 旧的「`provider == "DeepAI"` 就是替身」判据会把替身当
+真模型。
+
+**客户端更新核对**（白盒，解包 0.3.30 / 0.3.32 的 `app.asar`）：
+
+- 最新版：官方更新源 `downloads.deepai.org/deepai-code/releases/latest.yml`
+  = **0.3.32**（2026-11-10T04:28Z，releaseNotes 只有两条 bugfix）。
+  本机装的是 0.3.30；`deepai.org/download/deepai-code/*` 的 302 仍指 0.3.30 ——
+  下载页与更新源不同步，判断“最新”看 `latest.yml`。
+- 0.3.30 与 0.3.32 的 41 个 `src/deepai/*` region 逐行 diff：差异**只有**
+  压缩后的符号重编号（`make$102→make$100`、`locks make$157→make$155`），
+  `api.ts` / `machineId.ts` / `apiOrigin.ts` / `localTransport.ts` /
+  `DeepAIAccount.ts` / `modelTransportPolicy.ts` 逻辑零变化；pi 运行时同为 1.3.0。
+- wire protocol 三方（0.3.20 / 0.3.30 / 0.3.32）一致：端点集合、5 个
+  `X-DeepAI-Code-*` 头（车道仍 `4`）、实例号粒度、`sha256(小写原始 UUID)`
+  机器指纹、签到 nonce 与 beacon 形态全部未变。只有同步的差异项是 beacon 的
+  `v=` 版本号；另外 0.3.30 起 `pi=` 变成可选（未转发过推理时整段省略，
+  网关恒发 `pi=<0|1>` 仍然合法）。
+
+**线上实测（2026-11-10，真实账号，0.3.20 形状的请求）**：
+
+```text
+/models  lane=4 → 200（22 个模型）；lane=2/3/5/7/8 → 426 lane_version_unsupported
+/theos   200 lane_version=4，check_in{nonce=32hex, seconds=600}，balance=50
+回传 nonce 再 /theos → 200 并下发新 nonce
+/chat/completions 200 provider=Wafer service_tier=null cost=3.29e-05
+```
+
+→ 网关的请求头 / 指纹 / 签到链路**不需要任何协议改动**，本次只跟版本号。
+
+**判据变更（docs/recon.md §3.1 整体重写）**：
+
+| 字段 | 真分支（`node`） | 替身分支（Chrome / Go UA） |
+| --- | --- | --- |
+| `id` | `gen-<epoch>-<rand>` | `gen_<ULID>` |
+| `model` | 回显请求 slug：`z-ai/glm-5.3-flash` | **`reflection/beam`** |
+| `provider` | `Wafer` / `InferenceNet` / … | **字段缺失**（不再有 `"DeepAI"`） |
+| `service_tier` | `null`（字段在） | 字段缺失 |
+| `system_fingerprint` | `null` | **`fp_i144zcu3ag`** |
+| `reasoning_details[0].format` | `reasoning.text` | **`unknown`**（不再是 `openrouter-stealth-v1`） |
+| `usage` | `upstream_inference_cost > 0` | `null`/`0`，且多一个 `market_cost: 0` |
+| 顶层 `generationId` | 无 | 有 |
+
+新判据（按可靠度）：`provider` 缺失 → 替身；`model` 不回显请求 slug → 替身；
+`cost_details.upstream_inference_cost > 0` → 真；`id` 前缀 `gen-`/`gen_`、
+`usage.market_cost` 出现可作旁证。`system_fingerprint` 与 `service_tier`
+**彻底不能再用**。
+
+**改动**：
+
+- `internal/deepai/types.go`：`AppVersion` `0.3.20` → **`0.3.32`**（只影响心跳 `v=`）。
+- `README.md`：§一版本号、§1.2 的替身判据、§二模型表（18 → **22**，11 免费 +
+  11 付费；新增 `qwen-3.8-flash` / `minimax-m3.1-flash` / `minimax-m3` /
+  `qwen-3.8-max-prime`；`claude-fable-5-1`(25) → `claude-fable-5-2`(20)）、
+  §十 两条限制、§10.1 踩坑表那一行。
+- `docs/recon.md`：头部 banner（0.3.30/0.3.32 复核结论 + 下载页不同步的坑）、
+  §1/§2/§3/§5.1 标题版本、§3 补 0.3.32 头字面量复核、**§3.1 判据整节重写**、
+  §5.1 补 `pi` 可选、§5.1 历史测量表加“判据已过期”的注。
+
+**验证**：
+
+```text
+go build ./...   OK
+go vet ./...     OK
+go test ./...    OK
+线上 4 条实测见上（/models 分车道、/theos + 签到回传、chat 真分支、UA 分流对比）
+```
+
+**影响**：号池、调度、翻译层零改动；过期的是“看到 `provider: DeepAI` 才叫替身”
+这条口头判据 —— 还在用旧判据做渠道体检的脚本/文档需要同步，否则会把替身
+记成真模型。
