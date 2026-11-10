@@ -232,22 +232,6 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 
 // --- 工具函数 ---
 
-var errNoMessages = &clientError{Message: "input 不能为空"}
-
-type clientError struct{ Message string }
-
-func (e *clientError) Error() string { return e.Message }
-
-func boolOf(v any) bool {
-	b, _ := v.(bool)
-	return b
-}
-
-func strOf(v any) string {
-	s, _ := v.(string)
-	return s
-}
-
 // rewriteResponsesModel 把 Responses 对象 / 事件里的 model 改为对外模型名。
 func rewriteResponsesModel(obj map[string]any, publicModel string) {
 	if publicModel == "" {

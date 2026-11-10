@@ -9,6 +9,9 @@ import (
 
 // --- Responses 流事件生成器 ---
 
+// 本文件留在 server 包（而不是 gateway）：生成器直接写 *sseWriter，
+// 而 sseWriter 属于 HTTP 传输层。字段映射那部分已抽到 internal/gateway。
+
 type responsesStreamGen struct {
 	sw            *sseWriter
 	model         string

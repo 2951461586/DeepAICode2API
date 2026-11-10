@@ -120,9 +120,6 @@ func (l *logStore) writeLocked(raw []byte) error {
 // Flush 是兼容旧调用点的空操作：写入不驻留缓冲。
 func (l *logStore) Flush() error { return nil }
 
-// Close 是兼容旧调用点的空操作：没有常驻句柄。
-func (l *logStore) Close() error { return nil }
-
 // tail 返回最近 limit 条日志（limit<=0 表示全部）。
 func (l *logStore) tail(limit int) []LogEntry {
 	if l == nil {

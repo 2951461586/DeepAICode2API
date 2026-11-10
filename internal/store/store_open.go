@@ -350,14 +350,6 @@ func writeAtomicSealed(path string, plain, key []byte) error {
 	return os.Rename(tmp, path)
 }
 
-// Close 落盘并关闭日志句柄（进程退出前调用）。
-func (s *Store) Close() error {
-	if s.logs == nil {
-		return nil
-	}
-	return s.logs.Close()
-}
-
 // Encrypted 报告磁盘上的状态文件是否为加密格式。
 //
 // 注意：配置了主密钥但还没保存过时，磁盘上依然是明文，

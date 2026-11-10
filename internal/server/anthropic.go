@@ -10,37 +10,6 @@ import (
 
 // --- Anthropic 请求模型 ---
 
-type anthropicRequest struct {
-	Model         string             `json:"model"`
-	MaxTokens     int                `json:"max_tokens"`
-	System        json.RawMessage    `json:"system"`
-	Messages      []anthropicMessage `json:"messages"`
-	Stream        bool               `json:"stream"`
-	Temperature   *float64           `json:"temperature"`
-	TopP          *float64           `json:"top_p"`
-	TopK          *int               `json:"top_k"`
-	StopSequences []string           `json:"stop_sequences"`
-	Tools         []anthropicTool    `json:"tools"`
-	ToolChoice    json.RawMessage    `json:"tool_choice"`
-	Thinking      json.RawMessage    `json:"thinking"`
-	// OutputConfig 是 Anthropic 自适应思考的强度旋钮（{"effort":"low"}）。
-	OutputConfig *struct {
-		Effort string `json:"effort"`
-	} `json:"output_config"`
-	Metadata json.RawMessage `json:"metadata"`
-}
-
-type anthropicMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
-}
-
-type anthropicTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
-}
-
 // handleAnthropicMessages 是 POST /v1/messages 的入口。
 //
 // 把 Anthropic Messages 请求转换为 OpenAI Chat Completions，调用上游后再
@@ -163,20 +132,20 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 			stopReason = anthropicStopReason(finish)
 		}
 		if d.Reasoning != "" {
-			block.thinking(d.Reasoning)
+			block.Thinking(d.Reasoning)
 			outLen += len([]rune(d.Reasoning))
 		}
 		if d.Content != "" {
-			block.text(d.Content)
+			block.Text(d.Content)
 			outLen += len([]rune(d.Content))
 		}
 		for _, tc := range d.ToolCalls {
-			block.toolCall(tc.Index, tc.ID, tc.Name, tc.Args)
+			block.ToolCall(tc.Index, tc.ID, tc.Name, tc.Args)
 		}
 		return true
 	})
 
-	block.close()
+	block.Close()
 	if streamErr != nil {
 		send("error", map[string]any{
 			"type":  "error",
@@ -238,15 +207,6 @@ func estTokens(chars int) int {
 		return 0
 	}
 	return chars/2 + 1
-}
-
-func firstString(vals ...any) string {
-	for _, v := range vals {
-		if s, ok := v.(string); ok && s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 // writeAnthropicErr 按 Anthropic 的错误结构返回。

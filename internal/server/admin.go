@@ -176,10 +176,12 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 // handleAdminModels 刷新模型目录；GET 返回缓存。
 func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		catalog := s.Store.Models()
+		// 用 s.catalog() / s.defaultModelID() 而不是 Store 的裸值：
+		// 目录为空时（新装且上游不可达）它们会给出兜底模型，与 /v1/models
+		// 保持一致。否则控制台模型页空白，而 API 还能用默认模型。
 		writeJSON(w, http.StatusOK, map[string]any{
-			"models":         registry.List(catalog, s.Store.Settings().ModelAliases),
-			"default_model":  s.Store.DefaultModel(),
+			"models":         adminModelViews(registry.List(s.catalog(), s.Store.Settings().ModelAliases)),
+			"default_model":  s.defaultModelID(),
 			"models_updated": s.Store.ModelsUpdated(),
 		})
 		return

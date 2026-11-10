@@ -142,6 +142,9 @@ func (s *Server) Handler() http.Handler {
 	// 浏览器登录跳转：session id 是一次性随机数，服务端只跳到固定的上游登录页。
 	mux.HandleFunc("/login/open", s.handleLoginOpen)
 
+	// 控制台静态资源：样式与 ES module 脚本（页面本身走 /）。
+	mux.HandleFunc("/style.css", s.handleConsoleAsset)
+	mux.HandleFunc("/js/", s.handleConsoleAsset)
 	mux.HandleFunc("/", s.handleRoot)
 
 	return s.withCORS(mux)
@@ -226,6 +229,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 				"free":              m.Free(),
 				"api":               m.API,
 				"theos_per_request": m.TheosPerRequest,
+				"theos_per_second":  m.TheosPerSecond,
 			},
 		})
 	}

@@ -1,4 +1,4 @@
-package server
+package gateway
 
 import (
 	"encoding/json"
@@ -10,8 +10,8 @@ import (
 
 // --- Anthropic → OpenAI ---
 
-// anthropicToChatPayload 把 Anthropic 请求转换为 OpenAI Chat Completions。
-func anthropicToChatPayload(req *anthropicRequest, modelID string) (map[string]any, error) {
+// AnthropicToChatPayload 把 Anthropic 请求转换为 OpenAI Chat Completions。
+func AnthropicToChatPayload(req *AnthropicRequest, modelID string) (map[string]any, error) {
 	payload := map[string]any{
 		"model":  modelID,
 		"stream": req.Stream,
@@ -28,17 +28,17 @@ func anthropicToChatPayload(req *anthropicRequest, modelID string) (map[string]a
 	if len(req.StopSequences) > 0 {
 		payload["stop"] = req.StopSequences
 	}
-	if effort := anthropicEffort(req); effort != "" {
+	if effort := AnthropicEffort(req); effort != "" {
 		payload["reasoning_effort"] = effort
 	}
 
 	messages := make([]any, 0, len(req.Messages)+1)
-	if sys := anthropicSystemText(req.System); sys != "" {
+	if sys := AnthropicSystemText(req.System); sys != "" {
 		messages = append(messages, map[string]any{"role": "system", "content": sys})
 	}
 
 	for _, m := range req.Messages {
-		if err := appendAnthropicMessage(&messages, m); err != nil {
+		if err := AppendAnthropicMessage(&messages, m); err != nil {
 			return nil, err
 		}
 	}
@@ -63,14 +63,14 @@ func anthropicToChatPayload(req *anthropicRequest, modelID string) (map[string]a
 			tools = append(tools, map[string]any{"type": "function", "function": fn})
 		}
 		payload["tools"] = tools
-		if tc := anthropicToolChoice(req.ToolChoice); tc != nil {
+		if tc := AnthropicToolChoice(req.ToolChoice); tc != nil {
 			payload["tool_choice"] = tc
 		}
 	}
 	return payload, nil
 }
 
-// anthropicEffort 把 Anthropic 的 thinking / output_config.effort 映射为
+// AnthropicEffort 把 Anthropic 的 thinking / output_config.effort 映射为
 // 上游 chat 端点的 reasoning_effort。
 //
 // 上游只认 OpenAI 形状；此处前 thinking 被解析后直接丢弃，结果就是
@@ -78,7 +78,7 @@ func anthropicToChatPayload(req *anthropicRequest, modelID string) (map[string]a
 // 上游默认值——测出来的“模型指纹”自然与客户端不一致。
 //
 // 优先级：output_config.effort > thinking.type > thinking.budget_tokens。
-func anthropicEffort(req *anthropicRequest) string {
+func AnthropicEffort(req *AnthropicRequest) string {
 	if req == nil {
 		return ""
 	}
@@ -115,8 +115,8 @@ func anthropicEffort(req *anthropicRequest) string {
 	return ""
 }
 
-// appendAnthropicMessage 把一个 Anthropic 消息展开为一条或多条 OpenAI 消息。
-func appendAnthropicMessage(messages *[]any, m anthropicMessage) error {
+// AppendAnthropicMessage 把一个 Anthropic 消息展开为一条或多条 OpenAI 消息。
+func AppendAnthropicMessage(messages *[]any, m AnthropicMessage) error {
 	role := strings.ToLower(strings.TrimSpace(m.Role))
 	if role == "" {
 		role = "user"
@@ -192,18 +192,18 @@ func appendAnthropicMessage(messages *[]any, m anthropicMessage) error {
 				parts = append(parts, map[string]any{"type": "text", "text": t})
 			}
 		case "image":
-			if u := anthropicImageURL(b); u != "" {
+			if u := AnthropicImageURL(b); u != "" {
 				parts = append(parts, map[string]any{
 					"type": "image_url", "image_url": map[string]any{"url": u},
 				})
 			}
 		case "document":
-			if u := anthropicDocumentDataURL(b); u != "" {
+			if u := AnthropicDocumentDataURL(b); u != "" {
 				parts = append(parts, map[string]any{
 					"type": "image_url", "image_url": map[string]any{"url": u},
 				})
 			} else {
-				name := firstString(b["title"], b["name"])
+				name := FirstString(b["title"], b["name"])
 				if name == "" {
 					name = "document"
 				}
@@ -212,7 +212,7 @@ func appendAnthropicMessage(messages *[]any, m anthropicMessage) error {
 		case "tool_result":
 			flush()
 			id, _ := b["tool_use_id"].(string)
-			content := anthropicToolResultText(b)
+			content := AnthropicToolResultText(b)
 			if content == "" {
 				content = "(no output)"
 			}
@@ -225,8 +225,8 @@ func appendAnthropicMessage(messages *[]any, m anthropicMessage) error {
 	return nil
 }
 
-// anthropicSystemText 提取 system 字段（字符串或文本块数组）。
-func anthropicSystemText(raw json.RawMessage) string {
+// AnthropicSystemText 提取 system 字段（字符串或文本块数组）。
+func AnthropicSystemText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
@@ -249,7 +249,7 @@ func anthropicSystemText(raw json.RawMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-func anthropicImageURL(block map[string]any) string {
+func AnthropicImageURL(block map[string]any) string {
 	src, ok := block["source"].(map[string]any)
 	if !ok {
 		return ""
@@ -272,7 +272,7 @@ func anthropicImageURL(block map[string]any) string {
 	return ""
 }
 
-func anthropicDocumentDataURL(block map[string]any) string {
+func AnthropicDocumentDataURL(block map[string]any) string {
 	src, ok := block["source"].(map[string]any)
 	if !ok || src["type"] != "base64" {
 		return ""
@@ -288,7 +288,7 @@ func anthropicDocumentDataURL(block map[string]any) string {
 	return "data:" + media + ";base64," + data
 }
 
-func anthropicToolResultText(block map[string]any) string {
+func AnthropicToolResultText(block map[string]any) string {
 	switch c := block["content"].(type) {
 	case string:
 		return c
@@ -313,7 +313,7 @@ func anthropicToolResultText(block map[string]any) string {
 	return ""
 }
 
-func anthropicToolChoice(raw json.RawMessage) any {
+func AnthropicToolChoice(raw json.RawMessage) any {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -342,8 +342,8 @@ func anthropicToolChoice(raw json.RawMessage) any {
 
 // --- OpenAI → Anthropic ---
 
-// chatToAnthropicMessage 把 OpenAI chat 响应转换为 Anthropic message。
-func chatToAnthropicMessage(out map[string]any, publicModel string) map[string]any {
+// ChatToAnthropicMessage 把 OpenAI chat 响应转换为 Anthropic message。
+func ChatToAnthropicMessage(out map[string]any, publicModel string) map[string]any {
 	content := make([]any, 0, 3)
 	stopReason := "end_turn"
 
@@ -351,7 +351,7 @@ func chatToAnthropicMessage(out map[string]any, publicModel string) map[string]a
 	if len(choices) > 0 {
 		if cm, ok := choices[0].(map[string]any); ok {
 			if fr, ok := cm["finish_reason"].(string); ok && fr != "" {
-				stopReason = anthropicStopReason(fr)
+				stopReason = AnthropicStopReason(fr)
 			}
 			if msg, ok := cm["message"].(map[string]any); ok {
 				if reasoning, ok := msg["reasoning"].(string); ok && reasoning != "" {
@@ -394,7 +394,7 @@ func chatToAnthropicMessage(out map[string]any, publicModel string) map[string]a
 		content = append(content, map[string]any{"type": "text", "text": ""})
 	}
 
-	usage := parseUsage(out["usage"])
+	usage := ParseUsage(out["usage"])
 	return map[string]any{
 		"id":            "msg_" + deepai.RandomHex(12),
 		"type":          "message",
@@ -410,8 +410,8 @@ func chatToAnthropicMessage(out map[string]any, publicModel string) map[string]a
 	}
 }
 
-// anthropicStopReason 映射 OpenAI finish_reason → Anthropic stop_reason。
-func anthropicStopReason(fr string) string {
+// AnthropicStopReason 映射 OpenAI finish_reason → Anthropic stop_reason。
+func AnthropicStopReason(fr string) string {
 	switch fr {
 	case "tool_calls", "function_call":
 		return "tool_use"
@@ -424,7 +424,7 @@ func anthropicStopReason(fr string) string {
 	}
 }
 
-func anthropicTextLen(msg map[string]any) int {
+func AnthropicTextLen(msg map[string]any) int {
 	total := 0
 	content, _ := msg["content"].([]any)
 	for _, c := range content {
@@ -434,9 +434,9 @@ func anthropicTextLen(msg map[string]any) int {
 		}
 		switch cm["type"] {
 		case "text":
-			total += lenOfString(cm["text"])
+			total += LenOfString(cm["text"])
 		case "thinking":
-			total += lenOfString(cm["thinking"])
+			total += LenOfString(cm["thinking"])
 		}
 	}
 	return total

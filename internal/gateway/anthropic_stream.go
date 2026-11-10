@@ -1,8 +1,8 @@
-package server
+package gateway
 
 // --- Anthropic 流式内容块管理器 ---
 
-type anthropicBlockWriter struct {
+type AnthropicBlockWriter struct {
 	send     func(event string, v any)
 	kind     string // "" / thinking / text / tool
 	index    int
@@ -10,12 +10,12 @@ type anthropicBlockWriter struct {
 	toolSeen map[int]bool
 }
 
-func newAnthropicBlockWriter(send func(string, any)) *anthropicBlockWriter {
-	return &anthropicBlockWriter{send: send, index: -1, toolSeen: map[int]bool{}}
+func NewAnthropicBlockWriter(send func(string, any)) *AnthropicBlockWriter {
+	return &AnthropicBlockWriter{send: send, index: -1, toolSeen: map[int]bool{}}
 }
 
-func (b *anthropicBlockWriter) openBlock(kind string, content map[string]any) {
-	b.close()
+func (b *AnthropicBlockWriter) OpenBlock(kind string, content map[string]any) {
+	b.Close()
 	b.index++
 	b.kind = kind
 	b.open = true
@@ -24,7 +24,7 @@ func (b *anthropicBlockWriter) openBlock(kind string, content map[string]any) {
 	})
 }
 
-func (b *anthropicBlockWriter) close() {
+func (b *AnthropicBlockWriter) Close() {
 	if !b.open {
 		return
 	}
@@ -35,9 +35,9 @@ func (b *anthropicBlockWriter) close() {
 	b.kind = ""
 }
 
-func (b *anthropicBlockWriter) thinking(text string) {
+func (b *AnthropicBlockWriter) Thinking(text string) {
 	if b.kind != "thinking" {
-		b.openBlock("thinking", map[string]any{"type": "thinking", "thinking": "", "signature": ""})
+		b.OpenBlock("thinking", map[string]any{"type": "thinking", "thinking": "", "signature": ""})
 	}
 	b.send("content_block_delta", map[string]any{
 		"type": "content_block_delta", "index": b.index,
@@ -45,9 +45,9 @@ func (b *anthropicBlockWriter) thinking(text string) {
 	})
 }
 
-func (b *anthropicBlockWriter) text(text string) {
+func (b *AnthropicBlockWriter) Text(text string) {
 	if b.kind != "text" {
-		b.openBlock("text", map[string]any{"type": "text", "text": ""})
+		b.OpenBlock("text", map[string]any{"type": "text", "text": ""})
 	}
 	b.send("content_block_delta", map[string]any{
 		"type": "content_block_delta", "index": b.index,
@@ -55,9 +55,9 @@ func (b *anthropicBlockWriter) text(text string) {
 	})
 }
 
-func (b *anthropicBlockWriter) toolCall(toolIdx int, id, name, args string) {
+func (b *AnthropicBlockWriter) ToolCall(toolIdx int, id, name, args string) {
 	if b.kind != "tool" || !b.toolSeen[toolIdx] {
-		b.openBlock("tool", map[string]any{
+		b.OpenBlock("tool", map[string]any{
 			"type": "tool_use", "id": id, "name": name, "input": map[string]any{},
 		})
 		b.toolSeen[toolIdx] = true
