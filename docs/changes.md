@@ -1352,3 +1352,35 @@ go test ./internal/server/ -run Login -v
 **影响**：非容器部署（本机直跑）体验不变，回调自动收；Docker / 远程部署从
 “无解”变成“复制地址栏 → 粘贴一次”。注意 `code` 一次性：粘贴成功后同一段 URL
 再粘会被拒（会话已结束，返回 404），需要重新发起登录。
+
+---
+
+## 32. 控制台：登录链接可复制 + 主题按钮换 SVG 图标
+
+**动因**：Docker / 远程部署时，登录页往往要在**另一台机器**的浏览器里打开
+（常驻服务器的网关没有桌面环境），而之前登录链接只存在于一个 `<form
+action="/login/open">` 里 —— 想复制只能右键「复制链接地址」，且拿到的还是相对路径。
+
+**改动**（`internal/server/web/index.html`）：
+
+- 浏览器登录面板新增只读输入框 + 「复制登录链接」按钮：
+  - 发起登录后写入 **绝对地址** `location.origin + /login/open?id=…`，
+    换浏览器 / 换机器只要能访问网关就能完成授权；
+  - 复制优先走 `navigator.clipboard`，非安全上下文（http + 非 localhost）
+    退回「隐藏 textarea + execCommand」；两者都失败就选中文本提示 Ctrl+C；
+  - 链接含一次性 `state`，会话 10 分钟过期，面板上写明。
+- 主题按钮从 emoji 文案改成内联 SVG（太阳 / 月亮两个图标切显隐，`aria-hidden`），
+  文案仍走 i18n 的「深色 / 浅色」；`applyTheme` 清掉 `__zh` 缓存后再翻译，
+  否则切回英文会复现上一次的标签。
+- 清掉一条重复的 i18n 键（「清空」出现两次）。
+
+**验证**：
+
+```text
+go build / go vet / go test ./internal/server   OK
+console_test.go: TestConsoleThemeAndLoginLink  PASS
+  - 断言 themeIconSun / themeIconMoon / themeLabel / oauthLink / oauthCopy 存在
+  - 断言 emoji 文案已被移除、applyTheme 只切「浅色 / 深色」
+  - 断言登录链接按 location.origin 拼绝对地址
+内联 <script> 过 node --check；i18n 对象无重复键；新增文案均有英文
+```

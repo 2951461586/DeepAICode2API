@@ -230,3 +230,36 @@ func TestConsoleBackendParity(t *testing.T) {
 		t.Error("设置页未接 strict_model")
 	}
 }
+
+// 主题按钮与登录链接是两组容易回退的 UI 约定：
+//   - 主题图标是内联 SVG（不再用 emoji），文案仍走 i18n 的「深色 / 浅色」；
+//   - 浏览器登录面板要能把登录链接复制走（绝对地址），供另一个浏览器/机器打开。
+func TestConsoleThemeAndLoginLink(t *testing.T) {
+	html := string(consoleHTML)
+
+	for name, needle := range map[string]string{
+		"太阳图标":  `id="themeIconSun"`,
+		"月亮图标":  `id="themeIconMoon"`,
+		"文案节点":  `id="themeLabel"`,
+		"登录链接框": `id="oauthLink"`,
+		"复制按钮":  `id="oauthCopy"`,
+		"复制实现":  `function copyText(`,
+	} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("控制台缺少%s：%s", name, needle)
+		}
+	}
+
+	// 图标改成 SVG 之后，applyTheme 不能再往按钮里塞 emoji 文本。
+	if strings.Contains(html, "☀️ 浅色") || strings.Contains(html, "🌙 深色") {
+		t.Error("主题按钮仍残留 emoji 文案")
+	}
+	if !strings.Contains(html, `label.textContent = mode === "light" ? "浅色" : "深色";`) {
+		t.Error("applyTheme 应只切换「浅色 / 深色」文案，图标交给 SVG 控制显隐")
+	}
+
+	// 复制的是网关绝对地址，不能只写相对路径（换页面/换机器就失效）。
+	if !strings.Contains(html, "location.origin") {
+		t.Error("登录链接应拼成绝对地址（location.origin）")
+	}
+}

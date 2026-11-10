@@ -125,6 +125,9 @@
   }
   button.icon-btn svg{width:16px;height:16px}
   button.icon-btn.only-mobile{display:none}
+  /* 主题切换按钮：图标是内联 SVG，跟随文字颜色 */
+  #theme{gap:5px}
+  #theme svg{width:14px;height:14px;flex:none;opacity:.9}
 
   /* ---------- 表单 ---------- */
   input,select,textarea{
@@ -313,7 +316,11 @@
       <input id="pw" type="password" placeholder="管理密码（如已设置）" autocomplete="current-password" style="width:190px">
       <button class="btn" id="savePw">记住</button>
       <button class="btn" id="lang" title="Language / 语言">EN</button>
-      <button class="btn" id="theme" title="切换白天 / 黑夜模式">🌙 深色</button>
+      <button class="btn" id="theme" title="切换白天 / 黑夜模式">
+        <svg id="themeIconMoon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg id="themeIconSun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+        <span id="themeLabel">深色</span>
+      </button>
       <button class="btn primary" id="refresh">刷新</button>
     </header>
 
@@ -413,6 +420,11 @@
             <input type="hidden" name="id" id="oauthId" value="">
             <button class="btn" type="submit">打开 DeepAI 登录页</button>
           </form>
+          <div class="row" style="display:flex;gap:8px;margin-top:10px">
+            <input id="oauthLink" readonly spellcheck="false" placeholder="登录链接在发起后生成" style="flex:1;min-width:0;font-size:12px">
+            <button class="btn" id="oauthCopy" type="button" style="flex:none">复制登录链接</button>
+          </div>
+          <div class="hint">链接含一次性 state，可以在另一个浏览器 / 机器上打开（同网络内直接访问网关地址即可）。</div>
           <div class="hint" style="margin-top:14px">Docker / 远程部署时浏览器回调打不开（127.0.0.1 指的是你自己的机器）：把地址栏里的完整 URL 粘到下面，由网关完成兑换。</div>
           <textarea id="oauthCallback" spellcheck="false" placeholder="http://127.0.0.1:34105/auth-callback?code=…&amp;state=…" style="margin-top:6px;min-height:64px"></textarea>
           <button class="btn" id="oauthPaste" style="margin-top:8px">粘贴回调 URL 完成登录</button>
@@ -573,7 +585,7 @@
     "配额":"Quota", "停用":"Disable", "启用":"Enable", "清错":"Clear errors", "删除":"Delete",
     "操作":"Actions", "配额刷新":"Quota refresh",
     // 筛选 / 行内治理
-    "筛选":"Filter", "清空":"Clear", "重置":"Reset", "分组（留空=全部）":"Group (empty = all)",
+    "筛选":"Filter", "重置":"Reset", "分组（留空=全部）":"Group (empty = all)",
     "全部状态":"All statuses", "搜索邮箱 / 名称 / Key / 备注":"Search email / name / key / note",
     "全部端点":"All endpoints", "状态 ≥":"Status ≥", "关键字（错误 / 模型）":"Keyword (error / model)",
     "起始时间":"Since",
@@ -631,6 +643,13 @@
     "粘贴回调 URL 完成登录":"Finish sign-in with pasted URL",
     "先粘贴回调 URL":"Paste the callback URL first",
     "正在用粘贴的回调兑换…":"Exchanging the pasted callback…",
+    "复制登录链接":"Copy sign-in link",
+    "登录链接在发起后生成":"The link appears after a sign-in starts",
+    "登录链接已复制":"Sign-in link copied",
+    "先发起一次登录，再复制链接":"Start a sign-in first, then copy the link",
+    "复制失败，已选中链接，请按 Ctrl+C":"Copy failed; the link is selected — press Ctrl+C",
+    "链接含一次性 state，可以在另一个浏览器 / 机器上打开（同网络内直接访问网关地址即可）。":
+      "The link carries a one-time state; it can be opened in another browser or machine that can reach this gateway.",
     "凭据已脱敏展示；完整 API Key 仅存于本机状态文件（权限 0600）。":
       "Credentials are masked; full keys live only in the local state file (mode 0600).",
     "目录由上游":"Catalog comes from upstream",
@@ -668,7 +687,8 @@
     "配额刷新完成：":"Quota refresh done: ",
     "请在右上角填写管理密码":"Enter the admin password at top right",
     "登录成功：":"Signed in: ", "运行中…":"Running…",
-    "🌙 深色":"🌙 Dark", "☀️ 浅色":"☀️ Light",
+    "深色":"Dark", "浅色":"Light",
+    "切换白天 / 黑夜模式":"Toggle light / dark mode",
     // KPI 标签
     "总请求":"Total requests", "失败请求":"Failed requests", "输出字符":"Output chars",
     "Token 入 / 出":"Tokens in / out", "上游成本":"Upstream cost",
@@ -1464,12 +1484,49 @@
       oauthDeadline = Date.now() + (r.expires_in || 600) * 1000;
       $("#oauthId").value = r.session_id;
       $("#oauthCallback").value = "";
+      // 登录链接是可复制的绝对地址：换浏览器 / 换机器打开都能完成授权。
+      try {
+        $("#oauthLink").value = new URL(r.open_url || ("/login/open?id=" + encodeURIComponent(r.session_id)), location.origin).href;
+      } catch(e) {
+        $("#oauthLink").value = location.origin + (r.open_url || ("/login/open?id=" + encodeURIComponent(r.session_id)));
+      }
       $("#oauthStatus").textContent = "等待浏览器完成登录…";
       $("#oauthPanel").style.display = "block";
       // 目标是一个固定的相对路径 + 随机会话 id，浏览器新标签页打开。
       $("#oauthForm").submit();
       oauthTimer = setInterval(pollOAuth, 2000);
     }).catch(function(e){ toast("发起登录失败：" + e.message, "err"); });
+  };
+  // 登录链接可复制：绝对地址，能拿到另一个浏览器 / 机器上去打开。
+  // 非安全上下文（http + 非 localhost）没有 navigator.clipboard，退回选中 + execCommand。
+  function copyText(text){
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+    return new Promise(function(resolve, reject){
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch(e) {}
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error("copy unsupported"));
+    });
+  }
+  $("#oauthCopy").onclick = function(){
+    var link = String(($("#oauthLink") || {}).value || "").trim();
+    if (!link) { toast("先发起一次登录，再复制链接", "err"); return; }
+    copyText(link).then(function(){
+      toast("登录链接已复制", "ok");
+    }).catch(function(){
+      var el = $("#oauthLink");
+      el.focus();
+      el.select();
+      toast("复制失败，已选中链接，请按 Ctrl+C", "err");
+    });
   };
   $("#oauthCancel").onclick = function(){ stopOAuth(); $("#oauthPanel").style.display = "none"; };
 
@@ -1510,8 +1567,15 @@
   // 优先用上次的选择；没选过就跟随系统 prefers-color-scheme。
   function applyTheme(mode){
     document.documentElement.setAttribute("data-theme", mode);
-    var b = $("#theme");
-    if (b) b.textContent = mode === "light" ? "☀️ 浅色" : "🌙 深色";
+    var moon = $("#themeIconMoon"), sun = $("#themeIconSun"), label = $("#themeLabel");
+    if (moon) moon.style.display = mode === "light" ? "none" : "";
+    if (sun) sun.style.display = mode === "light" ? "" : "none";
+    if (label) {
+      // 文案变了就得让 translateDom 重记中文原文，否则切回英文时会复现上一次的标签。
+      label.__zh = undefined;
+      label.textContent = mode === "light" ? "浅色" : "深色";
+      translateDom(label.parentNode);
+    }
   }
   (function initTheme(){
     var mode = null;
