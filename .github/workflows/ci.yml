@@ -43,6 +43,13 @@ jobs:
       - name: test
         run: go test -race -count=1 ./...
 
+      # govulncheck 是 Go 模块，不能直接跟 @latest：golang.org/x/vuln 从 v1.2.0 起
+      # 要求 go >= 1.25（v1.8.0+ 要 1.26），而本项目 go.mod 是 1.24、setup-go
+      # 又把 GOTOOLCHAIN 设为 local，@latest 会 300ms 内直接失败：
+      #   requires go >= 1.26.0 (running go 1.24.13; GOTOOLCHAIN=local)
+      # 由于 continue-on-error: true，这个失败只会在 run 上留一个红色注解（看似 CI 挂了）。
+      # 这里 pin 到与 1.24 兼容的最后一个版本；升 Go 后同步抬这个版本号即可。
+      # 漏洞库是运行时从 vuln.go.dev 拉的，pin 住工具不影响扫描时效。
       - name: vulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
         continue-on-error: true
