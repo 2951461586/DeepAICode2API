@@ -60,9 +60,10 @@ jobs:
           report=$(go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./... 2>&1)
           code=$?
           set -e
-          # 每行加前缀：runner 会把“文件:行:列: 说明”形式的日志行转成 failure 级注解，
-          # 一次扫描动辄十几条，run 页面看着像 CI 挂了。
-          printf '%s\n' "$report" | sed 's/^/[vuln] /'
+          # runner 会把日志里任意位置的 “文件.go:行:列: 说明” 转成 failure 级注解，
+          # 一次扫描动辄十几条（每条 trace 一条），加前缀也拦不住。把 “go:行:列”
+          # 改写成 “go(行:列)”，信息不丢，但不再匹配注解格式。
+          printf '%s\n' "$report" | sed -E 's#([A-Za-z0-9_./-]+\.go):([0-9]+):([0-9]+)#\1(\2:\3)#g'
           # `go run` 会把子进程的任何非 0 退出码压成 1，真正的 3（发现漏洞）只
           # 留在输出文本里，所以按内容判而不是只看退出码。
           if [ "$code" -eq 0 ]; then
