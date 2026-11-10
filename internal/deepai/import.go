@@ -131,15 +131,16 @@ func AccountFromRegistration(r Registration) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
+	email := strings.TrimSpace(r.Email)
 	if acct.Name == "" || acct.Name == "DeepAI "+ShortHash(r.APIKey) {
-		if r.Email != "" {
-			acct.Name = r.Email
+		if email != "" {
+			acct.Name = email
 		}
 	}
-	if r.Username == "" && r.Email != "" {
-		acct.Username = r.Email
+	if r.Username == "" && email != "" {
+		acct.Username = email
 	}
-	acct.Email = strings.TrimSpace(r.Email)
+	acct.Email = email
 	acct.Password = r.Password
 	acct.WebSessionID = r.SessionID
 	acct.CSRFToken = r.CSRFToken
