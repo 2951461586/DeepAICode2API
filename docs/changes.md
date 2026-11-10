@@ -5,6 +5,44 @@
 
 完整的方案与验收标准见 `optimization-plan.md`（那是施工前写的计划，本文是施工后的事实）。
 
+### 索引（倒序，最新在前）
+
+本文按时间顺序追加，最新条目在最末。查最新结论从这里跳：
+
+- 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
+- 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
+- 31 浏览器登录支持「粘贴回调 URL」，Docker 部署不再卡在回调页
+- 30 客户端 0.3.30 / 0.3.32 复核：协议未变，真/替身判据重写
+- 29 移除私域邮箱注册模块（前端 + 后端 + CLI）
+- 28 实测复核：策略已放开 + Google 登录回调边界 + oauth 入池补全
+- 27 渠道模型指纹实测：12/12 真分支，判据要改
+- 26 0.3.20 客户端源码复核：请求头保真度五连修
+- 25 控制台：K/M 单位 + 补齐后端已就绪的模块
+- 24 对齐 0.3.20 + 让「模型指纹」测得准
+- 23 文档收敛：批次日志 → 经验沉淀
+- 22 号池代理池：存量账号补绑
+- 21 HAR 批量导入与验活
+- 20 密钥改绑分组 + SSE 收尾修正
+- 19 0.3.19 协议对齐：车道 4 / 签到 / SSO 门槛
+- 18 第十一批：stress-50n 全链路 + R3 上线前后的数据面对比
+- 17 R3：模块拆分与启动摘要（P2）
+- 16 R3：额度自动复探与 checkin 分批（P1-1）
+- 15 R3：状态文件真正加密 + 写放大回归（依据扫描报告 §6）
+- 14 启动不再被模型目录拉取阻塞
+- 13 控制台：抽屉菜单 / 表头排序 / 中英双语
+- 12 Save 并发竞态（随控制台改版一并入库）
+- 11 控制台改版（视觉对齐 minimax2api）
+- 10 R2：状态文件拆分与控制台分页（依据 `optimization-plan-r2.md`）
+- 9 架构重构（P0/P1/P2）
+- 8 50 账号全链路压测结论
+- 7 计划之外：验证阶段发现并修复的三个问题
+- 6 工程卫生
+- 5 推理侧指纹与注册侧一致
+- 4 账号级机器指纹（Theos 恒为 0 的根因）
+- 3 状态文件可加密 + 台账脱敏
+- 2 测试从 0 到 3800 行
+- 1 未签发密钥时不再对非回环放行
+
 ---
 
 ## 1. 未签发密钥时不再对非回环放行
@@ -1384,3 +1422,453 @@ console_test.go: TestConsoleThemeAndLoginLink  PASS
   - 断言登录链接按 location.origin 拼绝对地址
 内联 <script> 过 node --check；i18n 对象无重复键；新增文案均有英文
 ```
+
+---
+
+## 33. `internal/deepai` 覆盖率 56% → 92.8%
+
+**根因**：协议层（`deepai`）是上游一改就最先炸的模块，却是全仓库覆盖最低的一个。
+`go tool cover -func` 显示 40+ 个函数 0 覆盖，集中在构造器（`NewClient*`）、
+扩展端点（`WebSearch` / `Transcribe` / `ExchangeCode`）、凭据导入
+（`ImportAllFromDesktop`）与机器指纹解析（`parseUUID` / `parseMachineGuid` / `run`）。
+这些恰恰是「上游改协议 / 换机器 / 换部署方式」时最先出问题的地方。
+
+**改动**：新增 7 个测试文件（约 1200 行），沿用既有 `httptest` 假上游，不引第三方断言库。
+
+| 文件 | 覆盖对象 |
+| --- | --- |
+| `types_test.go` | `Model` 三个谓词、`Allowance`/`Account` 深拷贝、`MergeFrom` 的两条策略、`GroupName`、`KeyID`/`SessionID` |
+| `helpers_test.go` | 随机串 / 指纹 / 脱敏、`MaskProxy` 的「绝不泄露凭据」断言、`EnvInt`/`EnvOr`、桌面端目录探测的四种形态、`dedupe` |
+| `client_endpoints_test.go` | `NewClient*` 三种形态、`DEEPAI_API_ORIGIN` 校验、代理接线、`SignInURL`、`WebSearch`/`FindService` 逐字节透传、`Transcribe` 的 multipart 与 8 MB 上限、`ExchangeCode`、`EmailUnverified`/`IsSocialLoginRequired` |
+| `machine_extra_test.go` | `parseUUID`（含三种固件占位）、`parseMachineGuid`、`formatUUID`、`run` 的三条路径、`MachineFingerprint` 归一化 |
+| `import_test.go` | 目录 / 文件两种导入入口、重复 Key 去重、损坏凭据报错、`AccountFromAPIKey` 边界（512 字节恰好合法）、`AccountFromRegistration`、`EnvAccount` |
+| `checkin_extra_test.go` | 签到状态按 Key 隔离、静默锁、`EnsureCheckIn` 的节流与解锁、心跳 `pi` 字段、`CheckIn` 的防御性拷贝 |
+| `client_misc_test.go` | SSE 写入的三段错误、`BodyRejected` 必须同时满足 400 + 文案、连接失败路径、`hasSystemMessage` 脏数据、`detectMachineRaw`（仅非 Windows，见下） |
+
+**顺带修掉的 bug**：`AccountFromRegistration` 对 `Email` 做了 `TrimSpace`，
+却把**原始** `r.Email` 写进了 `Name` / `Username` —— 注册链路带空白时会污染
+账号名与用户名。这是新测试第一次运行就抓到的（`Name: "  bob@example.com  "`）。
+改为一处 `email := strings.TrimSpace(r.Email)` 统一使用。
+
+**验证**：
+
+```text
+go test ./internal/deepai     coverage: 56.1% → 92.8%
+go test ./...                 10 个包全绿（server 2.6s）
+gofmt / go vet                PASS
+用例数                        260 → 315
+剩余未覆盖分支：rand.Read 失败、json.Marshal 失败、Windows 的
+detectMachineRaw（会拉起 powershell，12s 超时）—— 均不可注入
+```
+
+`detectMachineRaw` 的 Linux/macOS 分支用 `runtime.GOOS` 门控，
+在 CI（ubuntu）上会真实执行并覆盖，在 Windows 开发机上跳过。
+
+---
+
+## 34. 文档偏差修正（三处）
+
+一次全仓扫描（`project_report` + `cover -func`）暴露了三处「文档与代码不一致」，
+不影响运行，但会误导下一次改动：
+
+| 位置 | 偏差 | 处理 |
+| --- | --- | --- |
+| `README.md` §八 架构树 | 漏了 `internal/pool` / `parallel` / `retry` 三个包（§9.3 拆分后就没补） | 补上三行，注明各自职责 |
+| `docs/optimization-plan-r2.md` §2 与 §P3 | 前端写的是「876 行单文件」，实际已 1687 行，且越过了本文档自设的 1500 行拆分阈值 | §2 标注为「本轮改版前基线」；§P3 追加现状与拆分建议 |
+| `docs/changes.md` | 1386 行按时间正序追加，最新结论在末尾，倒查成本高 | 顶部加「索引（倒序，最新在前）」，并补 §33/§34 |
+
+README 的「可回归」一行同步更新为当前事实（315 用例 / 8.8k 行测试）。
+
+---
+
+## 35. HAR 抓包清理：凭据只保留在加密状态文件里
+
+**动因**：仓库目录下积了 **99 MB 明文凭据** —— `accounts/` 15 个 HAR（84 MB）
+加根目录 3 个逆向抓包（15 MB）。HAR 里既有上游 API Key，也有当时有效的
+Cookie / 会话。`.gitignore` 挡住了入库，但**留在磁盘上就是明文**，
+和「状态文件必须加密」的既定策略自相矛盾。
+
+**不能直接删的原因**：先做了核对，不是所有 Key 都已入库。
+用指纹（`sha256` 前 16 位）比对后：
+
+| 来源 | Key 数 | 状态文件里是否已有 |
+| --- | --- | --- |
+| `accounts/*.har` 13 个 | 13 | 已入池（`status=ok`） |
+| `accounts/deepai.org.pwvjkhiq1hwz.com.har` | 1 | **缺失**（`cb6ed3f5a44f1113`） |
+| `accounts/deepai.org.zupxzenogljb.com.har` | 1 | **缺失**（`86afdbcf43310024`） |
+| 根目录 `deepai.org-1.har` / `-2.har` | 1（两文件同 Key） | **缺失**（`5fdd083dfe798e06`） |
+| 根目录 `deepai.org.har` | 1 | **缺失**（`f492f607eb3b45ec`） |
+
+**决策**：先迁移，再删除。
+
+1. 4 个孤儿 Key 以 `Source=har-import`、`Enabled=false`、`Status=unknown`
+   写进状态文件，`Note` 记录来源 HAR 文件名；
+   **停用**是关键：未验活的号不参与调度，不会污染号池、也不会在后台
+   探测里打出无谓的上游请求；
+2. 状态文件本身就是 AES-256-GCM 信封，删掉 HAR 后凭据只以密文存在；
+3. 删除 18 个 HAR 文件，目录从 ~131 MB 降到 32 MB。
+
+**验收**：
+
+```text
+状态文件账号 14 → 18（可调度仍为 14，新增 4 个 enabled=false）
+清理前审计：15 个 HAR / 18 个 Key，4 个未入库      ← 直接删会丢 4 把 Key
+清理后审计：0 个 HAR，未入库 Key 0
+go test ./...  10 个包全绿（状态文件改动未影响 store）
+console / 号池：14 个在线账号 status=ok 保持不变
+```
+
+**经验**：清理前的「看起来都导过了」必须用**指纹比对**证明，不能靠印象。
+第一次审计脚本的匹配式漏掉了 HAR 里的 JSON 转义形态（`api_key\":\"…`），
+对 15 个文件全部返回「0 个 Key、全部已入库」——一个会直接导致丢号的假绿灯。
+如果审计结果的 Key 数为 0，先怀疑正则，再相信结论。
+
+> 4 个停用账号可在控制台里验活后启用；确认无用则直接删除。
+> `deepaicode2api-data.json.pre-harcleanup.bak` 是清理前的加密快照，确认无误后可删。
+
+---
+
+## 36. 解耦一轮：协议层独立成包 + god module 拆分（P0/P1/P3）
+
+依据是一次全仓扫描（`project_report` + 逐函数覆盖 + 重复代码检测）。
+结论：**依赖分层没问题**（0 环、0 越层），问题在文件粒度与包粒度。
+
+### 36.1 P0：新增 `internal/gateway`（协议转换层）
+
+`anthropic_translate.go` / `responses_translate.go` / `anthropic_stream.go` 有
+**零个 `*Server` 依赖**——它们只是 map ⇄ struct 的映射。既然不依赖 HTTP、
+store 或号池，就应该住在自己的包里：
+
+- 迁入 `internal/gateway/`：字段映射、流式内容块管理器、`Usage` + 用量解析；
+- `internal/server/gateway_alias.go` 用**类型别名 + 函数变量**保留包内短名，
+  既有 handler 与 1,000+ 行测试**一行都没改**（迁移是纯搬家，不是行为改动）；
+- `responses_stream.go` 留在 server：它直接写 `*sseWriter`，属于 HTTP 层。
+
+效果：协议层可以脱离网关单独 evolve（上游一改协议，改动面收在一个包里），
+`go test -coverpkg=./internal/gateway/ ./internal/server/` = **78.4%**。
+
+### 36.2 P1：`common.go` 797 行 → 6 个职责文件
+
+| 新文件 | 内容 |
+| --- | --- |
+| `models.go` | 目录解析、别名回落、未知模型提示 |
+| `accounts.go` | 账号槽位、单号并发上限、准入排队、失败原因分类 |
+| `upstream.go` | `openModel`（选号 / 占槽 / 失败换号 / 错误分类） |
+| `reqlog.go` | 单请求埋点与统计 |
+| `sse.go` | `sseWriter`、`jsonEvent`、`[DONE]` |
+| `request.go` | body 上限、affinity、prompt 长度估算、分组 / 账号选择 |
+
+`common.go` 只剩准入常量，改名 `admission.go`（14 行）。
+
+### 36.3 P0/P1：三个 0% 覆盖的在用端点 + 两处显示不一致
+
+`/admin/api/{keys,stats,models}` 是控制台主路径，此前**零测试**（`console_test`
+只校验端点名存在）。新增 `admin_surface_test.go` 后顺带抓到两个真实问题：
+
+1. `GET /admin/api/models` 走 `Store.Models()`，而 `/v1/models` 走带兜底的
+   `s.catalog()` —— 新装且上游不可达时，**控制台模型页空白，API 却有兜底模型**；
+2. `defaultModelID()` 在「目录有兜底项但 `DefaultModel` 为空」时返回空串，
+   而推理实际已回落到目录首项（`registry.Resolve` 第 37 行）——**显示与行为不一致**。
+
+两处都改为以 `s.catalog()` / `s.defaultModelID()` 为准。
+
+### 36.4 P1：i18n 缺口从「静默」变「CI 报红」
+
+控制台用**中文原文当 i18n 键**：漏加词条时翻成英文会静默保留中文。
+实测 226 条词条 vs 232 处候选文案，**缺 25 条**（用户看到的是中英混排）。
+
+- 补齐 17 条真漏翻（`严格模型模式` / `请求日志` / `检测中…` / `登录失败：` 等）；
+- 新增 `console_i18n_test.go`：抽出 JS 字面量 + 标记文本 + placeholder/title 里的
+  中文，与字典求差集，只允许 8 条**结构性片段**缺席（拼接片段 / 语言选择器
+  自指的 `Language / 语言` / JS 求值后才带换行的那条），每条都在名单里写明理由；
+  同时断言名单只变短、字典无重复键（重复键会静默覆盖）。
+
+### 36.5 P3：删除不可达的 `Close` 链
+
+`Store.Close()` 从未被调用，它唯一的动作是调 `logStore.Close()`（空操作）。
+两者一并删除；`grep` 确认无调用者。
+
+### 验证
+
+```text
+go build ./... / go vet ./...                        PASS
+go test -count=1 ./...                               11 个包全绿
+internal/server 覆盖率                                70.4% → 71.5%
+internal/store  覆盖率                                78.7% → 79.1%
+internal/gateway                                      新增包，经 server 测试 78.4%
+gofmt                                                clean
+```
+
+### 未做（下一轮）
+
+- **P1-2** `handleAdminAccounts`（255 行 / 10 action / 30 字段万能请求体）→ 表驱动
+  + 每 action 独立结构体。要逐个分支搬运并保留行为，建议单独一次 review。
+- **P2** 前端 1,706 行单文件 → 原生 ES module 拆分（`web/js/*.js`，`go:embed` 改一行，
+  零构建工具链）；`main.go` 装配拆分。
+
+---
+
+## 37. P1-2 / P2：账号 action 表驱动 + 前端拆 ES module + main.go 拆分
+
+### 37.1 P1-2：`handleAdminAccounts` 255 行 → 27 行
+
+**根因**：一个 255 行的 switch 挂 10 个 action，共享一个 30 字段的「万能请求体」。
+`action=remove` 只用 `id`，却和 `action=enroll`（20 个字段）共用同一个结构体，
+必填项与可选性完全看不出来。
+
+**改法**：两步解析。
+
+1. 先只解出 `action`（`adminActionEnvelope`）；
+2. 再由表 `adminActions` 分发给该 action 的处理函数，每个函数解**自己的**最小结构体
+   （`adminImportReq` / `adminEnrollReq` / `adminIDReq` / …）。
+
+| 文件 | 内容 | 行数 |
+| --- | --- | --- |
+| `admin_accounts.go` | `handleAdminAccounts`（27 行分发）+ `handleAdminCheckin` | 163 |
+| `admin_actions.go` | 10 个 action + 各自的请求结构体 | 399 |
+
+新增 `admin_actions_test.go` 补上改造前**零覆盖**的 5 个 action
+（`import` / `manual` / `remove` / `toggle` / `clear-errors`），
+外加「未知 action 文案带名字」「非法输入 400」「PUT 405」三条边界。
+
+**唯一的行为差异**：某个 action 的请求体里带了**别的** action 才用的非法字段时，
+以前整体解码失败，现在忽略——只会更宽容，不会更严格。
+
+### 37.2 P2：控制台 1,706 行单文件 → 标记 + 样式 + 3 个 ES module
+
+**根因**：CSS、标记、JS 全在一个 HTML 里；i18n 字典、格式化函数、渲染逻辑互相穿插，
+改任何一处都要在 1,700 行里找位置。参考项目（minimax2api）用的是 React + Vite，
+但本项目「单二进制 + 无构建步骤」是**有意决策**（`optimization-plan-r2.md` §P3），
+所以走**原生 ES module**：零工具链、零构建，`go:embed` 仍然一行。
+
+```text
+web/index.html   288 行   标记 + <link> + <script type="module">
+web/style.css    254 行   设计令牌与布局（原 <style> 原文搬出）
+web/js/app.js    891 行   渲染 / 事件 / 轮询 / 主题
+web/js/i18n.js   244 行   字典 + tr/t/translateDom/applyLang（零依赖）
+web/js/format.js  45 行   时间 / 数字 / 成本 / 量级压缩（零依赖）
+```
+
+配套改动：
+
+- `web.go`：`embed.FS` 嵌入整个 `web/`，`/style.css` 与 `/js/<name>` 走**白名单**分发
+  （只允许两个入口，不再讨论路径穿越）；所有资源 `Cache-Control: no-store`，
+  避免升级后仍用旧 JS。
+- `console_test.go`：新增 `consoleSource()` / `consoleMarkup()` / `consoleStyle()` /
+  `consoleJS()`。**这是本次最容易埋雷的地方**——契约测试原本靠 `strings.Contains`
+  扫单文件，拆文件后如果不改成扫全部脚本，测试会全绿而检查早已落空。
+- `console_i18n_test.go`：字典定位改为**字符串感知的花括号配对**
+  （原先按「行首缩进 `};`」定位，字典一旦换文件缩进就变，会直接 panic）。
+
+**拆分过程抓到的真问题**：`lang` 变成 i18n 模块私有后，`app.js` 里还有一处
+`lang = …` 直接赋值 —— 点击语言按钮会抛 `ReferenceError`。用静态引用检查
+（导出符号 vs 导入清单 + 私有符号残留扫描）发现并改为 `setLang(getLang() ? …)`。
+
+### 37.3 P2：`main.go` 424 行 → 装配 + 任务 + 环境
+
+| 文件 | 内容 | 行数 |
+| --- | --- | --- |
+| `main.go` | `version` + `main()`：参数 → 存储 → 路由 → 信号 | 220 |
+| `tasks.go` | `background` / `quotaGuard` / `autoImport` / `runImport` / `runSeal` | 159 |
+| `env.go` | `defaultDataPath` / `envOr` / `envInt` / `envBool` / `isLoopbackListen` | 71 |
+
+### 验证
+
+```text
+go build ./... / go vet ./...             PASS
+go test -count=1 ./...                    11 个包全绿
+node --check web/js/*.js                  3 个模块全部通过
+控制台契约测试（8 个） + i18n 棘轮测试      全绿
+internal/server 覆盖率                     71.5%（新增 action 测试后再未下降）
+gofmt                                      clean
+```
+
+**说明**：本轮只拆了零依赖模块（i18n / format）。`app.js` 里剩余的
+`renderAccounts` / `renderLogs` / `renderKeys` / `renderSettings` / 事件接线
+仍在一个文件里——它们是共享 `state` / `acctPage` 的紧耦合函数，需要先抽
+`store.js` 再拆，属于下一轮；现在拆会在没有浏览器端运行时测试的情况下
+引入静默回归风险。
+
+---
+
+## 38. P2 收尾：拆开 app.js 的四个渲染模块 + 控制台 DOM 冒烟
+
+上一轮（§37）只拆了零依赖模块，理由是「渲染函数共享 state，且没有前端运行时
+测试，拆了会静默断」。这一轮先补上那个前提，再拆。
+
+### 38.1 先建安全网：`scripts/console-smoke.mjs`
+
+用**极简 DOM 桩**在 Node 里真正执行 `web/js/*.js`：
+
+- `import app.js` → 触发全部顶层接线（事件绑定、`applyLang`、`refresh` 调用链）；
+- 再给四个渲染函数喂固定数据，确认「不抛异常 + 真的往表里写了行」；
+- 配一个纯函数断言（`fmtCompact(1500) === "1.5K"`）防止顺手改坏格式化。
+
+`internal/server/console_smoke_test.go` 在 `go test` 里调用它，**没装 node 就
+`t.Skip`**：CI（ubuntu-latest 自带 Node）会真跑，本地按需装。
+
+**为什么非它不可**：`go test` 只能断言字符串存在；`node --check` 按 CJS 解析
+单个文件，会放过 ESM 的顶层 `return`。本轮它就抓到三个 Go 测试和 `node --check`
+都放过的真问题：
+
+| 问题 | 后果 | 谁能发现 |
+| --- | --- | --- |
+| 重复 import 同一个符号 | 模块直接 SyntaxError，整个控制台白屏 | 冒烟 |
+| 抽屉段删掉 IIFE 外壳后留下顶层 `return` | 同上 | 冒烟（`node --check` 放过） |
+| `state.js` 根本没被生成 | `ERR_MODULE_NOT_FOUND` | 冒烟 |
+
+另外两处是静态引用检查（自写脚本：导出符号 vs 导入清单 + 私有符号残留）发现的：
+
+- `app.js` 里残留 `lang = …`（`lang` 已是 i18n 模块私有）→ 点语言按钮 ReferenceError；
+- `updateAcctPager` 里 `acctPage` 未改成 `ui.acctPage` → 翻页时 ReferenceError。
+
+### 38.2 拆分结果
+
+新增 6 个模块，`app.js` 从 891 → 509 行（只剩事件接线 / 轮询 / 主题 / 启动）：
+
+```text
+js/state.js          12 行   共享可变状态（acctPage / acctPageSize）
+js/dom.js            66 行   $ / mk / cell / row / pill / emptyRow / 行内菜单
+js/table.js          40 行   表头排序状态与纯函数
+js/api.js            38 行   管理接口调用（鉴权 / 错误归一 / GET 去重）
+js/ui.js             16 行   toast
+js/actions.js        55 行   accountOp / keyOp / checkin（刷新通过 setReload 注入）
+js/render/accounts.js 127 行 renderAccounts / updateAcctPager / rowMenu
+js/render/keys.js     62 行  renderKeys / keyMenu
+js/render/logs.js     49 行  renderLogs
+js/render/settings.js 14 行  renderSettings
+```
+
+**依赖方向**：`i18n / format / state / dom / table`(叶子) ← `api / ui / actions` ←
+`render/*` ← `app`。`actions` 需要在操作后刷新，而刷新属于 app 的职责，
+用 `setReload(refresh)` 注入，避免 `actions ⇄ app` 循环导入。
+
+配套修正：
+
+- `go:embed` 加 `web/js/render/*.js`；`consoleJS()` 递归两个目录
+  （只扫顶层会让契约测试对 render/* 部分「看起来通过」）；
+- 资源路由白名单加 `js/render/<name>.js` 一档，仍然拒绝子目录与 `..`；
+- `web_test.go` 补 render/* 的 200 断言与 `/js/render/../../app.js` 的拒绝断言。
+
+### 验证
+
+```text
+node scripts/console-smoke.mjs        7 项全过
+go test ./internal/server/            含 TestConsoleSmoke / 资源路由 / i18n 棘轮
+go test -count=1 ./...                11 个包全绿
+go build / go vet / gofmt             PASS
+```
+
+前端总行数 1,706（单文件）→ 288 标记 + 254 样式 + 1,277 脚本（10 个模块）。
+
+### 遗留
+
+`app.js` 仍有 509 行（事件接线 + 轮询 + 主题 + OAuth 流程）。再拆需要把
+「事件绑定」独立成 `events.js`，但那里都是 DOM 副作用、几乎没有可断言的行为，
+收益低于风险，暂不处理。
+
+---
+
+## 39. 模型目录：用真实快照刷新，并把「计费口径」收成一处
+
+### 39.1 数据来源：状态文件里的缓存目录
+
+README §二 的表格此前是手写快照，写着 **22 个**模型（11 免费 / 11 付费）。
+用临时工具从加密状态文件（`store.Open` → `Store.Models()`）导出真实目录后：
+
+| 项 | README 旧值 | 实际缓存 |
+| --- | --- | --- |
+| 模型数 | 22 | **18** |
+| 免费 / 付费 | 11 / 11 | **9 / 9** |
+| 纯文本模型 | 含 `minimax-m3` | `deepai-cyber` / `glm-5.3` / `glyph-cluster` / `solar-mini-4` |
+| 默认模型 | `glm-5.3-flash` | 一致 |
+
+差异明细（已写进 README 的说明列表）：旧表里的 `qwen-3.8-flash`、
+`minimax-m3.1-flash`、`minimax-m3`、`qwen-3.8-max-prime`、`claude-fable-5-2`
+在缓存里都不存在，其中 `claude-fable-5-2` 现为 **`claude-fable-5-1`**（25 Theos）。
+
+README 表格改为按「默认模型 → 免费 → 付费升序」排列，并注明数据是从网关缓存导出的，
+不是手抄。别名段也补全为实际的 13 个内置别名（`registry.builtinAliases`）。
+
+### 39.2 后端：`free` 与 `theos_per_second` 不再各算一份
+
+| 端点 | 改动 |
+| --- | --- |
+| `GET /v1/models` | `deepai` 元信息补 `theos_per_second`（字段一直存在，但没透出） |
+| `GET /admin/api/models` | 改为 `adminModelViews()`：补 `free`（与 `Model.Free()` **同源**），并显式带上 `theosPerSecond` |
+
+`free` 由后端下发的意义：前端此前自己算 `!premier && (无价 || 价=0)`，
+与 `Model.Free()`（`theosPerRequest` 为 `"0"/"0.0"/"0.00"` 才算免费）**不是同一个口径**。
+两套算法在「premier=true 但 theos=0」这类模型上会分叉——控制台说免费、实际计费。
+
+### 39.3 前端：新增「每秒计费」列
+
+- `web/index.html`：`#modelTable` 加 `<th data-sort="theos2">每秒计费</th>`，空态 colspan 8 → 9；
+- `web/js/format.js`：新增纯函数 `perSecondText(m)`——空返回 `—`，单档位只显示数值，
+  多档位显示 `k: v · k: v`；
+- `web/js/app.js`：`renderOverview` 加排序键 `theos2` 与新列；「计费」列改为
+  优先读后端 `m.free`，旧响应（没有该字段）才回退本地判断；
+- `web/js/i18n.js`：补 `每秒计费 → Per second` 词条（i18n 棘轮测试会检查差集）。
+
+### 39.4 验证
+
+```text
+go test ./internal/server/            新增 3 个模型端点测试 + 既有模型刷新测试
+  · TestPublicModelsExposeDeepAIMeta         deepai 元信息 10 个字段齐全、free 与 Model.Free() 同源
+  · TestAdminModelsExposeFreeAndPerSecond    控制台字段 free / theosPerSecond 必须存在
+  · TestAdminModelsFallbackWhenCatalogEmpty  空目录时两端都回落到同一个兜底模型
+node scripts/console-smoke.mjs        新增 perSecondText 断言（空 / 单档 / 多档）
+go test -count=1 ./...                11 个包全绿
+```
+
+> 数据是**网关缓存的快照**，不是实时上游：上游再改目录时，先 `POST /admin/api/models`
+> 刷新，再按 §39.1 的方式重新导出即可，不需要改代码。
+
+---
+
+## 40. 号池模型指纹实测：22 个模型逐个过检测器
+
+用 [LM Fingerpoint Detector](https://lm.ikale.io) 的 CLI（`lmfpd`）逐个测号池里
+22 个模型实际被路由到哪个模型。完整结果与复现命令见
+`docs/model-fingerprint-2026-11-10.md`，这里只记下结论与方法上的两个坑。
+
+### 40.1 先纠正上一轮的目录结论（§39）
+
+§39 的模型表用的是**仓库根目录那份 `deepaicode2api-data.json`**（18 个模型）。
+但网关实际读的是 `%APPDATA%\deepaicode2api\deepaicode2api-data.json`，
+启动时自动从上游刷新得到 **22 个（11 免费 / 11 付费）**——与更早的 README 一致。
+
+结论：**仓库里那份状态文件是陈旧副本**，不能当目录依据。README §二 已按
+线上 `/v1/models` 重新生成（22 行），并加了一句「以线上为准，别拿旧状态文件当目录」。
+
+### 40.2 方法坑：`-p 1` 是硬要求
+
+默认 `-p 3`（并发 3 采样）时，每条样本里的 3 次请求有 2 次返回**空文本**：
+`used_outputs=1`、`probability_status=unavailable`，整份结果作废。
+改成 `-p 1` 后同样 3 条样本全部有效。第一轮付费批量因此白花了约 100 Theos。
+
+另：`gpt-6-astra` 只能 `-a responses`，其余 `-a chatcompletion`。
+
+### 40.3 结果摘要（22 个）
+
+| 分类 | 数量 | 模型 |
+| --- | ---: | --- |
+| ✅ 指纹对得上 | 8 | glm-5.3-flash（变体 x）、deepseek-v4.1-flash、qwen-3.8-flash、glm-5.3、kimi-k3、muse-spark-1.3、claude-opus-5-5、muse-wonder |
+| ❌ 指纹不符 | 6 | minimax-m3.1-flash→grok-4.5、solar-mini-4→qwen3.8-omni-flash、gpt-6-luna→qwen3.8-omni-flash、minimax-m3→qwen3.8-max-0902、gpt-6.1-sol→mimo-v2.5-pro、gemini-4-argon→qwen3.8-omni-flash |
+| ⚠️ 样本不足 | 2 | glyph-cluster（1/3）、claude-fable-5-2（2/3，但名字对得上） |
+| 🚫 无有效输出 | 6 | mimo-2.6-flash / mimo-2.6-pro / qwen-3.8-max-prime（超时）；crouton-alpha / deepai-cyber / gpt-6-astra（3/3 空响应） |
+
+> 检测器每次都返回 `evidence.insufficient=true`：结果是「参考库内封闭集合排序」，
+> 是参考不是身份证明。别把 0.3 的候选当成定论。
+
+### 40.4 旁证：空响应来自上游的请求体校验
+
+实测期间网关日志出现 **75 次** `[upstream] 请求体被拒，按桌面端形状重试`
+（`ChatBodyFallback` 路径）。空响应大概率是这条重试后上游仍回 200-无内容。
+会话统计：`total_requests=122`、`failed_requests=50`、`total_cost=0.2764`。
+
+### 40.5 未做
+
+`qwen-3.8-max-prime`（15×3）与 `gpt-6-astra`（50×3）没能拿到有效输出；
+两者要再测需额外约 195 Theos，且更可能重复同一失败模式（超时 / 空响应），
+建议先查上游请求体校验再重测。

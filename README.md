@@ -27,7 +27,7 @@
 | 账号接入 | 浏览器登录（Google / Apple / 邮箱密码）、桌面端凭据导入、手工 API Key；入池自动分配机器指纹与代理 |
 | 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 设置 |
 | 安全 | 密钥鉴权、管理口令、同源写保护、状态文件 AES-256-GCM 可选加密 |
-| 可回归 | 260 个用例 / 7.2k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 9 个包 |
+| 可回归 | 315 个用例 / 8.8k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 9 个包 |
 
 ```text
 ┌──────────────┐  /v1/chat/completions   ┌────────────────┐   Api-Key + Theos 头   ┌─────────────────────────────┐
@@ -109,29 +109,29 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 
 ## 二、支持的模型
 
-模型目录**完全由上游下发**（当前 22 个，下表是 2026-11-10 实测的快照），
-网关只做缓存与别名，上游新增模型无需改代码。`Theos/次` 取自上游
-`theosPerRequest`，`0` 即免费（11 个免费 / 11 个付费）。
+模型目录**完全由上游下发**：网关只做缓存与别名，上游新增或下线模型都无需改代码。
+下表是 2026-11-10 从线上网关的 `/v1/models` 导出的**实时目录**（22 个：11 免费 / 11 付费），
+`Theos/次` 取自上游 `theosPerRequest`，`0` 即免费。控制台「模型目录」页读的是同一份数据。
 
 | ID | 名称 | 上下文 | 最大输出 | Theos/次 | 说明 |
 | --- | --- | ---: | ---: | ---: | --- |
 | `glm-5.3-flash` | GLM 5.3 Flash | 1,048,576 | 131,072 | **0** | 默认模型，免费 |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | 1,048,576 | 131,072 | **0** | 免费 |
-| `mimo-2.6-flash` | MiMo 2.6 Flash | 1,048,576 | 131,072 | **0** | 免费 |
-| `qwen-3.8-flash` | Qwen 3.8 Flash | 991,000 | 128,000 | **0** | 免费 |
-| `minimax-m3.1-flash` | MiniMax M3.1 Flash | 1,048,576 | 131,072 | **0** | 免费 |
-| `solar-mini-4` | Solar Mini 4 | 524,288 | 131,072 | **0** | 免费，纯文本 |
-| `gpt-6-luna` | GPT-6 Luna | 1,048,576 | 128,000 | **0** | 免费 |
-| `mimo-2.6-pro` | MiMo 2.6 Pro | 1,048,576 | 131,072 | **0** | 免费 |
 | `crouton-alpha` | Crouton Alpha | 1,048,576 | 131,072 | **0** | 免费 |
-| `glyph-cluster` | Glyph Cluster | 256,000 | 131,072 | **0** | 免费，纯文本 |
 | `deepai-cyber` | DeepAI Cyber | 65,536 | 8,192 | **0** | 免费，纯文本 |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | 1,048,576 | 131,072 | **0** | 免费 |
+| `glyph-cluster` | Glyph Cluster | 256,000 | 131,072 | **0** | 免费，纯文本 |
+| `gpt-6-luna` | GPT-6 Luna | 1,048,576 | 128,000 | **0** | 免费 |
+| `mimo-2.6-flash` | MiMo 2.6 Flash | 1,048,576 | 131,072 | **0** | 免费 |
+| `mimo-2.6-pro` | MiMo 2.6 Pro | 1,048,576 | 131,072 | **0** | 免费 |
+| `minimax-m3.1-flash` | MiniMax M3.1 Flash | 1,048,576 | 131,072 | **0** | 免费 |
+| `qwen-3.8-flash` | Qwen 3.8 Flash | 991,000 | 128,000 | **0** | 免费 |
+| `solar-mini-4` | Solar Mini 4 | 524,288 | 131,072 | **0** | 免费，纯文本 |
 | `minimax-m3` | MiniMax M3 | 512,000 | 131,000 | 2 | 付费，纯文本 |
 | `glm-5.3` | GLM 5.3 | 1,048,576 | 131,072 | 3 | 付费，纯文本 |
 | `kimi-k3` | Kimi K3 | 1,048,576 | 131,072 | 3 | 付费 |
 | `muse-spark-1.3` | Muse Spark 1.3 | 1,048,576 | 131,072 | 6 | 付费 |
-| `gpt-6.1-sol` | GPT-6.1 Sol | 1,048,576 | 128,000 | 10 | 付费 |
 | `gemini-4-argon` | Gemini 4 Argon | 1,048,576 | 131,072 | 10 | 付费 |
+| `gpt-6.1-sol` | GPT-6.1 Sol | 1,048,576 | 128,000 | 10 | 付费 |
 | `claude-opus-5-5` | Claude Opus 5.5 | 1,000,000 | 64,000 | 15 | 付费 |
 | `muse-wonder` | Muse Wonder | 1,048,576 | 131,072 | 15 | 付费 |
 | `qwen-3.8-max-prime` | Qwen 3.8 Max Prime | 1,000,000 | 131,072 | 15 | 付费 |
@@ -140,16 +140,23 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 
 说明：
 
-- 除 `solar-mini-4` / `glyph-cluster` / `deepai-cyber` / `minimax-m3` / `glm-5.3` 外，
-  其余模型都接受图片输入（`input: [text, image]`），且全部支持推理（`reasoning`）；
+- 只有 `deepai-cyber` / `glm-5.3` / `glyph-cluster` / `solar-mini-4` 是纯文本
+  （`input: [text]`），其余都接受图片输入（`input: [text, image]`）；全部支持推理（`reasoning`）；
 - `gpt-6-astra` 的 `api` 是 `openai-responses`，必须走 `/v1/responses`，
   用 `/v1/chat/completions` 调用会被上游拒绝；
-- 付费模型按 `Theos/次` 计量，从账号的每日额度 / 余额里扣；额度耗尽后上游返回 403（见 §6.9）。
+- 付费模型按 `Theos/次` 计量，从账号的每日额度 / 余额里扣；额度耗尽后上游返回 403（见 §6.9）；
+- 上游若还下发 `theosPerSecond`（按秒计费），控制台会在「每秒计费」列显示，
+  `/v1/models` 的 `deepai` 元信息里也能读到；
+- **以线上 `/v1/models` 为准**：仓库里若残留旧的 `deepaicode2api-data.json`，
+  它的 `models` 字段可能落后于上游，别拿它当目录依据。
 
-内置别名（可在控制台覆盖）：
+内置别名（可在控制台覆盖，共 13 个，全部指向默认免费模型 `glm-5.3-flash`）：
 
-- `gpt-4o` / `gpt-4` / `gpt-3.5-turbo` / `claude-3-5-sonnet` / `deepseek-chat` … → `glm-5.3-flash`
-- `deepai/<id>`、`openai/<id>` 前缀会被自动剥离
+- `deepai` / `deepai-code` / `default`
+- `gpt-4` / `gpt-4o` / `gpt-4o-mini` / `gpt-4.1` / `gpt-3.5-turbo`
+- `claude-3-5-sonnet` / `claude-sonnet-4` / `claude-3-haiku`
+- `deepseek-chat` / `glm-4-flash`
+- `deepai/<id>`、`openai/<id>` 前缀会被自动剥离（`deepai:` / `openai:` 同效）
 
 无法识别的模型名**默认**回落到「兜底模型」→ 目录默认模型，保证任意客户端开箱即用；
 控制台打开「**严格模型模式**」后改为返回 `404 invalid_request_error`，并列出相近的
@@ -489,7 +496,9 @@ curl -s -X POST localhost:10087/admin/api/checkin   -H "X-Admin-Password: $DEEPA
 ## 八、架构与目录
 
 ```text
-main.go                     启动、导入、后台落盘 / 目录刷新 / 额度守护 / 启动摘要
+main.go                     装配：参数 → 存储 → 路由 → 信号（不再放业务）
+tasks.go                    后台任务：落盘 / 目录刷新 / 额度守护 + 导入与封存命令
+env.go                      启动参数与环境变量解析（默认值集中处，对照 §五）
 cmd/probe/                  诊断工具
 internal/deepai/            上游客户端（协议、SSE、机器指纹、凭据导入）
 internal/envfile/           .env 加载（启动时生效）
@@ -503,18 +512,44 @@ internal/store/             状态持久化 + 账号池调度（拆分后单文�
   ├─ reseal.go             -seal：存量明文（含历史日志）封存
   └─ state_seal.go         AES-256-GCM 信封 / 密钥指纹
 internal/proxy/             代理池（轮询 / 脱敏标签 / 文件读取）
-internal/server/            HTTP 路由、协议转换、控制台
+internal/pool/              选号策略（分组轮询 / 配额判定 / 冷却窗口），不依赖 Store 即可测
+internal/parallel/          有界并发扇出（并发上限 / ctx 取消 / 按下标回填）
+internal/retry/             退避重试（阈值 / 抖动 / 不可重试错误判定）
+internal/gateway/           协议转换层：字段映射 + 用量解析，不依赖 HTTP / store / 号池
+  ├─ anthropic_types.go    Anthropic 请求模型（Messages / tools）
+  ├─ anthropic_translate.go Anthropic ⇄ Chat 双向字段映射
+  ├─ anthropic_stream.go   流式内容块管理器（thinking / text / tool_use）
+  ├─ responses_translate.go Responses ⇄ Chat 字段映射
+  └─ usage.go              Usage + 上游用量解析 + JSON 宽松取值
+internal/server/            HTTP 路由、流式收发、控制台（装配层）
   ├─ chat.go                OpenAI Chat Completions（透传 + 归一化）
   ├─ anthropic.go           Anthropic Messages 入口
-  ├─ anthropic_translate.go 双向字段映射
-  ├─ anthropic_stream.go    流式内容块管理器
   ├─ responses.go           Responses API 入口（透传 / Chat 合成）
-  ├─ responses_translate.go Responses ⇄ Chat 字段映射
-  ├─ responses_stream.go    Responses 流事件生成器
+  ├─ responses_stream.go    Responses 流事件生成器（写 sseWriter，故留在本包）
+  ├─ upstream.go            openModel：选号 / 占槽 / 失败换号 / 错误分类
+  ├─ accounts.go            账号槽位、并发上限、准入排队
+  ├─ models.go              模型目录解析与别名回落
+  ├─ sse.go                SSE 写出与 [DONE]
+  ├─ reqlog.go             单请求埋点与统计落盘
   ├─ probe.go               额度探测（按需 / 守护 / checkin 分批）
   ├─ extensions.go          配额、用量、搜索、语音
   ├─ login.go               浏览器登录（RFC 8252 本机回调）
-  └─ web/index.html         单页控制台
+  ├─ admin_accounts.go      账号管理入口：GET 分页 / POST 按 action 分发
+  ├─ admin_actions.go       10 个 action，各自一个最小请求结构体
+  ├─ gateway_alias.go       给 gateway 的包内短名（类型别名，迁移期兼容）
+  └─ web/                   控制台静态包（全部 go:embed 进二进制）
+       ├─ index.html        页面标记（288 行）
+       ├─ style.css         样式（设计令牌 + 布局）
+       ├─ js/app.js         主模块：事件接线 / 轮询 / 主题（509 行）
+       ├─ js/i18n.js        字典 + 文本替换（零依赖）
+       ├─ js/format.js      纯格式化（零依赖）
+       ├─ js/state.js       共享可变 UI 状态（分页游标）
+       ├─ js/dom.js         DOM 助手 + 行内菜单
+       ├─ js/table.js       表头排序状态与纯函数
+       ├─ js/api.js         管理接口调用（鉴权 / 错误归一 / 去重）
+       ├─ js/ui.js          toast
+       ├─ js/actions.js     账号 / 密钥变更 + 配额探测（刷新通过 setReload 注入）
+       └─ js/render/        四个渲染模块：accounts / keys / logs / settings
 ```
 
 分层原则：

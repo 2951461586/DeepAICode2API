@@ -8,6 +8,10 @@
 > `/admin/api/register` 与控制台「批量注册」页）已整体移除。本文涉及
 > `internal/register/*` 的「代码落点」属于历史记录，只用于解释当时的决策；
 > 现役代理池在 `internal/proxy`，号池写入口在 `internal/server/enroll.go`。
+>
+> 同日清理：所有 HAR 抓包（`accounts/*.har` 与仓库根目录的 `deepai.org*.har`）
+> 已删除，其中未入库的凭据已折进加密状态文件（停用状态，见 `changes.md` §35）。
+> 本文提到的 `deepai.org-2.har` 等文件名仅作证据索引，文件本身已不在仓库内。
 
 每条经验的格式是 **现象 → 根因 → 规则 → 代码落点**，末尾给出失效边界。
 改动注册 / 调度 / 探测相关代码前，请先过一遍 §5 的检查清单。
