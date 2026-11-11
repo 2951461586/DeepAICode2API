@@ -9,6 +9,7 @@
 
 本文按时间顺序追加，最新条目在最末。查最新结论从这里跳：
 
+- 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
 - 31 浏览器登录支持「粘贴回调 URL」，Docker 部署不再卡在回调页
@@ -1872,3 +1873,67 @@ go test -count=1 ./...                11 个包全绿
 `qwen-3.8-max-prime`（15×3）与 `gpt-6-astra`（50×3）没能拿到有效输出；
 两者要再测需额外约 195 Theos，且更可能重复同一失败模式（超时 / 空响应），
 建议先查上游请求体校验再重测。
+
+---
+
+## 41. 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 一处模型目录漂移
+
+**触发**：2026-11-11 例行扫描发现官方更新源 `latest.yml` 已发 **0.3.35**
+（2026-11-11T03:34Z，releaseNotes 只有一条：修 Linux 上免费每日 Theos 不发放），
+而仓库/本机都还停在 0.3.32。本机 Electron 自动更新已在后台下 0.3.35，但停在
+77 MB（`updater/pending/temp-*.exe` 不再增长），于是改用官方安装包静默安装。
+
+**客户端更新**（0.3.32 → 0.3.35）：
+
+- `latest.yml` 的 sha512 与下载包逐字节一致，`7z` 解 NSIS → `app-64.7z` →
+  `resources/{app,server}.asar`；安装后 `app.asar` 的 `package.json` version = **0.3.35**。
+- 安装前关掉桌面端（3 个进程），装完重新拉起；删掉 updater 里过期的半包。
+
+**白盒比对 0.3.32 vs 0.3.35**（`server.asar:/apps/server/dist/binCli-*.mjs`，
+14.3 MB 单行 bundle，按 `;` 切段做 `SequenceMatcher` → 26 个变更块，其中 18 个落在
+deepai / 赞助位相关代码）：
+
+| 面 | 结论 |
+| --- | --- |
+| `DEEPAI_LANE_HEADERS` | 一字未变：`{"X-DeepAI-Code-Theos":"4","X-DeepAI-Code-Instance":randomBytes(16).hex}` |
+| `X-DeepAI-Code-Machine` | 头名与 `sha256(小写原始 UUID)` 未变；**新增 Linux 分支**（`/etc/machine-id`、`/var/lib/dbus/machine-id`，32 hex 且非全 0） |
+| `-Check-In` / `-Beacon` | 字面量与 `v=…;up=…;pi=…` 拼装逻辑未变（`pi` 仍可选） |
+| 端点集合 | `/models` `/theos` `/chat/completions` `/responses` `/web_search` `/find_service` `/get_usage_summary` `/gravity-display-proxy` 全部照旧 |
+| 新增 `fetchDeepAI` | 仅 Linux：`NODE_USE_ENV_PROXY!==0` 且设了代理变量时，对 `api.deepai.org` / `deepai.org` 用 undici `EnvHttpProxyAgent`；Windows 走默认 `fetch` |
+| pi 运行时 | 仍是 1.3.0；新增 `omitRejectedImages`（后端回 “received multimodal data but multimodal processing is not enabled” 后，后续轮把历史图片降级为文本）、纯文本端点把单段 text 数组压平成字符串；`fitCompactedReads` 与 thread identity（`DEEPAI_THREAD_ENV`）都在 |
+| 其它 | `find_service` 工具描述改写；赞助卡片新增 `render.mode=iframe` + `sponsoredFrameUrl`（`server.trygravity.{com,ai}`）、`supportsFrames` |
+
+→ **网关的请求头 / 指纹 / 签到 / 端点不需要任何协议改动**，本次只跟版本号。
+
+**线上实测（2026-11-11，真实账号）**：
+
+```text
+/models        22 个，默认 glm-5.3-flash
+/theos         200 lane_version=4，balance=50，refresh_at=2026-11-12T00:04Z
+chat(system)   200 provider=Reka，id=gen-…，cost_details.upstream_inference_completions_cost>0   ← 真分支
+chat(user-only) 400 "This request is not one DeepAI Code sends."                                  ← 已知行为，走 ChatBodyFallback
+```
+
+**模型目录漂移（唯一一处）**：`deepai-cyber` 上游已从 `65,536 / 8,192` 抬到
+**`1,048,576 / 131,072`**（README 旧快照过期）；其余 21 个模型 ctx / maxTokens /
+theosPerRequest 与 README 完全一致。
+
+**改动**：
+
+- `internal/deepai/types.go`：`AppVersion` `0.3.32` → **`0.3.35`**（只影响心跳 `v=`）+ 注释跟新。
+- `internal/deepai/chatbody.go`：请求体形状的复核版本注释更新。
+- `README.md`：§一 客户端版本、§十 两条（车道复核版本、`v=` 现值）、模型表 `deepai-cyber` 行。
+- `docs/recon.md`：头部 banner（0.3.35 复核结论 + 0.3.35 的三处变更）、§1/§2/§3/§5.1 标题版本、
+  §3 头字面量复核段、§5.1 `pi` 可选段落。
+- `docs/changes.md`：本节 + 索引。
+
+**验证**：
+
+```text
+go build ./...   OK
+go vet ./...     OK
+go test ./...    OK
+```
+
+**影响**：号池、调度、翻译层零改动。真/替身判据（§3.1）本次**未变**；仍需留意上游
+新增的 `render.mode=iframe` 赞助卡片字段 —— 网关不消费赞助位，可忽略。

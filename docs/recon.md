@@ -6,19 +6,20 @@
 
 > 抓包时间：应用版本 **0.3.20**（车道 4，2026-11-07 发布）。
 >
-> **2026-11-10 复核到 0.3.32**（本机装 0.3.30，官方更新源 `latest.yml` 已发 0.3.32）。
-> 0.3.20 → 0.3.30 → 0.3.32 三方白盒比对结论：**wire protocol 一字未变** ——
+> **2026-11-11 复核到 0.3.35**（本机已装 0.3.35，官方更新源 `latest.yml` 同日 03:34Z 发布）。
+> 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 四轮白盒比对结论：**wire protocol 一字未变** ——
 > 端点集合、5 个 `X-DeepAI-Code-*` 头（车道仍 `4`）、实例号粒度、
-> `sha256(小写原始 UUID)` 机器指纹、签到 / beacon 形态全部一致；
-> 0.3.30 与 0.3.32 的 `src/deepai/*` 只差压缩后的符号重编号
-> （`make$102→make$100`、`locks make$157→make$155`），pi 运行时都还是 1.3.0。
+> `sha256(小写原始 UUID)` 机器指纹、签到 / beacon 形态全部一致。
+> 0.3.35 的 `src/deepai/*` 变更只有三处，且都不在 Windows 协议面上：
+> Linux 用 `/etc/machine-id` 取机器指纹（对应 releaseNotes 「修 Linux 免费每日
+> Theos 不发放」）、Linux 走 `fetchDeepAI` 的 undici 代理传输、
+> pi 侧的图片 / 文本数组处理（pi 运行时两版同为 1.3.0）。
 > 只有 beacon 里的 `v=` 需要跟着版本走。0.3.17（车道 2）已不再被上游接受：
 > 所有 `/deepai_code` 端点返回 `426 lane_version_unsupported`。
 > 上游随时可能变，字段以代码为准。
 >
-> ⚠ 下载页与更新源会不同步：`deepai.org/download/deepai-code/*` 的 302 仍指
-> 0.3.30 的安装包，而 `downloads.deepai.org/deepai-code/releases/latest.yml`
-> 已经是 0.3.32。判断“最新客户端”看 `latest.yml`，不要看下载页。
+> ⚠ 下载页与更新源会不同步：判断“最新客户端”看 `latest.yml`，不要看下载页
+> （2026-11-10 那次下载页 302 还指着 0.3.30，而更新源已是 0.3.32）。
 >
 > 2026-11-09 用 0.3.20 的 `server.asar` 做了白盒复核（请求头 / 机器指纹 /
 > 签到 / 响应判据），并重测了 UA 分流：**推理响应已改成 OpenRouter 形状**，
@@ -36,7 +37,7 @@
 
 | 标记 | 含义 | 怎么复核 |
 | --- | --- | --- |
-| **【源码级】** | 白盒确认：读的是 0.3.32 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`） | 解包 asar 后对着代码看，可 100% 复现 |
+| **【源码级】** | 白盒确认：读的是 0.3.35 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`） | 解包 asar 后对着代码看，可 100% 复现 |
 | **【实测】** | 线上真打过，附日期与样本量 | 按文中命令复跑；样本量小的结论会写明 |
 | **【推断】** | 由前两类推广而来，**尚未验证** | 照着改代码前先补一次实测 |
 
@@ -46,7 +47,7 @@
 
 ---
 
-## 1. 进程与数据目录【源码级 0.3.32】
+## 1. 进程与数据目录【源码级 0.3.35】
 
 | 项 | 值 |
 | --- | --- |
@@ -58,7 +59,7 @@
 
 自动探测顺序见 `internal/deepai/helpers.go` 的 `DesktopSecretDirs`。
 
-## 2. 上游端点【源码级 0.3.32】
+## 2. 上游端点【源码级 0.3.35】
 
 基础地址 `https://api.deepai.org`（可用 `DEEPAI_API_ORIGIN` 覆盖）。
 
@@ -84,7 +85,7 @@
 | GET | `/gravity-display-proxy` | 赞助位渲染代理（根路径，`User-Agent: DeepAI-Code`） |
 | GET | `/gravity-imp` | 赞助曝光上报（根路径） |
 
-## 3. 请求头【源码级 0.3.32】
+## 3. 请求头【源码级 0.3.35】
 
 | 头 | 值 | 作用 |
 | --- | --- | --- |
@@ -117,7 +118,7 @@
 > 带到推理请求上等于在 `Api-Key` 接口自报“我不是客户端”。
 > 网关的 `deepai.Client.BrowserFingerprint` 就是这条开关：注册 true、推理 false。
 >
-> 2026-11-10 用 0.3.32 的 `app.asar` 复核：`DEEPAI_LANE_HEADERS` 仍是
+> 2026-11-11 用 0.3.35 的 `app.asar` / `server.asar` 复核：`DEEPAI_LANE_HEADERS` 仍是
 > `{"X-DeepAI-Code-Theos":"4","X-DeepAI-Code-Instance":randomBytes(16).hex}`，
 > 另外 3 个头（`-Machine` / `-Check-In` / `-Beacon`）字面量未动；
 > `User-Agent: DeepAI-Code` 仍**只**出现在 `/gravity-display-proxy`；
@@ -291,15 +292,15 @@ DeepAI 有两条社交登录实现，**都必须在浏览器里完成**——服
   （客户端会主动过滤它）。
 - SSE 里同一事件可能有多行 `data:`，按规范用 `\n` 拼接后再解析。
 
-## 5.1 签到（check-in）【源码级 0.3.32 + 实测】
+## 5.1 签到（check-in）【源码级 0.3.35 + 实测】
 
 - `/theos` 是签到通道：成功（200）与拒绝（403）都会带
   `check_in:{nonce,seconds=600}`。
 - 桌面端缓存 nonce，下一次 `/theos` 带上 `X-DeepAI-Code-Check-In: <nonce>`
   与心跳 `X-DeepAI-Code-Beacon: v=<版本>;up=<秒>;pi=<0\|1>`（`focus` 可选，
   只在窗口焦点状态已知时才出现）。
-- 0.3.30 / 0.3.32 起 `pi` 也变成**可选**：`piActive === null`（本进程还没转发过
-  推理）时整段省略，所以 `v=0.3.32;up=12` 这种两段式心跳是合法的。
+- 0.3.30 起 `pi` 也变成**可选**：`piActive === null`（本进程还没转发过
+  推理）时整段省略，所以 `v=0.3.35;up=12` 这种两段式心跳是合法的。
   网关恒发 `pi=<0|1>` 与桌面端“已转发过”的状态等价，上游不挑格式。
 - 重新签到的时机是 `seconds/2`（默认 300s）；推理前会先确保签到（失败不阻塞）。
 - 推理请求本身**不带** check-in / beacon，只带车道、实例、机器指纹与 `Api-Key`。

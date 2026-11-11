@@ -45,8 +45,8 @@
 
 ## 一、逆向结论
 
-DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.32**，车道 4；
-0.3.20 → 0.3.30 → 0.3.32 的 wire protocol 逐项比对**未变**）。
+DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.35**，车道 4；
+0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 的 wire protocol 逐项比对**未变**）。
 真正干活的不是桌面壳，而是 `resources/server.asar` 里的 t3code server；
 它把上游能力封装成本地回环 HTTP 服务，再交给 Pi（编码 agent）调用。
 
@@ -117,7 +117,7 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 | --- | --- | ---: | ---: | ---: | --- |
 | `glm-5.3-flash` | GLM 5.3 Flash | 1,048,576 | 131,072 | **0** | 默认模型，免费 |
 | `crouton-alpha` | Crouton Alpha | 1,048,576 | 131,072 | **0** | 免费 |
-| `deepai-cyber` | DeepAI Cyber | 65,536 | 8,192 | **0** | 免费，纯文本 |
+| `deepai-cyber` | DeepAI Cyber | 1,048,576 | 131,072 | **0** | 免费，纯文本 |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | 1,048,576 | 131,072 | **0** | 免费 |
 | `glyph-cluster` | Glyph Cluster | 256,000 | 131,072 | **0** | 免费，纯文本 |
 | `gpt-6-luna` | GPT-6 Luna | 1,048,576 | 128,000 | **0** | 免费 |
@@ -598,8 +598,8 @@ docker run -d --name deepaicode2api \
 
 ## 十、限制与说明
 
-- `X-DeepAI-Code-Theos` 必须是 `4`（0.3.19 起至今未变，0.3.30 / 0.3.32 复核仍为 4）；车道不符时上游对所有端点返回 426，需要升级网关；
-- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.32**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
+- `X-DeepAI-Code-Theos` 必须是 `4`（0.3.19 起至今未变，0.3.30 / 0.3.32 / 0.3.35 复核仍为 4）；车道不符时上游对所有端点返回 426，需要升级网关；
+- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.35**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
 - 推理请求按桌面端实测值发 `user-agent: node` + `accept: */*`，**不带** Chrome UA / `sec-ch-ua` / `Accept-Language`（推理侧只发桌面端请求头）；
 - `X-DeepAI-Code-Machine` 缺失时计量模型返回 `machine_required`，因此无 SMBIOS 的环境必须设置 `DEEPAI_MACHINE_ID`；
 - 0.3.19 曾把推理收窄到 **Google/Apple 登录**的账号（邮箱密码号 `403
