@@ -35,6 +35,17 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # 前端是零构建的 ES module：没有打包器兜语法，用 node 的 module
+      # 解析器逐文件校验，再跑一遍 DOM 桩冒烟（import 即触发顶层接线）。
+      - name: console (js syntax + smoke)
+        run: |
+          files=$(ls internal/server/web/js/*.js \
+                       internal/server/web/js/render/*.js)
+          for f in $files; do
+            node --input-type=module --check < "$f"
+          done
+          node scripts/console-smoke.mjs
+
       - name: build
         run: |
           go build ./...

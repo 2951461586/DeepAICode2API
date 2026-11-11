@@ -24,7 +24,7 @@ function poll(refresh) {
   api("/admin/api/login/poll", { method: "POST", body: { session_id: sid } }).then(function (r) {
     if (r.status === "ok") {
       stop();
-      $("#oauthPanel").style.display = "none";
+      $("#oauthPanel").classList.add("hidden");
       toast("登录成功：" + (r.username || "") + (r.is_pro ? "（Pro）" : ""), "ok");
       refresh();
     } else if (r.status === "error") {
@@ -80,7 +80,7 @@ export function initOAuth(opts) {
         $("#oauthLink").value = location.origin + (r.open_url || ("/login/open?id=" + encodeURIComponent(r.session_id)));
       }
       $("#oauthStatus").textContent = "等待浏览器完成登录…";
-      $("#oauthPanel").style.display = "block";
+      $("#oauthPanel").classList.remove("hidden");
       // 目标是一个固定的相对路径 + 随机会话 id，浏览器新标签页打开。
       $("#oauthForm").submit();
       timer = setInterval(function () { poll(refresh); }, 2000);
@@ -100,7 +100,7 @@ export function initOAuth(opts) {
     });
   };
 
-  $("#oauthCancel").onclick = function () { stop(); $("#oauthPanel").style.display = "none"; };
+  $("#oauthCancel").onclick = function () { stop(); $("#oauthPanel").classList.add("hidden"); };
 
   // 粘贴回调 URL：Docker / 远程部署时浏览器停在 127.0.0.1:<port> 打不开，
   // 地址栏里的 code/state 仍然有效，交给网关兑换并完成入池。
@@ -120,7 +120,7 @@ export function initOAuth(opts) {
         return;
       }
       stop();
-      $("#oauthPanel").style.display = "none";
+      $("#oauthPanel").classList.add("hidden");
       $("#oauthCallback").value = "";
       toast("登录成功：" + (r.username || "") + (r.is_pro ? "（Pro）" : ""), "ok");
       refresh();

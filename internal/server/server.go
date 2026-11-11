@@ -50,12 +50,17 @@ type Server struct {
 	// admissionWait 是「槽位全满」时的排队上限（测试可注入 0 立即 429）。
 	admissionWait time.Duration
 
-	// quotaWG 跟踪已排期的后台落盘工作（配额复探 / 入池探活）。
+	// quotaWG 跟踪已排期的后台落盘工作（配额复探 / 入池探活 / 按需复探）。
 	//
 	// 这些 goroutine 在写完内存后还要 Save() 落盘；测试必须等它完全收尾
 	// 再结束，否则 t.TempDir() 的清理会和落盘撞上（CI 上表现为
 	// "TempDir RemoveAll cleanup: directory not empty"）。
+	// 进程退出时由 Close 统一等待，避免「最后一次 Save 之后又有后台写」。
 	quotaWG sync.WaitGroup
+
+	// stopCh 在 Close 时关闭，用于打断后台任务里的长睡眠（配额复探退避最长 12 分钟）。
+	stopCh   chan struct{}
+	stopOnce sync.Once
 
 	// probing 是配额探测的在途去重表（按账号 ID）。
 	//
@@ -70,6 +75,25 @@ type Server struct {
 	// 653 个号的额度快照会同时变旧；若按需复探不加限制，一波流量就能
 	// 叠出几十上百个并行的 /theos 请求——那是最容易被上游风控的形态。
 	probeSem chan struct{}
+
+	// limiter 是按密钥的令牌桶 + 并发闸门（数据面限流）。
+	limiter *keyRateLimiter
+
+	// adminGuard 是管理口令的失败退避（防爆破）；adminGuardBase 可被测试注入。
+	adminGuard     *adminGuard
+	adminGuardBase time.Duration
+
+	// metrics 是 /metrics 导出的进程内计数（原子量，无需锁）。
+	metrics *metrics
+
+	// Version 是构建版本（main 用 -ldflags 注入）；空值对外表现为 dev。
+	Version string
+
+	// versionMu / versionCache / versionAt 缓存「最新 release」的查询结果，
+	// 避免每次打开控制台都去打 GitHub（未认证请求有速率限制）。
+	versionMu    sync.Mutex
+	versionCache *versionInfo
+	versionAt    time.Time
 }
 
 // New 构造服务。
@@ -82,6 +106,10 @@ func New(st *store.Store) *Server {
 		probeSem:           make(chan struct{}, probeWorkers),
 		quotaReprobeDelays: quotaReprobeDelays,
 		admissionWait:      admissionWait,
+		stopCh:             make(chan struct{}),
+		limiter:            newKeyRateLimiter(),
+		adminGuard:         newAdminGuard(),
+		metrics:            newMetrics(),
 	}
 	// 上次探测到的车道优先（跨重启保留），否则用编译期默认值。
 	if lane := strings.TrimSpace(st.Settings().Lane); lane != "" {
@@ -134,6 +162,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/api/stats", s.withAdminAuth(s.handleAdminStats))
 	mux.HandleFunc("/admin/api/settings", s.withAdminAuth(s.handleAdminSettings))
 	mux.HandleFunc("/admin/api/checkin", s.withAdminAuth(s.handleAdminCheckin))
+	// 版本与更新检查（服务端代查 GitHub，前端 CSP 不允许直连）。
+	mux.HandleFunc("/admin/api/version", s.withAdminAuth(s.handleAdminVersion))
+
+	// 监控：Prometheus 文本格式（与 /admin/api/* 同级鉴权）。
+	mux.HandleFunc("/metrics", s.withAdminAuth(s.handleMetrics))
+
 	mux.HandleFunc("/admin/api/models", s.withAdminAuth(s.handleAdminModels))
 	mux.HandleFunc("/admin/api/login/start", s.withAdminAuth(s.handleLoginStart))
 	mux.HandleFunc("/admin/api/login/poll", s.withAdminAuth(s.handleLoginPoll))
@@ -152,7 +186,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/js/", s.handleConsoleAsset)
 	mux.HandleFunc("/", s.handleRoot)
 
-	return s.withCORS(mux)
+	// 压缩在最内层：外层（观测）看到的是压缩后的字节数。
+	return s.withCORS(s.withObservability(withGzip(mux)))
 }
 
 // RefreshModels 从上游拉取模型目录并落盘。
@@ -176,40 +211,19 @@ func (s *Server) RefreshModels(ctx context.Context) ([]deepai.Model, error) {
 // --- 基础端点 ---
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	accts := s.Store.Accounts()
-	ok, degraded, blocked := 0, 0, 0
-	fresh, due := 0, 0
-	now := time.Now()
-	for _, a := range accts {
-		// 就绪口径见 deepai.AccountReady：error 只有“错误还新鲜”时才不算就绪，
-		// 而 blocked 不会自愈，一律不算。
-		if deepai.AccountReady(a, now) {
-			ok++
-		}
-		if deepai.AccountDegraded(a, now) {
-			degraded++
-		}
-		if a.Enabled && a.Status == deepai.StatusBlocked {
-			blocked++
-		}
-		// 额度时效：fresh = 15 分钟内探过；due = 后台守护会去重探的。
-		if a.Theos != nil && a.Theos.CheckedAt > 0 &&
-			now.Sub(time.Unix(a.Theos.CheckedAt, 0)) < quotaStaleAfter {
-			fresh++
-		}
-		if quotaNeedsRefresh(a, now, quotaGuardStaleAfter) {
-			due++
-		}
-	}
+	// 口径见 deepai.AccountReady / AccountDegraded 与额度时效；
+	// 与 /metrics 共用 poolSnapshot，避免两处给出互相矛盾的数。
+	pool := s.poolSnapshot()
 	models := s.catalog()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":        "ok",
-		"accounts":      len(accts),
-		"ready":         ok,
-		"degraded":      degraded,
-		"blocked":       blocked,
-		"quota_fresh":   fresh,
-		"quota_due":     due,
+		"version":       s.currentVersion(),
+		"accounts":      pool.Total,
+		"ready":         pool.Ready,
+		"degraded":      pool.Degraded,
+		"blocked":       pool.Blocked,
+		"quota_fresh":   pool.QuotaFresh,
+		"quota_due":     pool.QuotaDue,
 		"models":        len(models),
 		"default_model": s.Store.DefaultModel(),
 		"strict_model":  s.Store.Settings().StrictModel,

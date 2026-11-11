@@ -286,7 +286,8 @@ func (s *Server) adminAssignMachine(w http.ResponseWriter, raw []byte) {
 	})
 	_ = s.Store.Save()
 	// 重新探测配额，让调度能立即看到新指纹下的额度。
-	go s.probeAccounts(targets)
+	// 走登记过的批量入口：进程关停时要等这次落盘跑完。
+	s.probeBatchAsync(targets)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
 }
 

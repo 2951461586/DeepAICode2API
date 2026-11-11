@@ -36,19 +36,39 @@ func (b *releaseBody) Close() error {
 // 于是对外 429 而池里其实还有空槽（docs/performance.md §14）。
 // 返回值第三个标记池里是否有可选账号：区分「全忙」与「没有可调度账号」，
 // 后者要交给 noAccountError 给出可行动的原因（social_login / 未验证…）。
+//
+// 实现要点：选号在 store 里一次读完（只拷贝被选中的那个），忙号通过纯谓词
+// 排除；acquireAccount 只处理「检查到占用」的窄竞态，失败就排除后重试。
 func (s *Server) pickFreeAccount(group string) (*deepai.Account, bool, bool) {
-	candidates := false
-	for i, n := 0, len(s.Store.Accounts()); i < n; i++ {
-		a := s.Store.NextAccountGroup(group)
-		if a == nil {
-			return nil, false, false
+	// excluded 用切片而不是 map：重试只在「检查与占用撞车」时发生，通常 0~1 次，
+	// 切片比 map 少一次分配，而选号是每个请求一次的热路径。
+	var excluded []string
+	skip := func(a *deepai.Account) bool {
+		for _, id := range excluded {
+			if id == a.ID {
+				return true
+			}
 		}
-		candidates = true
+		return s.accountBusy(a.ID)
+	}
+	for {
+		a, candidates := s.Store.PickAccount(group, skip)
+		if a == nil {
+			return nil, false, candidates
+		}
 		if s.acquireAccount(a.ID) {
 			return a, true, true
 		}
+		// 竞态：谓词判定空闲后、占用前被别人抢满。排除它再看下一个。
+		excluded = append(excluded, a.ID)
 	}
-	return nil, false, candidates
+}
+
+// accountBusy 报告账号的在途槽位是否已满（纯读，不占用）。
+func (s *Server) accountBusy(id string) bool {
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	return s.inflight[id] >= maxInFlightPerAccount
 }
 
 // acquireAccount 尝试占用一个账号的在途槽位；已满时返回 false。
@@ -83,19 +103,11 @@ func (s *Server) releaseAccount(id string) {
 //
 // 409 之后用它区分「立即换号」与「整池都满，等一等」：以前一律先
 // sleep(Retry-After) 再换号，最坏白等 30s，还把非流式预算（90s）吃掉。
+// 只做一次指针扫描 + map 查询，不复制整个号池。
 func (s *Server) hasFreeAccount() bool {
-	for _, a := range s.Store.Accounts() {
-		if !a.Enabled || a.Status == deepai.StatusBlocked {
-			continue
-		}
-		s.inflightMu.Lock()
-		busy := s.inflight[a.ID] >= maxInFlightPerAccount
-		s.inflightMu.Unlock()
-		if !busy {
-			return true
-		}
-	}
-	return false
+	return s.Store.AnySchedulable(func(a *deepai.Account) bool {
+		return !s.accountBusy(a.ID)
+	})
 }
 
 // errAllAccountsBusy 表示所有候选账号都达到了并发上限。

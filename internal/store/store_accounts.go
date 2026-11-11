@@ -314,18 +314,48 @@ func (s *Store) RemoveAccount(id string) bool {
 	return false
 }
 
-// NextAccountGroup 在指定分组内以轮询方式挑一个可用账号。
+// PickAccount 在指定分组内以轮询方式挑一个可用账号。
 //
-// group 为空表示全部分组。连续失败过多的账号会被跳过；全组不可用时
-// 回退到失败最少的那个，保证不会硬阻塞请求。分组不存在时返回 nil，
-// 由调用方给出“该分组没有账号”的明确错误。
+// 调度规则（分组 / 额度 / 失败加权 / 轮询）仍在 internal/pool；这里只负责
+// 「一次读锁 + 一次扫描」。
 //
-// 调度分两轮：第一轮只考虑「额度未知或额度 > 0」的账号。上游按机器发放
-// 每日免费额度，池里常有 balance=0 的账号（免费额度已耗尽），先打过去只会
-// 被上游拒一次再换号；第二轮才在去重后的全集里选，保证不会硬阻塞。
+// 每个请求一次的热路径：这里只做一次读锁 + 一次扫描，**只深拷贝被选中的账号**。
+// 旧版由调用方循环 "Accounts()（全池深拷贝）+ NextAccountGroup（写锁 + 再拷贝）"
+// 实现，653 个号时是 O(n²) 次拷贝、每轮一次写锁。
+//
+// skip 为可选的临时排除谓词（如“并发槽位已满”），必须是纯函数。
+// 返回值第二个标记“池里是否有可调度账号（忽略 skip）”，
+// 供调用方区分“全忙”与“根本没号”。
+func (s *Store) PickAccount(group string, skip func(*deepai.Account) bool) (*deepai.Account, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	acct := s.sched.PickFiltered(s.st.Accounts, group, skip)
+	if acct == nil {
+		return nil, s.sched.HasEligible(s.st.Accounts, group)
+	}
+	return acct.Clone(), true
+}
+
+// AnySchedulable 报告是否存在满足 ok 的可调度账号（启用、未被拦截），
+// 不解包快照、不深拷贝。
+func (s *Store) AnySchedulable(ok func(*deepai.Account) bool) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.st.Accounts {
+		if a == nil || !a.Enabled || a.Status == deepai.StatusBlocked {
+			continue
+		}
+		if ok == nil || ok(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// NextAccountGroup 兼容旧调用点：等价于 PickAccount(group, nil) 的成功分支。
 func (s *Store) NextAccountGroup(group string) *deepai.Account {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	acct := s.sched.Pick(s.st.Accounts, group)
 	if acct == nil {
 		return nil

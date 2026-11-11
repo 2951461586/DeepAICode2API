@@ -1,11 +1,14 @@
 package server
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"net/http"
 	"path"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // 控制台是一个「标记 + 样式 + 一组 ES module」的静态包，全部嵌进二进制：
@@ -88,19 +91,45 @@ func consoleAssetType(name string) string {
 //
 // 响应头刻意收紧：禁止缓存、禁止 MIME 嗅探、不发送 Referer。
 // 资源与页面同源、无外部引用，因此不需要放宽 CSP。
-func serveConsole(w http.ResponseWriter, _ *http.Request) {
-	serveConsoleAsset(w, "web/index.html")
+func serveConsole(w http.ResponseWriter, r *http.Request) {
+	serveConsoleAsset(w, r, "web/index.html")
 }
 
 // serveLogin 输出管理口令登录页（/login）。
 //
 // 与控制台同一套静态资源与响应头；页面只做一件事：验一次口令后跳到 /。
-func serveLogin(w http.ResponseWriter, _ *http.Request) {
-	serveConsoleAsset(w, "web/login.html")
+func serveLogin(w http.ResponseWriter, r *http.Request) {
+	serveConsoleAsset(w, r, "web/login.html")
+}
+
+// consoleCSP 是控制台页面的内容安全策略。
+//
+// 控制台承载管理口令，是整套系统里最值得加 CSP 的页面。资源全部同源、
+// 无外部引用，因此不需要放宽任何一条：
+//   - script-src 'self'：内联脚本一律禁止（主题启动脚本也做成了外部文件）；
+//   - style-src 'self'：inline style 属性已从标记里移除（统一改用具名工具类）；
+//   - connect-src 'self'：控制台只调自己的 /admin/api/*；
+//   - frame-ancestors 'none' + form-action 'self'：防点击劫持与外发。
+const consoleCSP = "default-src 'self'; script-src 'self'; style-src 'self'; " +
+	"img-src 'self' data:; connect-src 'self'; font-src 'self'; " +
+	"base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+
+// assetETags 缓存内嵌资源的内容指纹（资源在编译期固定，算一次即可）。
+var assetETags sync.Map // name -> string
+
+// assetETag 返回资源的内容 ETag（形如 "abc…"）。
+func assetETag(name string, raw []byte) string {
+	if v, ok := assetETags.Load(name); ok {
+		return v.(string)
+	}
+	sum := sha256.Sum256(raw)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	assetETags.Store(name, etag)
+	return etag
 }
 
 // serveConsoleAsset 输出一个内嵌控制台资源（页面 / 样式 / 脚本）。
-func serveConsoleAsset(w http.ResponseWriter, name string) {
+func serveConsoleAsset(w http.ResponseWriter, r *http.Request, name string) {
 	raw, err := consoleAssets.ReadFile(name)
 	if err != nil {
 		http.NotFound(w, nil)
@@ -108,10 +137,24 @@ func serveConsoleAsset(w http.ResponseWriter, name string) {
 	}
 	h := w.Header()
 	h.Set("Content-Type", consoleAssetType(name))
-	// 资源随二进制一起更新：一律不缓存，避免升级后仍用旧 JS/CSS。
-	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
+	// 页面与脚本同源，CSP 对两者都生效（页面里没有内联脚本 / 样式）。
+	h.Set("Content-Security-Policy", consoleCSP)
+
+	// 资源随二进制一起更新：HTML 每次都重新校验，JS/CSS 用 ETag 命中 304。
+	// 旧实现一律 no-store，导致首屏 17 个模块每次全量重下。
+	etag := assetETag(name, raw)
+	h.Set("ETag", etag)
+	if strings.HasSuffix(name, ".html") {
+		h.Set("Cache-Control", "no-store")
+	} else {
+		h.Set("Cache-Control", "no-cache")
+		if etagMatches(r.Header.Get("If-None-Match"), etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
 	_, _ = w.Write(raw)
 }
 
@@ -145,5 +188,5 @@ func (s *Server) handleConsoleAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	serveConsoleAsset(w, name)
+	serveConsoleAsset(w, r, name)
 }

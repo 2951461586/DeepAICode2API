@@ -34,18 +34,19 @@ func (s *Server) newReqLog(key string, acct *deepai.Account, model, endpoint str
 // done 落一条请求日志；err 为 nil 视为成功（HTTP 200），否则记为 502。
 func (l reqLog) done(outLen int, usage Usage, err error) {
 	e := store.LogEntry{
-		Time:      time.Now().Unix(),
-		Key:       mask(l.key),
-		Model:     l.model,
-		Endpoint:  l.endpoint,
-		Stream:    l.stream,
-		Status:    statusOf(err),
-		LatencyMS: time.Since(l.start).Milliseconds(),
-		PromptLen: l.inLen,
-		OutputLen: outLen,
-		TokensIn:  usage.PromptTokens,
-		TokensOut: usage.CompletionTokens,
-		Cost:      usage.Cost,
+		Time:         time.Now().Unix(),
+		Key:          mask(l.key),
+		Model:        l.model,
+		Endpoint:     l.endpoint,
+		Stream:       l.stream,
+		Status:       statusOf(err),
+		LatencyMS:    time.Since(l.start).Milliseconds(),
+		PromptLen:    l.inLen,
+		OutputLen:    outLen,
+		TokensIn:     usage.PromptTokens,
+		TokensOut:    usage.CompletionTokens,
+		CachedTokens: usage.CachedTokens,
+		Cost:         usage.Cost,
 	}
 	if l.acct != nil {
 		e.Account = l.acct.ID

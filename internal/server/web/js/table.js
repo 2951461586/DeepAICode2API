@@ -14,6 +14,9 @@ export function markSort(tableSel, st){
     var on = th.getAttribute("data-sort") === st.key;
     th.classList.toggle("asc", on && !st.desc);
     th.classList.toggle("desc", on && st.desc);
+    // 屏幕阅读器只认 aria-sort，看不到 class。
+    if (on) th.setAttribute("aria-sort", st.desc ? "descending" : "ascending");
+    else th.removeAttribute("aria-sort");
   });
 }
 

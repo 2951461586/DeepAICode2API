@@ -38,6 +38,12 @@ export function fmtCompact(n){
   }
   return String(v);
 }
+// fmtPercent 把 0~1 的比率格式化成百分比；known=false（还没有样本）时显示 "—"，
+// 与其它空列一致，避免把「没数据」显示成 0.0% 误导为「缓存从不命中」。
+export function fmtPercent(ratio, known){
+  if (!known || !Number.isFinite(ratio)) return "—";
+  return (ratio * 100).toFixed(1) + "%";
+}
 export function theosText(al){
   if (!al) return "—";
   var v = al.balance || al.granted || "0";

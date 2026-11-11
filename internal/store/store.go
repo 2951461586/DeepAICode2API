@@ -40,34 +40,52 @@ type Settings struct {
 	// 上游抬车道时旧值一律回 426；网关启动时用免鉴权的 /models 探测一次，
 	// 命中就写在这里，升级不用改代码。
 	Lane string `json:"lane,omitempty"`
+
+	// RateLimitRPS / RateLimitBurst 是每把密钥的令牌桶（0 = 不限速）。
+	// RateLimitBurst 为 0 时按 max(2, RPS) 取容量。
+	RateLimitRPS   float64 `json:"rate_limit_rps,omitempty"`
+	RateLimitBurst int     `json:"rate_limit_burst,omitempty"`
+	// KeyConcurrency 是每把密钥的并发在途请求上限（0 = 不限）。
+	KeyConcurrency int `json:"key_concurrency,omitempty"`
 }
 
 // LogEntry 是一条请求日志（只记元信息，不落对话内容）。
 type LogEntry struct {
-	Time      int64   `json:"time"`
-	Key       string  `json:"key"`
-	Account   string  `json:"account"`
-	Model     string  `json:"model"`
-	Endpoint  string  `json:"endpoint"`
-	Stream    bool    `json:"stream"`
-	Status    int     `json:"status"`
-	LatencyMS int64   `json:"latency_ms"`
-	PromptLen int     `json:"prompt_len"`
-	OutputLen int     `json:"output_len"`
-	TokensIn  int     `json:"tokens_in"`
-	TokensOut int     `json:"tokens_out"`
-	Cost      float64 `json:"cost"`
-	Err       string  `json:"err,omitempty"`
+	Time      int64  `json:"time"`
+	Key       string `json:"key"`
+	Account   string `json:"account"`
+	Model     string `json:"model"`
+	Endpoint  string `json:"endpoint"`
+	Stream    bool   `json:"stream"`
+	Status    int    `json:"status"`
+	LatencyMS int64  `json:"latency_ms"`
+	PromptLen int    `json:"prompt_len"`
+	OutputLen int    `json:"output_len"`
+	TokensIn  int    `json:"tokens_in"`
+	TokensOut int    `json:"tokens_out"`
+	// CachedTokens 是上游报告的前缀缓存命中 token 数（无此字段时为 0）。
+	CachedTokens int     `json:"cached_tokens,omitempty"`
+	Cost         float64 `json:"cost"`
+	Err          string  `json:"err,omitempty"`
 }
 
 // Stats 是累计统计。
 type Stats struct {
-	TotalRequests  int64   `json:"total_requests"`
-	FailedRequests int64   `json:"failed_requests"`
-	TotalCharsOut  int64   `json:"total_chars_out"`
-	TotalTokensIn  int64   `json:"total_tokens_in"`
-	TotalTokensOut int64   `json:"total_tokens_out"`
-	TotalCost      float64 `json:"total_cost"`
+	TotalRequests  int64 `json:"total_requests"`
+	FailedRequests int64 `json:"failed_requests"`
+	TotalCharsOut  int64 `json:"total_chars_out"`
+	TotalTokensIn  int64 `json:"total_tokens_in"`
+	TotalTokensOut int64 `json:"total_tokens_out"`
+	// TotalCachedTokens 是上游报告「命中前缀缓存」的 prompt token 总量，
+	// 用于算缓存命中率（cached / prompt）。
+	TotalCachedTokens int64   `json:"total_cached_tokens,omitempty"`
+	TotalCost         float64 `json:"total_cost"`
+	// Day / DayTokensIn / DayTokensOut 是「按本地日期」的当日用量。
+	//
+	// 跨天时由 Record 自动清零（不需要定时任务）；Date 用 YYYY-MM-DD。
+	Day          string `json:"day,omitempty"`
+	DayTokensIn  int64  `json:"day_tokens_in,omitempty"`
+	DayTokensOut int64  `json:"day_tokens_out,omitempty"`
 	// StartedAt 是统计开始时间（首次启动），ResetAt 是最近一次手动重置的时间。
 	//
 	// 两者分开：控制台需要能解释「统计数比日志少」——重置只清计数，

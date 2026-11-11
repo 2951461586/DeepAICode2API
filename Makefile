@@ -10,7 +10,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 GOFILES := find . -name '*.go' -not -path './.git/*'
 
-.PHONY: all build probe test test-race race-shim vet fmt lint cover docker clean
+.PHONY: all build probe test test-race race-shim vet fmt lint cover bench docker clean
 
 all: build
 
@@ -51,6 +51,10 @@ lint:
 ## cover: 覆盖率
 cover:
 	go test -cover ./internal/...
+
+## bench: 性能基线（选号 / 账号分页 / 全忙判定）
+bench:
+	go test -run '^$$' -bench . -benchmem ./internal/pool ./internal/store
 
 ## docker: 构建镜像
 docker:

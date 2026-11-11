@@ -25,7 +25,11 @@ export function initSettingsForm(opts) {
       log_keep: parseInt($("#sLogKeep").value, 10) || 0,
       cors_origin: $("#sCors").value.trim(),
       fallback_model: $("#sFallback").value.trim(),
-      strict_model: $("#sStrict").checked
+      strict_model: $("#sStrict").checked,
+      // 限流：0 / 空都表示关闭（后端按“显式 0”处理，不会回落到默认值）。
+      rate_limit_rps: parseFloat($("#sRps").value) || 0,
+      rate_limit_burst: parseInt($("#sBurst").value, 10) || 0,
+      key_concurrency: parseInt($("#sConcurrency").value, 10) || 0
     };
     var np = $("#sPw").value;
     if (np !== "") body.admin_password = np;

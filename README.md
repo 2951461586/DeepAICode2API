@@ -3,7 +3,7 @@
 [![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod)
-[![tests](https://img.shields.io/badge/tests-333%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-383%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#三接口清单)
 [![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -28,7 +28,7 @@
 | 账号接入 | 浏览器登录（Google / Apple / 邮箱密码）、桌面端凭据导入、手工 API Key；入池自动分配机器指纹与代理 |
 | 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 设置 |
 | 安全 | 密钥鉴权、管理口令、同源写保护、状态文件 AES-256-GCM 可选加密 |
-| 可回归 | 333 个用例（含 44 个子用例）/ 9.8k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 10 个包 |
+| 可回归 | 383 个用例（含 44 个子用例）/ 11.6k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 11 个包（含前端语法 + 冒烟） |
 
 ```text
 ┌──────────────┐  /v1/chat/completions   ┌────────────────┐   Api-Key + Theos 头   ┌─────────────────────────────┐
@@ -218,7 +218,12 @@ export ANTHROPIC_MODEL=glm-5.3-flash
 | `/` | 内嵌单页控制台（无外部依赖） |
 | `/ping` | `pong` |
 | `/health` | 账号 / 模型 / 机器指纹摘要；`ready` / `degraded` / `blocked` 三个计数（口径见 §6.4 末段） |
+| `/metrics` | Prometheus 文本格式指标（与 `/admin/api/*` 同级鉴权）：请求量/状态码分类、耗时 sum+count、在途请求、号池分布、goroutine/堆 |
+| `/admin/api/version` | 当前版本 + 最新 release 比对（服务端代查 GitHub，缓存 6h；离线时只回当前版本，不影响控制台） |
 | `/admin/api/*` | 账号、密钥、日志、统计、设置、配额、登录 |
+
+> 每个响应都会回写 `X-Request-Id`（合法的传入值原样回显），访问日志是一行一条
+> JSON（`event=access` 带 `request_id` / `status` / `ms` / `bytes`），可直接 `jq` 过滤。
 
 ---
 
@@ -479,18 +484,27 @@ curl -s -X POST localhost:10087/admin/api/checkin   -H "X-Admin-Password: $DEEPA
 
 ## 七、控制台
 
-- **概览**：请求量、失败数、token 入/出、上游成本、模型目录（免费 / 付费、Theos、上下文、端点）。
+- **概览**：请求量、失败数、总 token 入/出、**今日 token 入/出**、**缓存命中率**、
+  上游成本、号池就绪数、模型目录（免费 / 付费、Theos、上下文、端点）。
   Token 与字符按 **K / M / B** 压缩显示（3 位有效数字，悬停看精确值）；模型目录保留精确整数。
+  「今日」按**本地日期**统计，跨天自动清零；缓存命中率 = 上游报告的
+  `cached_tokens / prompt_tokens`（三种上游形态都已归一，见 `gateway.ParseUsage`），
+  没有样本时显示 `—` 而不是 0.0%。
 - **账号**：导入桌面端凭据、浏览器登录、手工添加 API Key、刷新配额；
   列表支持**分组 / 状态 / 关键字**筛选（服务端分页 + 排序）；
   行内菜单除启停 / 删除 / 清错外，还接了存量治理：**补绑代理 / 清除代理、
   分配机器指纹（只补空值）、改分组、标记已验证**。
+  「脱敏显示」开关会把邮箱（`u***@domain`）与用户名打码，偏好记在 localStorage；
+  搜索/筛选仍按完整值匹配，打码只影响显示（方便截图、录屏、远程协助）。
 - **密钥**：签发 `sk-…` 网关密钥；只在创建时显示一次；可**改绑分组**。
   **未签发任何密钥时，仅本机回环允许无密钥调用；非回环来源一律 `503 setup_required`。**
   若监听非回环地址且尚无密钥，启动时会自动生成一个 `bootstrap` 密钥并打印一次。
 - **日志**：端点、模型、流式、状态、耗时、字符数、token、成本、账号；
   支持按**端点 / 账号 / 最小状态码 / 关键字 / 起始时间**过滤（字符与 token 同样是 K/M）。
-- **设置**：超时、重试、日志保留、CORS、兜底模型、严格模型模式、模型别名、管理密码。
+- **设置**：超时、重试、日志保留、CORS、兜底模型、严格模型模式、模型别名、管理密码，
+  以及按密钥限流（RPS / burst / 并发上限，0 = 不限）。
+- **顶栏版本号**：显示构建版本（`v0.1.0`），点击跳转 releases 页；控制台启动时会
+  向 `/admin/api/version` 查一次最新 release（服务端缓存 6 小时），有新版则高亮提示。
 - **登录**：管理口令走独立的 `/login` 页（入口 `POST /admin/api/auth` 校验），
   成功后才进控制台；口令只保存在**本标签页**的 `sessionStorage`，顶栏只有「退出」。
   任一管理接口返回 401 时自动清口令并回登录页。未设管理口令时不挡人（本机直通）。
@@ -618,6 +632,25 @@ docker run -d --name deepaicode2api \
 
 ---
 
+## 九·五、版本与发布
+
+版本号在构建时通过 `-ldflags -X main.version=...` 注入，缺省为 `dev`：
+
+```bash
+make build                       # Makefile 自动取 git describe 作为版本
+go build -ldflags "-X main.version=v0.1.0" -o bin/deepaicode2api .
+./bin/deepaicode2api -version    # 打印版本后退出
+```
+
+- **控制台**顶部显示该版本号；点它打开 releases 页。
+- **更新检查**：控制台启动时请求 `/admin/api/version`，服务端代查
+  `api.github.com/repos/<owner>/<repo>/releases/latest` 并缓存 6 小时。
+  离线、被墙或仓库不可达时只返回当前版本（`error` 字段说明原因），
+  不会影响控制台使用，也不会在界面上弹错误。
+- **开发构建**（`version=dev`）不做更新比对：否则永远提示「有新版本」。
+- 发版流程：`git tag v0.1.0 && git push --tags`，再用
+  `scripts/release.sh` 交叉编译各平台二进制并创建 GitHub Release。
+
 ## 十、限制与说明
 
 - `X-DeepAI-Code-Theos` 必须发 `4`（0.3.19 起至今未变，0.3.30 / 0.3.32 / 0.3.35 复核仍为 4）；推理端点车道不符返回 426 `lane_version_unsupported`（元数据端点 1–4 都接受，别用它判断上游可用性）；
@@ -637,7 +670,18 @@ docker run -d --name deepaicode2api \
 - 状态文件默认明文保存上游 API Key（与桌面端一致）；配置
   `DEEPAI2API_MASTER_KEY` 后整文件加密，请务必保证主密钥不随备份泄露；
 - 浏览器登录会换取上游 API Key 并写入状态文件；可开启整文件加密（见上）；
-- 代理 URL 含账号密码，必须只放在 `.env` / 本地台账（已 gitignore），不要提交。
+- 代理 URL 含账号密码，必须只放在 `.env` / 本地台账（已 gitignore），不要提交；
+- **单实例部署**：号池、限流桶、在途计数都在进程内存里，状态文件是单写者
+  （`tmp + fsync + rename`）。不要把同一个 `DEEPAI2API_DATA_PATH` 挂给多个副本
+  同时写，也不要期待多副本之间共享调度状态——横向扩展需要外置存储，当前不在范围内；
+- **数据面限流默认关闭**：控制台「运行参数」可设 `rate_limit_rps`（每密钥每秒请求数）、
+  `rate_limit_burst`（桶容量）、`key_concurrency`（每密钥并发上限），填 0 即不限。
+  限流按密钥隔离，触发时回 `429` + `Retry-After` + `rate_limit_error`；
+- **管理口令有防爆破退避**：同一来源连续失败 5 次后进入指数退避（1s 起，上限 30s），
+  退避期内即使口令正确也回 `429`；成功一次即清零。若把自己锁在外面，等退避到期
+  或重启进程（退避表在内存里）即可；
+- **日志是 JSONL**：启动与请求日志都输出一行一条 JSON（`slog`），`msg` 保留原文，
+  访问日志带 `request_id` / `status` / `ms` / `bytes`；用 `jq -r .msg` 可还原成人读形式。
 
 ### 10.1 已知坑（改动前先看）
 

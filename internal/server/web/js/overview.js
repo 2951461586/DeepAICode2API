@@ -4,9 +4,10 @@
 // 不管取数」：这里不碰 api，也不决定什么时候刷新，调用方把数据传进来即可
 // —— 于是 console-smoke.mjs 能直接喂假数据跑一遍，不必起网关。
 import { t, translateDom } from './i18n.js';
-import { fmtTime, fmtNum, fmtCost, fmtCompact, perSecondText } from './format.js';
+import { fmtTime, fmtNum, fmtCost, fmtCompact, fmtPercent, perSecondText } from './format.js';
 import { $, mk, cell, row, emptyRow } from './dom.js';
 import { sortState, sortCopy } from './table.js';
+import { renderVersion } from './version.js';
 
 // setHealth 画顶部那颗状态胶囊（就绪账号数 / 上游是否可达）。
 function setHealth(cls, text) {
@@ -37,6 +38,7 @@ export function loadHealth() {
     setHealth(healthCls, text);
     // 侧边栏收起后只剩一颗小圆点，完整文案放 tooltip 里，不至于丢信息。
     $("#health").title = text;
+    renderVersion(h.version);
     $("#upstream").textContent = t("机器指纹 {m} · 默认 {d}",
       { m: h.machine_id || t("不可用"), d: h.default_model || "-" });
   }).catch(function () { setHealth("err", t("不可达")); });
@@ -52,11 +54,11 @@ export function renderOverview(d) {
     ["总请求", fmtNum(s.total_requests)],
     ["失败请求", fmtNum(s.failed_requests)],
     ["输出字符", fmtCompact(s.total_chars_out)],
-    ["Token 入 / 出", fmtCompact(s.total_tokens_in) + " / " + fmtCompact(s.total_tokens_out)],
+    ["总 Token 入 / 出", fmtCompact(s.total_tokens_in) + " / " + fmtCompact(s.total_tokens_out)],
     ["上游成本", fmtCost(s.total_cost)],
     ["账号（就绪/总）", ready + " / " + totalAccts],
-    ["密钥", (d.keys || []).length],
-    ["统计自", fmtTime(s.reset_at || s.started_at)]
+    ["今日 Token 入 / 出", fmtCompact(s.day_tokens_in) + " / " + fmtCompact(s.day_tokens_out)],
+    ["缓存命中率", fmtPercent(s.total_tokens_in > 0 ? s.total_cached_tokens / s.total_tokens_in : 0, s.total_tokens_in > 0)]
   ];
   var box = $("#kpis");
   box.textContent = "";

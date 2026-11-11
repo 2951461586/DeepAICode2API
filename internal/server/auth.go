@@ -39,6 +39,13 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "API 密钥无效或已停用", "invalid_request_error")
 			return
 		}
+		// 按密钥隔离的限流：令牌桶（RPS）+ 在途并发。默认 0 = 不限。
+		release, ok, retryAfter := s.rateLimitGate(keyIDOf(key))
+		if !ok {
+			writeRateLimited(w, retryAfter)
+			return
+		}
+		defer release()
 		next(w, r)
 	}
 }
@@ -53,10 +60,16 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pw := s.Store.Settings().AdminPassword; pw != "" {
+			// 先看退避：处于退避期的来源直接 429，不再给口令对错的提示。
+			if !s.checkAdminThrottle(w, r) {
+				return
+			}
 			if !secureEqual(adminPasswordFrom(r), pw) {
+				s.noteAdminAuthFailure(r)
 				writeErr(w, http.StatusUnauthorized, "管理密码缺失或错误", "invalid_request_error")
 				return
 			}
+			s.noteAdminAuthSuccess(r)
 		} else if !isLoopbackAddr(r.RemoteAddr) {
 			writeErr(w, http.StatusForbidden, "未设置管理密码，管理接口仅允许本机访问", "invalid_request_error")
 			return

@@ -22,6 +22,9 @@ func sanitizedSettings(st store.Settings) map[string]any {
 		"fallback_model":      st.FallbackModel,
 		"strict_model":        st.StrictModel,
 		"lane":                st.Lane,
+		"rate_limit_rps":      st.RateLimitRPS,
+		"rate_limit_burst":    st.RateLimitBurst,
+		"key_concurrency":     st.KeyConcurrency,
 		"admin_password_set":  st.AdminPassword != "",
 	}
 }
@@ -124,51 +127,73 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.Store.Stats())
 }
 
+// settingsPatch 是控制台提交的设置增量。
+//
+// 全部字段用指针：nil 表示“本次不改”，与“显式设成 0 / 空串”区分开。
+// 这一点对限流参数尤其重要：0 是“关闭限流”的合法值。
+type settingsPatch struct {
+	ModelAliases   map[string]string `json:"model_aliases"`
+	RequestTimeout *int              `json:"request_timeout_sec"`
+	MaxRetries     *int              `json:"max_retries"`
+	LogKeep        *int              `json:"log_keep"`
+	CORSOrigin     *string           `json:"cors_origin"`
+	AdminPassword  *string           `json:"admin_password"`
+	FallbackModel  *string           `json:"fallback_model"`
+	StrictModel    *bool             `json:"strict_model"`
+	RateLimitRPS   *float64          `json:"rate_limit_rps"`
+	RateLimitBurst *int              `json:"rate_limit_burst"`
+	KeyConcurrency *int              `json:"key_concurrency"`
+}
+
+// apply 把增量合入设置（调用方持写锁）。
+func (p settingsPatch) apply(st *store.Settings) {
+	if p.ModelAliases != nil {
+		st.ModelAliases = p.ModelAliases
+	}
+	if p.RequestTimeout != nil && *p.RequestTimeout > 0 {
+		st.RequestTimeout = *p.RequestTimeout
+	}
+	if p.MaxRetries != nil && *p.MaxRetries > 0 {
+		st.MaxRetries = *p.MaxRetries
+	}
+	if p.LogKeep != nil && *p.LogKeep > 0 {
+		st.LogKeep = *p.LogKeep
+	}
+	if p.CORSOrigin != nil {
+		st.CORSOrigin = *p.CORSOrigin
+	}
+	if p.AdminPassword != nil {
+		st.AdminPassword = strings.TrimSpace(*p.AdminPassword)
+	}
+	if p.FallbackModel != nil {
+		st.FallbackModel = strings.TrimSpace(*p.FallbackModel)
+	}
+	if p.StrictModel != nil {
+		st.StrictModel = *p.StrictModel
+	}
+	// 限流参数允许显式设成 0（关闭限流），所以用 nil 判断而不是 > 0。
+	if p.RateLimitRPS != nil && *p.RateLimitRPS >= 0 {
+		st.RateLimitRPS = *p.RateLimitRPS
+	}
+	if p.RateLimitBurst != nil && *p.RateLimitBurst >= 0 {
+		st.RateLimitBurst = *p.RateLimitBurst
+	}
+	if p.KeyConcurrency != nil && *p.KeyConcurrency >= 0 {
+		st.KeyConcurrency = *p.KeyConcurrency
+	}
+}
+
 func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusOK, sanitizedSettings(s.Store.Settings()))
 		return
 	}
-	var body struct {
-		ModelAliases   map[string]string `json:"model_aliases"`
-		RequestTimeout *int              `json:"request_timeout_sec"`
-		MaxRetries     *int              `json:"max_retries"`
-		LogKeep        *int              `json:"log_keep"`
-		CORSOrigin     *string           `json:"cors_origin"`
-		AdminPassword  *string           `json:"admin_password"`
-		FallbackModel  *string           `json:"fallback_model"`
-		StrictModel    *bool             `json:"strict_model"`
-	}
+	var body settingsPatch
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
 		return
 	}
-	s.Store.UpdateSettings(func(st *store.Settings) {
-		if body.ModelAliases != nil {
-			st.ModelAliases = body.ModelAliases
-		}
-		if body.RequestTimeout != nil && *body.RequestTimeout > 0 {
-			st.RequestTimeout = *body.RequestTimeout
-		}
-		if body.MaxRetries != nil && *body.MaxRetries > 0 {
-			st.MaxRetries = *body.MaxRetries
-		}
-		if body.LogKeep != nil && *body.LogKeep > 0 {
-			st.LogKeep = *body.LogKeep
-		}
-		if body.CORSOrigin != nil {
-			st.CORSOrigin = *body.CORSOrigin
-		}
-		if body.AdminPassword != nil {
-			st.AdminPassword = strings.TrimSpace(*body.AdminPassword)
-		}
-		if body.FallbackModel != nil {
-			st.FallbackModel = strings.TrimSpace(*body.FallbackModel)
-		}
-		if body.StrictModel != nil {
-			st.StrictModel = *body.StrictModel
-		}
-	})
+	s.Store.UpdateSettings(func(st *store.Settings) { body.apply(st) })
 	_ = s.Store.Save()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": sanitizedSettings(s.Store.Settings())})
 }

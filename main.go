@@ -20,6 +20,7 @@ import (
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/envfile"
+	"deepaicode2api/internal/logx"
 	"deepaicode2api/internal/server"
 	"deepaicode2api/internal/store"
 )
@@ -28,6 +29,10 @@ import (
 var version = "dev"
 
 func main() {
+	// 日志先于一切：把标准库 log 的输出接管成一行一条 JSON。
+	// 既有 log.Printf 调用不需要改，msg 字段保留原文。
+	logx.Setup(nil)
+
 	// 必须在任何环境变量读取之前执行：flag 默认值（envOr）与 store.Open 的
 	// 主密钥都直读进程环境。此前 .env 只在注册链路里惰性加载，导致
 	// DEEPAI2API_MASTER_KEY 对网关启动永远不生效（状态文件只能保持明文）。
@@ -134,13 +139,18 @@ func main() {
 	}
 
 	srv := server.New(st)
+	srv.SetVersion(version)
 
 	addr := net.JoinHostPort(*host, fmt.Sprintf("%d", *port))
 	httpSrv := &http.Server{
 		Addr:              addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 20 * time.Second,
-		// 流式响应可能持续数分钟，不设 WriteTimeout
+		// 请求体是 JSON（最大 64MB 附件走 extensions），60s 足够；
+		// 没有它时慢速请求可以长期占着连接不释放。
+		ReadTimeout: 60 * time.Second,
+		// keep-alive 空闲连接回收；流式响应可能持续数分钟，故不设 WriteTimeout。
+		IdleTimeout: 120 * time.Second,
 	}
 
 	// 后台任务：首个目录拉取 + 定期落盘 + 定期刷新模型目录。
@@ -201,11 +211,14 @@ func main() {
 
 	close(stopBG)
 	log.Printf("正在关闭…")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(ctx); err != nil {
 		log.Printf("关闭异常: %v", err)
 	}
+	// 等后台探测 / 复探把已经写进内存的结果落盘，再保存退出。
+	// 顺序不能反：反过来会让最后那次 Save 被后台的 Save 覆盖成旧快照。
+	srv.Close(ctx)
 	if err := st.Save(); err != nil {
 		log.Printf("保存状态失败: %v", err)
 	}

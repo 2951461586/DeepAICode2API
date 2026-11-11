@@ -26,8 +26,84 @@ import { renderSettings } from './render/settings.js';
 import { renderOverview, loadHealth } from './overview.js';
 import { initOAuth } from './oauth.js';
 import { initSettingsForm } from './settings-form.js';
+import { checkUpdate } from './version.js';
 
 var state = { data: null };
+
+/* ================= 页面状态（URL 同步） ================= */
+// 筛选条件与页码写进 hash：#accounts?group=g1&status=ok&page=2
+// 刷新 / 分享链接都能回到同一视图；切换标签页时只保留当前页的参数。
+function readHash() {
+  var h = String(location.hash || "").replace(/^#/, "");
+  var i = h.indexOf("?");
+  var tab = i >= 0 ? h.slice(0, i) : h;
+  var qs = i >= 0 ? h.slice(i + 1) : "";
+  var params;
+  try { params = new URLSearchParams(qs); } catch { params = new URLSearchParams(); }
+  return { tab: tab, params: params };
+}
+
+function writeHash(tab, params) {
+  var qs = params ? params.toString() : "";
+  var next = "#" + tab + (qs ? "?" + qs : "");
+  if (location.hash === next) return;
+  try { history.replaceState(null, "", next); } catch { location.hash = next; }
+}
+
+// currentAcctParams 把账号表格的筛选 / 页码收成一个 URLSearchParams。
+function currentAcctParams() {
+  var p = new URLSearchParams();
+  if (ui.acctPage > 0) p.set("page", String(ui.acctPage));
+  var g = String(($("#acctGroup") || {}).value || "").trim();
+  var s = String(($("#acctStatus") || {}).value || "").trim();
+  var q = String(($("#acctQuery") || {}).value || "").trim();
+  if (g) p.set("group", g);
+  if (s) p.set("status", s);
+  if (q) p.set("q", q);
+  return p;
+}
+
+function currentLogParams() {
+  var p = new URLSearchParams();
+  var pairs = [["endpoint", "#logEndpoint"], ["account", "#logAccount"],
+    ["min_status", "#logMinStatus"], ["q", "#logKeyword"], ["since", "#logSince"]];
+  pairs.forEach(function (kv) {
+    var v = String(($(kv[1]) || {}).value || "").trim();
+    if (v) p.set(kv[0], v);
+  });
+  var lim = String(($("#logLimit") || {}).value || "").trim();
+  if (lim) p.set("limit", lim);
+  return p;
+}
+
+function syncHash(tab) {
+  if (tab === "accounts") writeHash(tab, currentAcctParams());
+  else if (tab === "logs") writeHash(tab, currentLogParams());
+  else writeHash(tab, null);
+}
+
+// restoreFromHash 把 hash 里的筛选 / 页码回填到表单。返回要打开的标签页。
+function restoreFromHash() {
+  var h = readHash();
+  if (h.tab === "logs") {
+    var m = { endpoint: "#logEndpoint", account: "#logAccount", min_status: "#logMinStatus",
+      q: "#logKeyword", since: "#logSince", limit: "#logLimit" };
+    h.params.forEach(function (v, k) {
+      var el = m[k] ? $(m[k]) : null;
+      if (el) el.value = v;
+    });
+  }
+  if (h.tab === "accounts") {
+    var page = parseInt(h.params.get("page") || "0", 10);
+    if (page > 0) ui.acctPage = page;
+    var map = { group: "#acctGroup", status: "#acctStatus", q: "#acctQuery" };
+    Object.keys(map).forEach(function (k) {
+      var el = $(map[k]);
+      if (el && h.params.get(k)) el.value = h.params.get(k);
+    });
+  }
+  return h.tab;
+}
 
 /* ================= 行内操作菜单 ================= */
 document.addEventListener("click", function () { closeMenu(); });
@@ -101,6 +177,8 @@ document.querySelectorAll("nav button").forEach(function (b) {
     b.classList.add("on");
     $("#tab-" + b.dataset.tab).classList.add("on");
     if (b.dataset.tab === "logs") refreshLogs();
+    if (b.dataset.tab === "accounts") loadAccounts();
+    syncHash(b.dataset.tab);
   };
 });
 
@@ -160,8 +238,9 @@ try { localStorage.removeItem("deepaicode2api_pw"); } catch { /* 隐私模式忽
 function applyTheme(mode) {
   document.documentElement.setAttribute("data-theme", mode);
   var moon = $("#themeIconMoon"), sun = $("#themeIconSun"), label = $("#themeLabel");
-  if (moon) moon.style.display = mode === "light" ? "none" : "";
-  if (sun) sun.style.display = mode === "light" ? "" : "none";
+  // 用 class 而不是 style.display：HTML 里已改成 .hidden 工具类（CSP 禁止内联样式）。
+  if (moon) moon.classList.toggle("hidden", mode === "light");
+  if (sun) sun.classList.toggle("hidden", mode !== "light");
   if (label) {
     // 文案变了就得让 translateDom 重记中文原文，否则切回英文时会复现上一次的标签。
     label.__zh = undefined;
@@ -185,8 +264,8 @@ $("#theme").onclick = function () {
 
 /* ================= 账号分页控件 ================= */
 $("#acctSize").value = String(ui.acctPageSize);
-$("#acctPrev").onclick = function () { if (ui.acctPage > 0) { ui.acctPage--; loadAccounts(); } };
-$("#acctNext").onclick = function () { ui.acctPage++; loadAccounts(); };
+$("#acctPrev").onclick = function () { if (ui.acctPage > 0) { ui.acctPage--; syncHash("accounts"); loadAccounts(); } };
+$("#acctNext").onclick = function () { ui.acctPage++; syncHash("accounts"); loadAccounts(); };
 $("#acctSize").onchange = function () {
   var v = parseInt(this.value, 10);
   if (v !== 20 && v !== 50 && v !== 100) return;
@@ -197,26 +276,41 @@ $("#acctSize").onchange = function () {
 };
 
 /* ================= 账号 / 日志筛选 ================= */
-function applyAcctFilters() { ui.acctPage = 0; loadAccounts(); }
+function applyAcctFilters() { ui.acctPage = 0; syncHash("accounts"); loadAccounts(); }
 $("#acctFilterApply").onclick = applyAcctFilters;
 $("#acctFilterClear").onclick = function () {
   $("#acctGroup").value = ""; $("#acctStatus").value = ""; $("#acctQuery").value = "";
   applyAcctFilters();
 };
 $("#acctStatus").onchange = applyAcctFilters;
+
+// debounce：输入停下 250ms 再查，避免每敲一个字打一次 /admin/api/accounts。
+function debounce(fn, ms) {
+  var t = null;
+  return function () {
+    clearTimeout(t);
+    t = setTimeout(fn, ms);
+  };
+}
+var acctQueryDebounced = debounce(applyAcctFilters, 250);
 $("#acctGroup").onkeydown = $("#acctQuery").onkeydown = function (ev) {
   if (ev.key === "Enter") applyAcctFilters();
 };
-$("#logFilterApply").onclick = refreshLogs;
+$("#acctGroup").oninput = $("#acctQuery").oninput = acctQueryDebounced;
+
+$("#logFilterApply").onclick = function () { syncHash("logs"); refreshLogs(); };
 $("#logFilterClear").onclick = function () {
   $("#logEndpoint").value = ""; $("#logAccount").value = ""; $("#logMinStatus").value = "";
   $("#logKeyword").value = ""; $("#logSince").value = "";
+  syncHash("logs");
   refreshLogs();
 };
-$("#logEndpoint").onchange = refreshLogs;
+$("#logEndpoint").onchange = function () { syncHash("logs"); refreshLogs(); };
+var logQueryDebounced = debounce(function () { syncHash("logs"); refreshLogs(); }, 250);
 $("#logKeyword").onkeydown = $("#logAccount").onkeydown = function (ev) {
-  if (ev.key === "Enter") refreshLogs();
+  if (ev.key === "Enter") { syncHash("logs"); refreshLogs(); }
 };
+$("#logKeyword").oninput = $("#logAccount").oninput = logQueryDebounced;
 
 /* ================= 表头排序 ================= */
 // accounts 走服务端（分页必须如此），其余三张小表在前端排。
@@ -266,13 +360,44 @@ $("#sideToggle").onclick = function () {
   if (saved === "collapsed") applySide(true);
 })();
 
+/* ================= 账号列表：脱敏开关 ================= */
+// 脱敏在渲染层做（不是后端字段）：开关能立即生效，且不影响搜索/筛选 ——
+// 搜索仍然对完整的邮箱 / 名称生效，只是显示时打码。
+$("#acctMask").checked = !!ui.mask;
+$("#acctMask").onchange = function () {
+  ui.mask = !!this.checked;
+  try { localStorage.setItem("deepaicode2api_acct_mask", ui.mask ? "1" : "0"); } catch { /* 隐私模式忽略 */ }
+  loadAccounts();
+};
+
 /* ================= 启动 ================= */
 setReload(refresh);
 applyLang();
-// start 是真正进入控制台：拉数据 + 20s 健康心跳。
+
+// 后台标签页不轮询：既省上游配额，也不用为空页面反复唤醒定时器。
+var healthTimer = null;
+function startHealthPolling() {
+  if (healthTimer) return;
+  healthTimer = setInterval(function () {
+    if (document.visibilityState === "visible") loadHealth();
+  }, 20000);
+}
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "visible") loadHealth();
+});
+
+// start 是真正进入控制台：先按 hash 回填视图，再拉数据 + 20s 健康心跳。
 function start() {
+  var want = restoreFromHash();
+  if (want) {
+    var target = document.querySelector('nav.nav button[data-tab="' + want + '"]');
+    if (target && !target.classList.contains("on")) target.click();
+  }
   refresh();
-  setInterval(loadHealth, 20000);
+  if ($("#tab-logs").classList.contains("on")) refreshLogs();
+  startHealthPolling();
+  // 版本更新检查：服务端缓存 6 小时，打开控制台多打一次请求不会压到 GitHub。
+  checkUpdate();
 }
 
 // 登录门：没设管理口令（本机放行）直接进；设了就必须先有口令，否则去 /login。
@@ -303,11 +428,5 @@ if (pw()) {
     b.addEventListener("click", function () { setOpen(false); });
   });
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") setOpen(false); });
-
-  // 深链接：#accounts / #logs … 直接打开对应标签页。
-  var want = (location.hash || "").replace(/^#/, "");
-  if (want) {
-    var target = document.querySelector('nav.nav button[data-tab="' + want + '"]');
-    if (target) target.click();
-  }
+  // 深链接（#accounts?…）由 start() 里的 restoreFromHash 统一处理。
 })();

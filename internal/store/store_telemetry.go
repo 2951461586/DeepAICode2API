@@ -25,11 +25,37 @@ func (s *Store) UpdateSettings(fn func(*Settings)) {
 	fn(&s.st.Settings)
 }
 
+// statsDayLayout 是「当日用量」的日期键格式（本地时区）。
+const statsDayLayout = "2006-01-02"
+
+// rollStatsDay 在跨天时把当日计数清零并更新日期键。
+//
+// 放在 Record 的写锁内：它需要同时改 Day 与两个计数器，分开做会出现
+// 「日期已翻页但计数还是昨天」的中间态。调用方必须持有 s.mu 写锁。
+func rollStatsDay(st *Stats, now time.Time) {
+	today := now.Format(statsDayLayout)
+	if st.Day == today {
+		return
+	}
+	st.Day = today
+	st.DayTokensIn = 0
+	st.DayTokensOut = 0
+}
+
 // Stats 返回统计快照。
+//
+// 读路径也做一次跨天判定（只改副本）：重启后当天还没发过请求时，
+// 不能把昨天的当日用量当成今天的展示出去。
 func (s *Store) Stats() Stats {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.st.Stats
+	st := s.st.Stats
+	s.mu.RUnlock()
+	if st.Day != time.Now().Format(statsDayLayout) {
+		st.Day = time.Now().Format(statsDayLayout)
+		st.DayTokensIn = 0
+		st.DayTokensOut = 0
+	}
+	return st
 }
 
 // Logs 返回最近的日志。
@@ -53,6 +79,11 @@ func (s *Store) Record(e LogEntry, outChars int) {
 	s.st.Stats.TotalCharsOut += int64(outChars)
 	s.st.Stats.TotalTokensIn += int64(e.TokensIn)
 	s.st.Stats.TotalTokensOut += int64(e.TokensOut)
+	s.st.Stats.TotalCachedTokens += int64(e.CachedTokens)
+	// 当日用量：跨天时先清零（不用定时任务，读路径上判定即可）。
+	rollStatsDay(&s.st.Stats, time.Now())
+	s.st.Stats.DayTokensIn += int64(e.TokensIn)
+	s.st.Stats.DayTokensOut += int64(e.TokensOut)
 	s.st.Stats.TotalCost += e.Cost
 	s.statsDirty = true
 	keep := s.st.Settings.LogKeep
@@ -105,7 +136,8 @@ func (s *Store) ClearStats() {
 	}
 	// 保留 StartedAt（进程起点），单独记 ResetAt：日志不清空，
 	// 控制台需要能解释「统计数小于日志条数」。
-	s.st.Stats = Stats{StartedAt: started, ResetAt: time.Now().Unix()}
+	day := time.Now().Format(statsDayLayout)
+	s.st.Stats = Stats{StartedAt: started, ResetAt: time.Now().Unix(), Day: day}
 	s.statsDirty = true
 	s.mu.Unlock()
 }

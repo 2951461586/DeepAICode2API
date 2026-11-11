@@ -63,6 +63,30 @@ export function rowMenu(a){
   return m;
 }
 
+// maskEmail 把邮箱脱敏成 u***@domain；非邮箱（纯名称）走 maskWord。
+//
+// 只保留首字母与域名：既能让人对上号，又不把完整账号落到屏幕/截图/录屏里。
+export function maskEmail(s){
+  s = String(s || "");
+  var at = s.indexOf("@");
+  if (at <= 0) return maskWord(s);
+  return s.slice(0, 1) + "***" + s.slice(at);
+}
+
+// maskWord 把普通标识符脱敏成首字母 + ***（长于 4 时保留末位）。
+export function maskWord(s){
+  s = String(s || "");
+  if (!s) return "";
+  if (s.length <= 2) return s.slice(0, 1) + "*";
+  return s.slice(0, 1) + "***" + (s.length > 4 ? s.slice(-1) : "");
+}
+
+// show 根据全局脱敏开关决定是否过脱敏。
+function show(s, maskFn){
+  if (!ui.mask) return s;
+  return (maskFn || maskWord)(s);
+}
+
 export function renderAccounts(items, total){
   var tb = $("#accounts");
   tb.textContent = "";
@@ -90,8 +114,8 @@ export function renderAccounts(items, total){
     ops.appendChild(rowMenu(a));
 
     var acctCell = cell("");
-    acctCell.appendChild(mk("div", null, a.email || a.name));
-    acctCell.appendChild(mk("div", "muted mono", a.username || ""));
+    acctCell.appendChild(mk("div", null, show(a.email || a.name, maskEmail)));
+    acctCell.appendChild(mk("div", "muted mono", show(a.username) || ""));
     if (a.proxy) acctCell.appendChild(mk("div", "muted mono", a.proxy + (a.fingerprint ? " · " + a.fingerprint : "")));
     var planText = a.is_pro ? "Pro" : (a.plan || "Free");
     planText += " · " + t(a.email_verified ? "已验证" : "未验证");

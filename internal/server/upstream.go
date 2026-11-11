@@ -21,8 +21,9 @@ import (
 //   - 409 session_busy：池里有空号就立刻换号，整池都满才按 Retry-After 等一次；
 //   - 槽位不够：短暂排队（admissionWait），超时才回 429。
 func (s *Server) openModel(ctx context.Context, path string, body []byte, affinity, group string) (*http.Response, *deepai.Account, error) {
-	accts := s.Store.Accounts()
-	if len(accts) == 0 {
+	// 只需要号池规模：AccountCounts 不解包快照，避免为了一次 len() 深拷贝全池。
+	acctTotal, _ := s.Store.AccountCounts()
+	if acctTotal == 0 {
 		return nil, nil, errors.New("没有可用账号，请先在控制台导入桌面端凭据或添加 API Key")
 	}
 	settings := s.Store.Settings()
@@ -30,8 +31,8 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 	if maxTries <= 0 {
 		maxTries = 3
 	}
-	if maxTries > len(accts)+2 {
-		maxTries = len(accts) + 2
+	if maxTries > acctTotal+2 {
+		maxTries = acctTotal + 2
 	}
 
 	var (
@@ -85,7 +86,12 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		if resp.StatusCode/100 == 2 {
 			s.Store.MarkAccountResult(acct.ID, true, "")
 			// 槽位随响应体一起释放：流式响应可能持续数分钟。
-			resp.Body = &releaseBody{ReadCloser: resp.Body, release: func() { s.releaseAccount(acct.ID) }}
+			// 外面再套一层空闲超时：上游发完首帧后挂住时，能主动收尾并归还槽位，
+			// 而不是把连接和账号槽位挂到客户端断开为止。
+			resp.Body = newIdleTimeoutBody(
+				&releaseBody{ReadCloser: resp.Body, release: func() { s.releaseAccount(acct.ID) }},
+				upstreamIdleTimeout,
+			)
 			return resp, acct, nil
 		}
 

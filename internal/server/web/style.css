@@ -333,3 +333,31 @@
   .login-hint{
     margin:16px 0 0;font-size:11.5px;line-height:1.6;color:var(--faint);
   }
+
+/* ===== 工具类：替代 HTML 里的内联 style（CSP 禁止内联样式） ===== */
+.hidden{display:none}
+.w-180{width:180px}.w-340{width:340px}.w-300{width:300px}
+.w-260{width:260px}.w-220{width:220px}.w-210{width:210px}
+.w-200{width:200px}.w-170{width:170px}.w-150{width:150px}
+.w-140{width:140px}.w-110{width:110px}.w-auto{width:auto}
+.mt-6{margin-top:6px}.mt-8{margin-top:8px}.mt-10{margin-top:10px}
+.mt-12{margin-top:12px}.mt-14{margin-top:14px}
+.fs-11{font-size:11.5px}.fs-12{font-size:12.5px}
+.inline-field{margin:0;display:flex;gap:6px;align-items:center;font-size:11.5px}
+.check-label{display:flex;gap:7px;align-items:center;margin-top:6px;text-transform:none}
+.flex-1{flex:1;min-width:0}
+.flex-none{flex:none}
+.oauth-form{margin-top:10px}
+.oauth-row{display:flex;gap:8px;margin-top:10px}
+.oauth-link{flex:1;min-width:0;font-size:12px}
+.oauth-callback{margin-top:6px;min-height:64px}
+
+/* 顶栏版本号：既是当前版本，也是「检查更新」入口（有新版时高亮）。 */
+.ver{
+  font:11.5px/1 ui-monospace,monospace;color:var(--dim);
+  padding:4px 8px;border:1px solid var(--line);border-radius:999px;
+  cursor:pointer;white-space:nowrap;
+}
+.ver:hover{color:var(--fg);border-color:var(--faint)}
+.ver.update{color:var(--ok);border-color:var(--ok)}
+a.ver{text-decoration:none}

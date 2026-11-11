@@ -123,7 +123,10 @@ func (s *Server) scheduleQuotaReprobe(id string) {
 	go func() {
 		defer s.quotaWG.Done()
 		for _, d := range delays {
-			time.Sleep(d)
+			// 可被关停打断：退避最长 12 分钟，不能把进程退出拖住。
+			if !s.sleepOrStop(d) {
+				return
+			}
 			a := s.Store.Account(id)
 			if a == nil {
 				return // 已被删除

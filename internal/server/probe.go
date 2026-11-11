@@ -258,6 +258,21 @@ func (s *Server) probeAndSaveAsync(a *deepai.Account) {
 	}()
 }
 
+// probeBatchAsync 在后台探测一批账号并落盘，登记到 quotaWG。
+//
+// 管理动作（如分配机器指纹）会改账号状态并触发一次重新探测；这次探测
+// 不在请求作用域内，进程退出前必须等它跑完再落盘。
+func (s *Server) probeBatchAsync(accts []*deepai.Account) {
+	if len(accts) == 0 {
+		return
+	}
+	s.quotaWG.Add(1)
+	go func() {
+		defer s.quotaWG.Done()
+		s.probeAccounts(accts)
+	}()
+}
+
 // probeAsync 异步刷新单个账号的额度；返回是否真正发起。
 //
 // 先同步占用槽位再起 goroutine：否则每个请求都会起一个立刻退出的 goroutine，
@@ -274,7 +289,9 @@ func (s *Server) probeAsync(a *deepai.Account) bool {
 		s.releaseProbe(a.ID)
 		return false
 	}
+	s.quotaWG.Add(1)
 	go func() {
+		defer s.quotaWG.Done()
 		defer func() { <-s.probeSem }()
 		defer s.releaseProbe(a.ID)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

@@ -16,6 +16,8 @@
 - 46 修「操作」菜单无反应 + 管理口令改成独立登录页
 - 47 侧边栏状态文字溢出修复 + 侧边栏收起/展开
 - 48 控制台 4 处裸 `refresh()`：注入式 reload + 静态契约 + 冒烟异步断言
+- 49 后端 P0/P1/P2 + 前端 P0/P1/P2 一轮落地：选号热路径、流式 idle 超时、优雅关闭、按密钥限流、口令防爆破、request id/JSONL/metrics、gzip、CSP/ETag
+- 50 概览 KPI 增「今日 token / 缓存命中率」、账号列表脱敏开关、版本号与更新检查、v0.1.0 发布
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2295,3 +2297,209 @@ go test ./internal/server -run TestConsole      契约全绿
 go test ./... -count=1                          10 个包全绿
 gofmt -l . && go vet ./...                      无输出
 ```
+
+## 49. 一轮按优先级落地的后端 / 前端加固（P0 → P1 → P2）
+
+扫描后发现的问题按「正确性 → 治理 → 工程卫生」排序，逐项实现并补回归测试。
+这里的每条都写了**根因**，因为其中三条是「看起来没问题、但复杂度随号池规模爆炸」
+的类型——它们不会在 5 个号的测试里暴露。
+
+### 49.1 后端 P0-1：选号热路径是 O(n²) 深拷贝 + 每轮写锁
+
+**根因**：`pickFreeAccount` 写成
+
+```go
+for i, n := 0, len(s.Store.Accounts()); i < n; i++ {  // 每轮都全池 Clone
+    a := s.Store.NextAccountGroup(group)              // 写锁 + Pick 全扫 + 再 Clone
+```
+
+`Accounts()` 对每个账号做深拷贝，`NextAccountGroup` 取的是写锁。653 个号、池子偏忙时
+一次选号可能产生 **n×n ≈ 42 万次深拷贝**，并且所有并发请求在 store 写锁上串行化。
+`openModel` 还为了 `len()` 多拷了一次全池。
+
+**改法**：
+
+- `Scheduler.rotate` 改成 `atomic.Int64`，选号可以用**读锁**并发进行；
+- 新增 `Scheduler.PickFiltered` / `HasEligible`（纯谓词过滤，供「并发槽位已满」排除）；
+- 新增 `Store.PickAccount(group, skip)`：一次读锁 + 一次扫描，**只克隆被选中的账号**，
+  并同时返回「池里是否有可调度账号」，用于区分「全忙」与「没号」；
+- `pickFreeAccount` 用纯谓词 `accountBusy` 排除忙号，`acquireAccount` 只兜住
+  「检查与占用之间被抢走」的窄竞态；
+- `hasFreeAccount` 改用 `Store.AnySchedulable`（零拷贝）。
+
+**验证**：`internal/server/pick_test.go` 用 `testing.AllocsPerRun` 守住「500 个号时
+单次选号分配数 ≤ 40」——旧实现至少 500 次分配，这条会直接失败。
+
+```text
+BenchmarkPick500-12          111.5 ns/op  0 B/op  0 allocs/op
+BenchmarkPickFiltered500-12   84.5 ns/op  0 B/op  0 allocs/op
+BenchmarkPickAccount600-12   282.5 ns/op  528 B/op  2 allocs/op
+```
+
+### 49.2 后端 P0-2：流式响应没有 idle 超时
+
+**根因**：账号槽位随 `resp.Body.Close()` 归还，而流式可能持续数分钟；上游发完首帧
+后挂住时，旧实现只依赖 `r.Context()`——客户端不断开就一直等，槽位与连接被无限占用。
+`http.Server` 也只有 `ReadHeaderTimeout`。
+
+**改法**：`idleTimeoutBody`（`internal/server/idle.go`）在 120s 无新数据时关闭底层
+Body（这正是 transport 打断在途读取的方式：并发 Close + Read 是它支持的模式）。
+包在 `releaseBody` 外面，**在 `openModel` 一处统一挂载**，所有流式/非流式调用点
+自动受益、不会漏。另给 `http.Server` 补 `ReadTimeout` / `IdleTimeout`。
+
+### 49.3 后端 P0-3：优雅关闭不等后台任务
+
+**根因**：`main` 关掉监听后直接 `Save()`，而配额复探 / 入池探活 / 按需复探都是
+「先写内存再 Save」的 goroutine（挂在 `quotaWG`），生产路径上从未 `Wait`。
+退避睡眠最长 12 分钟，硬等会拖住退出。
+
+**改法**：
+
+- `Server.Close(ctx)`：关闭 `stopCh` → 等 `quotaWG`（以 ctx 为上限）→ 关闭各出口空闲连接；
+- 后台退避改用 `sleepOrStop`，可被关停信号打断；
+- `probeAsync` / 以及此前裸 `go s.probeAccounts(...)` 的管理动作统一登记到 `quotaWG`；
+- `main` 的顺序改为 `Shutdown → srv.Close → Save`（反过来会让最后那次 Save 被后台
+  的旧快照覆盖）。
+
+### 49.4 后端 P1：按密钥限流、口令防爆破、可观测性
+
+| 项 | 根因 | 落地 |
+| --- | --- | --- |
+| 数据面限流 | `withAuth` 只校验密钥有效性，一个失控脚本能打满号池 | 令牌桶（RPS + burst）+ 并发闸门，**按密钥指纹隔离**；`429 + Retry-After + rate_limit_error`；默认 0 = 不限，升级不改变既有行为 |
+| 管理口令爆破 | 失败没有代价，`/login` 是公开页面 | 同源 IP 连续失败 5 次后指数退避（1s→30s），退避期内正确口令也回 429；成功即清零 |
+| request id | CORS 早已 expose `X-Request-Id`，但从未生成 | 中间件生成 16 位 hex、回显合法传入值、写入上下文与响应头 |
+| 访问日志 | 53 处中文自由文本，只有启动那一行是 JSON | `internal/logx` 把标准库 log 接管成 JSONL（既有调用一行不改），访问日志带 `request_id/status/ms/bytes/remote` |
+| 指标 | 只有 `/health` 快照 | `/metrics`（Prometheus 文本）：状态码分类计数、耗时 sum+count、在途请求、号池分布、goroutine/堆；挂 `withAdminAuth` |
+
+`poolSnapshot()` 把 `/health` 与 `/metrics` 的口径收成一处，避免两个端点给出互相矛盾的数。
+
+### 49.5 后端 P2：gzip、基准测试、部署约束
+
+- **gzip**：只压 JSON / text / JS / SVG，**跳过 SSE**（逐帧 flush 语义不能破坏），
+  且 1xx/204/304 不套 `Content-Encoding`（304 撞 ETag 时最容易踩）；
+- **bench**：`internal/pool` 与 `internal/store` 各加 3 个基准（`make bench`），
+  把选号、分页、全忙判定的复杂度变成可观测的数字；
+- **文档**：README §十 增补「单实例部署」「限流参数」「口令退避」「日志是 JSONL」四条约束。
+
+### 49.6 前端 P0：CSP 与资源 ETag
+
+**根因**：控制台承载管理口令，但此前没有任何 `Content-Security-Policy`；同时
+`serveConsoleAsset` 一律 `Cache-Control: no-store`，首屏 17 个 ES module 每次全量重下。
+
+**改法**：
+
+- 严格 CSP（`default-src 'self'` … `frame-ancestors 'none'`），并**移除全部 30 处内联
+  `style` 属性**（统一改用具名工具类）；主题启动脚本做成 `/js/theme-boot.js`
+  （head 中的同步外部脚本，既赶在首帧前生效，又不违反 `script-src 'self'`）；
+- 资源按内容哈希发 `ETag` + `no-cache`，命中 `If-None-Match` 回 304；HTML 仍 `no-store`
+  （保证升级后立刻换壳）。
+
+**验证**：`TestConsoleAssetsServed` 断言每个资源带 CSP/ETag/正确的 Cache-Control，
+新增 `TestConsoleAssetConditionalGET` 覆盖 304 与「ETag 变了就重发」。
+
+### 49.7 前端 P1 / P2
+
+| 项 | 改法 |
+| --- | --- |
+| 英文界面冒中文错误 | 后端 message 只有中文，而把 80 多条塞进前端字典会触发「死词条」棘轮 → 改用稳定的 `error.type` 分类给英文文案 + HTTP 状态码，原文进 `err.detail`（控制台可见） |
+| 筛选 / 页码不落地 | 写进 hash（`#accounts?group=…&page=2`），刷新与分享都能回到同一视图 |
+| 输入不防抖 | 250ms debounce（Enter 立即生效），避免每敲一个字打一次分页接口 |
+| 后台标签页仍在轮询 | `visibilityState` 感知：后台不轮询，切回来立刻补一次 |
+| 请求无超时 | `AbortController`：GET 15s / 其它 90s；超时文案可翻译 |
+| GET 去重键过粗 | 去重键改为 `method + path`（含查询串），不同筛选不再共用 promise |
+| 主题闪烁（FOUC） | `theme-boot.js` 在首次绘制前写 `data-theme`；图标显隐改用 `.hidden` 类 |
+| 可访问性 | 表头补 `scope="col"` / `aria-sort`，toast 改 `role="status" aria-live="polite"`，导航补 `aria-label` |
+| JS 无质量门禁 | `scripts/lint.sh` 与 CI 增加 `node --input-type=module --check` 全量语法校验 + 控制台冒烟 |
+
+### 49.8 验证
+
+```text
+go build ./... && go vet ./...                 通过
+sh scripts/lint.sh                             gofmt / vet / 前端语法 / 冒烟 / 全测通过
+go test ./... -count=1                         11 个包全绿（新增 4 个测试文件）
+make bench                                     选号 111ns/0 alloc；选号+分页基线已固化
+```
+
+### 49.9 有意为之的边界
+
+- **确认框仍用原生 `confirm`/`prompt`**：换成自绘弹窗属于交互重写，与本轮的
+  「正确性/治理」目标不同批；原生对话框可键盘操作，不阻塞可用性；
+- **不做状态文件再拆分**：`saveTimestampGranularity=300` 已把写放大从「每 30s」
+  降到「每 5 分钟（且只有内容变化时）」，继续拆 accounts 会引入迁移风险而收益很小；
+- **不支持多副本共享同一 data 路径**：调度/限流/在途计数都在进程内存里，已在
+  README 写明；横向扩展需要外置存储，不在当前范围。
+
+## 50. 概览 KPI 重排、账号脱敏、版本与发布（v0.1.0）
+
+本轮是**产品面向**的改动，重点是「运营需要看的数」而非内部指标。三个 KPI 里有两个
+（今日 token、缓存命中率）此前**根本没有数据源**，所以先在采集侧补字段，再改展示。
+
+### 50.1 概览 KPI：今日 token 与缓存命中率
+
+| 位置 | 原来 | 现在 |
+| --- | --- | --- |
+| 第 4 张卡 | `Token 入 / 出` | `总 Token 入 / 出` |
+| 第 7 张卡 | `密钥`（数量） | `今日 Token 入 / 出` |
+| 第 8 张卡 | `统计自`（时间戳） | `缓存命中率` |
+
+**采集侧改动**（不然前端只能显示 0）：
+
+- `gateway.Usage` 增加 `CachedTokens`，`cachedTokensOf` 兼容三种上游形态：
+  `prompt_tokens_details.cached_tokens`（OpenAI）、
+  `input_tokens_details.cached_tokens`（Responses）、
+  `cache_read_input_tokens`（Anthropic）；
+- `store.LogEntry` 增加 `cached_tokens`，`Record` 累加 `TotalCachedTokens`；
+- `Stats` 增加 `Day / DayTokensIn / DayTokensOut`：**按本地日期**统计，
+  跨天由 `rollStatsDay` 在写入路径清零（不需要定时任务）；读路径 `Stats()`
+  也做一次判定，避免重启后把昨天的当日量当成今天。
+
+**展示约定**：命中率 = `total_cached_tokens / total_tokens_in`；没有样本时显示
+`—` 而不是 `0.0%`（后者会被误读成「缓存从不命中」）。
+
+### 50.2 账号列表脱敏开关
+
+后端本来就只下发脱敏后的 Key / 代理 / 机器指纹，但**邮箱与用户名**是明文——
+远程协助、录屏、截图时仍会暴露。
+
+- 账号列表工具条增加「脱敏显示」复选（偏好存 `localStorage`）；
+- 脱敏在**渲染层**做：邮箱 `u***@domain`、其它标识 `j***n`；
+- 搜索与筛选仍按**完整值**匹配，打码只影响显示——否则「脱敏后搜不到自己刚导入的号」
+  会变成新的支持问题。
+
+### 50.3 版本号与更新检查
+
+- 版本经 `-ldflags -X main.version=` 注入；`Server.Version` + `/health.version`
+  让控制台（含登录页可读的公开端点）随时拿到；
+- 顶栏显示 `v0.1.0`，是一个静态 `<a href>` 指向 releases 页；
+- `GET /admin/api/version`：服务端代查 GitHub 最新 release，**缓存 6 小时**，
+  只比 `主.次.修订`；`dev` 构建不比对（否则永远提示有新版本）；
+  查询失败返回 `200 + error`，前端只把标题改成「无法检查更新」，不弹错误。
+
+为什么要服务端代查：前端 CSP 是 `connect-src 'self'`，本来就不允许直连
+`api.github.com`；而且未认证的 GitHub API 有速率限制，不该让每台机器各自去打。
+
+**安全细节**：跳转目标写死在标记里的静态 `<a href>`，不转发 GitHub 返回的
+`html_url`——那属于外部输入，动态拼进导航就是一个 open redirect 面
+（首版实现被静态规则拦下，顺势改成了更安全的形态）。
+
+### 50.4 工程整理
+
+- 新增 `scripts/release.sh`：交叉编译 linux/amd64、linux/arm64、windows/amd64、
+  darwin/amd64、darwin/arm64 + `checksums.txt`，`--publish` 时调 `gh release create/upload`；
+- 清理工作区临时产物：`.ruff_cache/`、`tmpfp.exe`、根目录旧 `deepaicode2api.exe`、
+  `bin/` 下的旧二进制（含已移除的 `register`）；**保留**运行期状态
+  （`deepaicode2api-data*.json` / logs / stats）、`exports/` 台账与 `.bak` 备份；
+- README 增补：概览/账号/顶栏的新行为、`/admin/api/version`、§九·五「版本与发布」。
+
+### 50.5 验证
+
+```text
+go build ./... && go vet ./... && gofmt -l .        无输出
+go test -race -count=1 ./...                        11 个包全绿
+node scripts/console-smoke.mjs                      全部通过
+sh scripts/lint.sh                                  Go + 前端语法 + 冒烟全通过
+```
+
+新增测试：`TestParseSemver` / `TestVersionNewer` / `TestAdminVersionEndpoint`
+（含「第二次命中缓存、不打上游」的断言）/ `TestAdminVersionDevBuild` /
+`TestAdminVersionUpstreamFailure` / `TestHealthIncludesVersion`。

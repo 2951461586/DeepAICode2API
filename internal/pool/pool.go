@@ -10,6 +10,7 @@ package pool
 import (
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"deepaicode2api/internal/deepai"
@@ -24,9 +25,10 @@ const QuotaStaleAfter = 15 * time.Minute
 
 // Scheduler 保存轮询游标，实现号池选号。
 //
-// 非并发安全：调用方必须在自己的锁内使用（store 用写锁保护它）。
+// 游标用 atomic 而不是普通 int：选号是每个请求一次的热路径，改成原子量后
+// 调用方（store）可以用读锁并发选号，不必为了推进游标去抢写锁。
 type Scheduler struct {
-	rotate int
+	rotate atomic.Int64
 }
 
 // New 构造一个调度器。
@@ -41,6 +43,14 @@ func New() *Scheduler { return &Scheduler{} }
 //
 // 每轮内部优先选失败次数最少的账号，同失败度时按轮询游标推进。
 func (s *Scheduler) Pick(accounts []*deepai.Account, group string) *deepai.Account {
+	return s.PickFiltered(accounts, group, nil)
+}
+
+// PickFiltered 在 Pick 的基础上叠加一个额外过滤谓词。
+//
+// skip 用于「并发槽位已满」这类与账号健康度无关的临时排除，必须是**纯函数**：
+// 第一轮扫描不到时会再扫第二轮，同一账号可能被问两次。
+func (s *Scheduler) PickFiltered(accounts []*deepai.Account, group string, skip func(*deepai.Account) bool) *deepai.Account {
 	group = strings.TrimSpace(group)
 	eligible := func(a *deepai.Account) bool {
 		if !a.Enabled {
@@ -51,7 +61,10 @@ func (s *Scheduler) Pick(accounts []*deepai.Account, group string) *deepai.Accou
 		if a.Status == deepai.StatusBlocked {
 			return false
 		}
-		return group == "" || strings.EqualFold(a.GroupName(), group)
+		if group != "" && !strings.EqualFold(a.GroupName(), group) {
+			return false
+		}
+		return skip == nil || !skip(a)
 	}
 	if a := s.pick(accounts, eligible, true); a != nil {
 		return a
@@ -59,15 +72,37 @@ func (s *Scheduler) Pick(accounts []*deepai.Account, group string) *deepai.Accou
 	return s.pick(accounts, eligible, false)
 }
 
+// HasEligible 报告池里是否存在可调度账号（分组 / 启用 / 未拦截），
+// 忽略 PickFiltered 的 skip。调用方用它区分「全忙」与「池里没号」。
+func (s *Scheduler) HasEligible(accounts []*deepai.Account, group string) bool {
+	group = strings.TrimSpace(group)
+	for _, a := range accounts {
+		if a == nil || !a.Enabled || a.Status == deepai.StatusBlocked {
+			continue
+		}
+		if group == "" || strings.EqualFold(a.GroupName(), group) {
+			return true
+		}
+	}
+	return false
+}
+
 // pick 在 eligible 里按「失败最少 + 轮询」选一个账号。
 //
 // needQuota 为 true 时跳过已知额度为 0 的账号。
 func (s *Scheduler) pick(accounts []*deepai.Account, eligible func(*deepai.Account) bool, needQuota bool) *deepai.Account {
 	n := len(accounts)
+	if n == 0 {
+		return nil
+	}
+	rot := int(s.rotate.Load())
+	if rot < 0 || rot >= n {
+		rot = 0
+	}
 	var best *deepai.Account
 	bestIdx := -1
 	for i := 0; i < n; i++ {
-		idx := (s.rotate + i) % n
+		idx := (rot + i) % n
 		a := accounts[idx]
 		if !eligible(a) {
 			continue
@@ -80,12 +115,12 @@ func (s *Scheduler) pick(accounts []*deepai.Account, eligible func(*deepai.Accou
 			bestIdx = idx
 		}
 		if a.Failures == 0 {
-			s.rotate = (idx + 1) % n
+			s.rotate.Store(int64((idx + 1) % n))
 			return a
 		}
 	}
 	if bestIdx >= 0 {
-		s.rotate = (bestIdx + 1) % n
+		s.rotate.Store(int64((bestIdx + 1) % n))
 	}
 	return best
 }
