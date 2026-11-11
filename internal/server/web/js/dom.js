@@ -7,6 +7,13 @@ import { tr, t } from './i18n.js';
 
 export const $ = (s) => document.querySelector(s);
 
+// menuEl 是当前打开的行内菜单节点（null = 没有菜单）。
+//
+// 必须在本模块里声明：模块是严格模式，引用未声明的变量会直接抛
+// ReferenceError —— 拆分前它在单文件 IIFE 的闭包里，拆到 dom.js 时
+// 忘了带上声明，结果点「操作」整个菜单都出不来（先调的 closeMenu 就炸了）。
+let menuEl = null;
+
 export function menuToggle(title){
   var m = mk("button", "menu-toggle", "⋯");
   m.type = "button";

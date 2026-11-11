@@ -106,7 +106,7 @@ func (s *Server) adminSameOrigin(r *http.Request) bool {
 		return true
 	}
 	if cfg := strings.TrimSpace(s.Store.Settings().CORSOrigin); cfg != "" {
-		for _, entry := range strings.Split(cfg, ",") {
+		for entry := range strings.SplitSeq(cfg, ",") {
 			entry = strings.TrimSpace(entry)
 			if entry != "" && !hasWildcard(entry) && strings.EqualFold(entry, origin) {
 				return true
@@ -136,4 +136,16 @@ func extractKey(r *http.Request) string {
 		return strings.TrimSpace(v)
 	}
 	return ""
+}
+
+// handleAdminAuth 校验管理口令本身（登录页用）。
+//
+// 走 withAdminAuth 注册，所以「口令缺失或错误」已经在那里被拦成 401；
+// 能进到这里就说明口令是对的。刻意不返回口令、不返回设置项，只说 ok。
+func (s *Server) handleAdminAuth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

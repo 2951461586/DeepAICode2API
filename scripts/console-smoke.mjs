@@ -23,7 +23,10 @@ class ClassList {
   add(...v) { v.forEach((x) => this.set.add(x)); }
   remove(...v) { v.forEach((x) => this.set.delete(x)); }
   contains(v) { return this.set.has(v); }
-  toggle(v, on) { const want = on === undefined ? !this.set.has(v) : !!on; want ? this.set.add(v) : this.set.delete(v); }
+  toggle(v, on) {
+    const want = on === undefined ? !this.set.has(v) : !!on;
+    if (want) this.set.add(v); else this.set.delete(v);
+  }
 }
 
 class El {
@@ -132,6 +135,7 @@ const format = await load('format.js');
 const overview = await load('overview.js');
 const oauth = await load('oauth.js');
 const settingsForm = await load('settings-form.js');
+const dom = await load('dom.js');
 
 check('renderAccounts 空列表', () => {
   accounts.renderAccounts([], 0);
@@ -154,6 +158,22 @@ check('renderLogs', () => {
 check('renderSettings', () => {
   settings.renderSettings({ request_timeout_sec: 120, max_retries: 3, log_keep: 500, cors_origin: '*', strict_model: true });
 });
+// 行内菜单：「操作」按钮点开是账号治理的唯一入口，一旦炸掉整张表就只剩查看。
+// 2026-11-11 的真实回归：menuEl 拆到 dom.js 时漏了声明，严格模式下
+// openMenu 第一行 closeMenu() 就抛 ReferenceError，点击完全无反应。
+check('行内菜单 open / close', () => {
+  const anchor = el('#menu-anchor');
+  dom.openMenu(anchor, [
+    { label: '配额', fn() {} },
+    { sep: true },
+    { label: '删除', danger: true, fn() {} },
+  ]);
+  if (document.body.children.length !== 1) throw new Error('菜单没挂到 body 上');
+  dom.closeMenu();
+  if (document.body.children.length !== 0) throw new Error('closeMenu 没清掉菜单');
+  dom.closeMenu(); // 幂等：重复关闭不应抛异常
+});
+
 check('fmtCompact 纯函数', () => {
   if (format.fmtCompact(1500) !== '1.5K') throw new Error('fmtCompact(1500) = ' + format.fmtCompact(1500));
 });

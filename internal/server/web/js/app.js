@@ -17,7 +17,7 @@ import { ui } from './state.js';
 import { $, closeMenu } from './dom.js';
 import { sortState, markSort, toggleSort } from './table.js';
 import { toast } from './ui.js';
-import { pw, api } from './api.js';
+import { api, pw, clearPw } from './api.js';
 import { accountOp, checkin, setReload } from './actions.js';
 import { renderAccounts } from './render/accounts.js';
 import { renderKeys } from './render/keys.js';
@@ -48,7 +48,8 @@ function refresh() {
     loadHealth();
     translateDom(document.body);
   }).catch(function (e) {
-    toast(t("加载失败：") + e.message + (e.status === 401 ? "\n" + t("请在右上角填写管理密码") : ""), "err");
+    // 401 由 api() 统一处理（清口令 + 跳登录页），这里只报错误本身。
+    toast(t("加载失败：") + e.message, "err");
   });
 }
 
@@ -104,13 +105,10 @@ document.querySelectorAll("nav button").forEach(function (b) {
 });
 
 /* ================= 顶部按钮 ================= */
-$("#savePw").onclick = function () {
-  // 管理密码只进 sessionStorage（关页即失效）：localStorage 里的值可被
-  // 同源任意脚本长期读取，没必要为「记住密码」付这个代价。
-  try { sessionStorage.setItem("deepaicode2api_pw", pw()); } catch { /* 隐私模式忽略 */ }
-  try { localStorage.removeItem("deepaicode2api_pw"); } catch { /* 同上 */ }
-  toast("已记住管理密码（仅本次会话）", "ok");
-  refresh();
+// 退出登录：只清本标签页的口令，不动别的状态。
+$("#logout").onclick = function () {
+  clearPw();
+  location.replace("/login");
 };
 $("#refresh").onclick = function () { refresh(); if ($("#tab-logs").classList.contains("on")) refreshLogs(); };
 $("#importLocal").onclick = function () { accountOp("import", {}); };
@@ -153,14 +151,9 @@ $("#logLimit").onchange = refreshLogs;
 initOAuth({ refresh: refresh });
 initSettingsForm({ refresh: refresh });
 
-/* ================= 管理密码记忆 ================= */
-try {
-  var saved = sessionStorage.getItem("deepaicode2api_pw");
-  if (saved) $("#pw").value = saved;
-  // 清理旧版本遗留在 localStorage 里的密码。
-  localStorage.removeItem("deepaicode2api_pw");
-} catch { /* 隐私模式忽略 */ }
-$("#pw").addEventListener("keydown", function (e) { if (e.key === "Enter") { $("#savePw").click(); } });
+/* ================= 登录状态 ================= */
+// 清理旧版本遗留在 localStorage 里的口令（那时顶栏还有输入框）。
+try { localStorage.removeItem("deepaicode2api_pw"); } catch { /* 隐私模式忽略 */ }
 
 /* ================= 主题（白天 / 黑夜） ================= */
 // 优先用上次的选择；没选过就跟随系统 prefers-color-scheme。
@@ -253,8 +246,22 @@ $("#lang").onclick = function () {
 /* ================= 启动 ================= */
 setReload(refresh);
 applyLang();
-refresh();
-setInterval(loadHealth, 20000);
+// start 是真正进入控制台：拉数据 + 20s 健康心跳。
+function start() {
+  refresh();
+  setInterval(loadHealth, 20000);
+}
+
+// 登录门：没设管理口令（本机放行）直接进；设了就必须先有口令，否则去 /login。
+// 依据是 /health 的 admin_required —— 公开端点，没有口令也读得到。
+if (pw()) {
+  start();
+} else {
+  fetch("/health").then(function (r) { return r.json(); }).then(function (h) {
+    if (h && h.admin_required) { location.replace("/login"); return; }
+    start();
+  }).catch(start);
+}
 
 // 移动端侧边栏抽屉。包成 IIFE 是因为原来那一段是独立 <script>，
 // 内部用 `return` 做「元素不齐就整体放弃」的早退；ES module 顶层不允许 return。

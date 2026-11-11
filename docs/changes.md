@@ -13,6 +13,7 @@
 - 43 体检三连：gateway 单测、前端拆分与死代码、工具链升级 + 连接预热
 - 44 补测两个模型指纹：qwen-3.8-max-prime / gpt-6-astra（替身分支 + 请求体形状）
 - 45 号池健康度显示修复：status=error 不再永久污染徽章
+- 46 修「操作」菜单无反应 + 管理口令改成独立登录页
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2140,3 +2141,60 @@ sh scripts/lint.sh           exit 0
 **影响**：调度、号池轮询、容量退避零改动；只改「失败怎么写进状态」与「健康度怎么算」。
 现场那 2 个当天额度打满的号（`zhuhaoyi181` / `ming49798`）会显示为 `degraded`
 且不计入 `ready`，明日额度重置后随一次成功 `/theos` 自动恢复。
+
+---
+
+## 46. 修「操作」菜单点了没反应 + 管理口令改成独立登录页
+
+### 46.1 行内操作菜单点了没反应（`menuEl` 未声明）
+
+**现象**：账号池每行的「⋯ / 操作」按钮点了毫无反应，账号治理（补绑代理、
+分配机器指纹、改分组、删除…）全都没法用。
+
+**根因**：`dom.js` 里 `closeMenu()` / `openMenu()` 都在读写 `menuEl`，但**没有声明**它。
+拆模块前这个变量在单文件 `<script>` 的 IIFE 闭包里，搬到 `dom.js` 时漏了。
+ES module 是严格模式，`openMenu()` 第一行 `closeMenu()` 就抛 `ReferenceError`，
+于是菜单根本来不及挂到 `body` 上——表现就是「点了没反应」，控制台却看不到任何
+可见错误（异常只在 console 里）。
+
+**修复**：`dom.js` 补 `let menuEl = null;`（带注释说明为什么必须是模块级声明）。
+
+**回归防线**：`scripts/console-smoke.mjs` 新增「行内菜单 open / close」断言
+（挂载到 body、`closeMenu` 能清掉、重复关闭幂等）。这类「文件都在、语法都对、
+点一下就炸」的断裂正是冒烟脚本存在的理由。
+
+### 46.2 管理口令改成独立登录页
+
+**动机**：顶栏常驻一个口令输入框 —— 口令在屏幕上一直可见，长驻的控制台页等于
+把门虚掩着；截图/录屏/旁人一眼就能看到有没有设口令、输到第几位。
+
+**改动**：
+
+| 位置 | 内容 |
+| --- | --- |
+| `web/login.html`（新） | 独立登录页：品牌头 + 口令表单 + 错误行 + 说明；复用 `style.css`（新增 `.login-*` 段），文案放 `data-msg-*` 供脚本读取（登录页不进 i18n 字典棘轮） |
+| `web/js/login.js`（新） | 提交 → `POST /admin/api/auth` 校验 → 写 `sessionStorage` → `location.replace("/")`；已登录过则先验一次，失败自动清掉；主题跟随控制台 |
+| `web/index.html` | 顶栏移除口令输入框与「记住」按钮，换成「退出」（清口令 → `/login`） |
+| `web/js/api.js` | 口令统一读写 `sessionStorage`（`pw` / `setPw` / `clearPw`）；**401 自动清口令并跳 `/login`** |
+| `web/js/app.js` | 启动加登录门：`/health` 的 `admin_required` 为真且本页无口令 → 跳 `/login`；未设口令则本机直通 |
+| `web/js/settings-form.js` | 改了管理口令后同步更新 sessionStorage 里那份（否则下一次请求立刻 401） |
+| `server.go` | 新增 `GET /login` 路由与 `POST /admin/api/auth`；`/health` 增加 `admin_required` |
+| `auth.go` | 新增 `handleAdminAuth`：走 `withAdminAuth`，口令错已在中间件拦成 401，成功只回 `{ok:true}`（不回显任何设置项） |
+| `web.go` | embed 加 `web/login.html`；抽出 `consoleScriptNames()` 让契约测试能**按页面**校验 id 引用 |
+
+**顺带修掉的**：`TestConsoleScriptIDsExist` 原本把全部脚本合起来对照 `index.html`
+校验 id —— 加了登录页之后 `login.js` 的 `#loginPw` 必然"不存在"。改成按脚本所属页面
+分组校验（`login.js` → `login.html`，其余 → `index.html`），拆页面时才不会误报。
+
+**验证**：
+
+```text
+go test ./internal/server
+  TestLoginPageServed / TestLoginScriptServed       登录页与脚本可访问、内容正确
+  TestAdminAuthEndpoint                              未设口令 200 / 缺口令 401 / 错口令 401 / 对口令 200，回包只有 {ok:true}
+  TestHealthExposesAdminRequired                     /health 的 admin_required 随设置变化
+  TestConsoleScriptIDsExist（按页面分组）            11 个脚本、40+ 个 id 引用全部有定义
+go test ./...                                       10 个包全绿
+node scripts/console-smoke.mjs                      13 条断言（含新增的菜单开合）
+sh scripts/lint.sh                                  exit 0
+```

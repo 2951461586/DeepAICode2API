@@ -491,6 +491,10 @@ curl -s -X POST localhost:10087/admin/api/checkin   -H "X-Admin-Password: $DEEPA
 - **日志**：端点、模型、流式、状态、耗时、字符数、token、成本、账号；
   支持按**端点 / 账号 / 最小状态码 / 关键字 / 起始时间**过滤（字符与 token 同样是 K/M）。
 - **设置**：超时、重试、日志保留、CORS、兜底模型、严格模型模式、模型别名、管理密码。
+- **登录**：管理口令走独立的 `/login` 页（入口 `POST /admin/api/auth` 校验），
+  成功后才进控制台；口令只保存在**本标签页**的 `sessionStorage`，顶栏只有「退出」。
+  任一管理接口返回 401 时自动清口令并回登录页。未设管理口令时不挡人（本机直通）。
+  是否启用登录门由 `/health` 的 `admin_required` 决定。
 
 安全默认值：
 

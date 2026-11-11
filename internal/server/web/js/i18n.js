@@ -12,7 +12,8 @@ var I18N_EN = {
   "概览":"Overview", "账号池":"Accounts", "密钥":"API Keys",
   "日志":"Logs", "设置":"Settings", "控制台":"Console",
   // 顶栏
-  "管理密码（如已设置）":"Admin password (if set)", "记住":"Remember", "刷新":"Refresh",
+  "刷新":"Refresh", "退出":"Sign out",
+  "退出登录（清除本标签页的口令）":"Sign out (clears this tab's password)",
   // 页头
   "号池健康、用量统计与上游模型目录":"Pool health, usage and upstream model catalog",
   "刷新模型目录":"Refresh models", "每秒计费":"Per second",
@@ -104,7 +105,6 @@ var I18N_EN = {
   "过滤。":"filters.",
   // toast / 对话框
   "操作成功":"Operation succeeded", "已清空":"Cleared", "已重置":"Reset",
-  "已记住管理密码（仅本次会话）":"Admin password remembered (this session only)",
   "请填写 API Key":"Enter an API key",
   "正在查询上游配额…":"Querying upstream quota…",
   "正在从上游刷新模型目录…":"Refreshing model catalog…",
@@ -126,7 +126,6 @@ var I18N_EN = {
   "查询失败：":"Query failed: ", "刷新失败：":"Refresh failed: ", "创建失败：":"Create failed: ",
   "保存失败：":"Save failed: ",
   "配额刷新完成：":"Quota refresh done: ",
-  "请在右上角填写管理密码":"Enter the admin password at top right",
   "登录成功：":"Signed in: ",
   "深色":"Dark", "浅色":"Light",
   "切换白天 / 黑夜模式":"Toggle light / dark mode",

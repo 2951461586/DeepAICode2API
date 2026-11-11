@@ -4,7 +4,7 @@
 // 回填 + 让调用方刷新」。读取与渲染仍由 render/settings.js 负责，这里不重复。
 import { $ } from './dom.js';
 import { toast } from './ui.js';
-import { api } from './api.js';
+import { api, setPw } from './api.js';
 import { renderSettings } from './render/settings.js';
 
 // initSettingsForm 绑定「保存设置」按钮。
@@ -33,7 +33,8 @@ export function initSettingsForm(opts) {
       $("#sPw").value = "";
       toast("设置已保存", "ok");
       renderSettings(r.settings || {});
-      if (np !== "") { try { sessionStorage.setItem("deepaicode2api_pw", np); $("#pw").value = np; } catch { /* 隐私模式忽略 */ } }
+      // 改了管理口令就得同步本标签页记住的那份，否则下一次请求立刻 401。
+      if (np !== "") setPw(np);
       return refresh();
     }).catch(function (e) { toast("保存失败：" + e.message, "err"); });
   };

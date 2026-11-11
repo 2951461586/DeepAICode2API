@@ -94,17 +94,49 @@ func TestConsoleDefaultPageSize(t *testing.T) {
 // 这是最容易静默回归的一类改动：改标记时漏一个 id，控制台不报错，
 // 只是某个功能永远不生效（按钮点了没反应、渲染函数写进 null）。
 func TestConsoleScriptIDsExist(t *testing.T) {
-	markup := consoleMarkup()
+	// 按页面分组校验：login.js 的 DOM 在 login.html 里，不在 index.html 里。
+	// 拆页面时最容易出的错就是「脚本引用了另一个页面的 id」，那种功能
+	// 永远不生效（按钮点了没反应、渲染函数写进 null）。
+	indexIDs := idsInMarkup(consoleMarkup())
+	loginIDs := idsInMarkup(string(consoleLoginHTML))
+
+	refs, files := 0, 0
+	for _, name := range consoleScriptNames() {
+		raw, err := consoleAssets.ReadFile(name)
+		if err != nil {
+			t.Fatalf("读取脚本 %s: %v", name, err)
+		}
+		files++
+		defined := indexIDs
+		if strings.HasSuffix(name, "/login.js") {
+			defined = loginIDs
+		}
+		for id := range idsReferencedBy(string(raw)) {
+			refs++
+			if !defined[id] {
+				t.Errorf("%s 引用了不存在的 id：%s", name, id)
+			}
+		}
+	}
+	if files < 10 {
+		t.Fatalf("只扫到 %d 个脚本，按页面分组可能已失效", files)
+	}
+	if refs < 30 {
+		t.Fatalf("只解析到 %d 个 id 引用，正则可能已失效", refs)
+	}
+}
+
+// idsInMarkup 收集标记里定义过的 id。
+func idsInMarkup(markup string) map[string]bool {
 	defined := map[string]bool{}
 	for _, m := range regexp.MustCompile(`id="([A-Za-z0-9_-]+)"`).FindAllStringSubmatch(markup, -1) {
 		defined[m[1]] = true
 	}
+	return defined
+}
 
-	script := consoleJS()
-	if script == "" {
-		t.Fatal("没有嵌入任何脚本（consoleJS 为空）")
-	}
-
+// idsReferencedBy 收集脚本里通过 $("#x") / getElementById / querySelector 取过的 id。
+func idsReferencedBy(script string) map[string]bool {
 	refs := map[string]bool{}
 	for _, re := range []*regexp.Regexp{
 		regexp.MustCompile(`\$\("#([A-Za-z0-9_-]+)"\)`),
@@ -115,14 +147,7 @@ func TestConsoleScriptIDsExist(t *testing.T) {
 			refs[m[1]] = true
 		}
 	}
-	if len(refs) < 30 {
-		t.Fatalf("只解析到 %d 个 id 引用，正则可能已失效", len(refs))
-	}
-	for id := range refs {
-		if !defined[id] {
-			t.Errorf("脚本引用了不存在的 id：%s", id)
-		}
-	}
+	return refs
 }
 
 // 每个 data-tab 必须有对应的 #tab-xxx 面板，且 <section> 数量与之相等。

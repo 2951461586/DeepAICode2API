@@ -4,13 +4,14 @@ import (
 	"embed"
 	"net/http"
 	"path"
+	"sort"
 	"strings"
 )
 
 // 控制台是一个「标记 + 样式 + 一组 ES module」的静态包，全部嵌进二进制：
 // 无外部依赖、无构建步骤、离线可用。
 //
-//go:embed web/index.html web/style.css web/js/*.js web/js/render/*.js
+//go:embed web/index.html web/login.html web/style.css web/js/*.js web/js/render/*.js
 var consoleAssets embed.FS
 
 // consoleHTML 是控制台的页面标记（不含内联脚本与样式）。
@@ -27,8 +28,21 @@ var consoleCSS = mustConsoleAsset("web/style.css")
 // 否则测试会在拆分后静默失效（这比测错更危险）。
 func consoleJS() string {
 	var b strings.Builder
-	// 顶层（app / i18n / dom …）与 render/ 子目录都要扫：漏一个目录，
-	// 契约测试就会对那部分代码「看起来通过」。
+	for _, name := range consoleScriptNames() {
+		if raw, err := consoleAssets.ReadFile(name); err == nil {
+			b.Write(raw)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// consoleScriptNames 返回全部内嵌脚本的资源名（已排序）。
+//
+// 单独暴露的原因：契约测试要按「这个脚本属于哪个页面」分组校验 id 引用
+// （login.js 的 #loginPw 在 login.html 里，不在 index.html 里）。
+func consoleScriptNames() []string {
+	var names []string
 	for _, dir := range []string{"web/js", "web/js/render"} {
 		entries, err := consoleAssets.ReadDir(dir)
 		if err != nil {
@@ -38,14 +52,15 @@ func consoleJS() string {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".js") {
 				continue
 			}
-			if raw, err := consoleAssets.ReadFile(dir + "/" + e.Name()); err == nil {
-				b.Write(raw)
-				b.WriteByte('\n')
-			}
+			names = append(names, dir+"/"+e.Name())
 		}
 	}
-	return b.String()
+	sort.Strings(names)
+	return names
 }
+
+// consoleLoginHTML 是 /login 页面标记（登录页有自己的 DOM，与 index.html 不同）。
+var consoleLoginHTML = mustConsoleAsset("web/login.html")
 
 func mustConsoleAsset(name string) []byte {
 	b, err := consoleAssets.ReadFile(name)
@@ -75,6 +90,13 @@ func consoleAssetType(name string) string {
 // 资源与页面同源、无外部引用，因此不需要放宽 CSP。
 func serveConsole(w http.ResponseWriter, _ *http.Request) {
 	serveConsoleAsset(w, "web/index.html")
+}
+
+// serveLogin 输出管理口令登录页（/login）。
+//
+// 与控制台同一套静态资源与响应头；页面只做一件事：验一次口令后跳到 /。
+func serveLogin(w http.ResponseWriter, _ *http.Request) {
+	serveConsoleAsset(w, "web/login.html")
 }
 
 // serveConsoleAsset 输出一个内嵌控制台资源（页面 / 样式 / 脚本）。

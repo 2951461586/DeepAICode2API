@@ -142,6 +142,11 @@ func (s *Server) Handler() http.Handler {
 	// 浏览器登录跳转：session id 是一次性随机数，服务端只跳到固定的上游登录页。
 	mux.HandleFunc("/login/open", s.handleLoginOpen)
 
+	// 口令登录页：控制台顶栏不再放口令输入框，未登录时跳到这里。
+	mux.HandleFunc("/login", serveLogin)
+	// 口令校验入口：只回答“这个口令对不对”，不返回任何敏感信息。
+	mux.HandleFunc("/admin/api/auth", s.withAdminAuth(s.handleAdminAuth))
+
 	// 控制台静态资源：样式与 ES module 脚本（页面本身走 /）。
 	mux.HandleFunc("/style.css", s.handleConsoleAsset)
 	mux.HandleFunc("/js/", s.handleConsoleAsset)
@@ -210,6 +215,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"strict_model":  s.Store.Settings().StrictModel,
 		"machine_id":    shortMachine(s.Store.MachineID()),
 		"machine_ready": s.Store.MachineID() != "",
+		// 控制台据此决定是否把用户送到 /login：未设口令时本机直接放行。
+		"admin_required": s.Store.Settings().AdminPassword != "",
 	})
 }
 
