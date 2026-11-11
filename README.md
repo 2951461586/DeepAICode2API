@@ -66,7 +66,7 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.
 | 语音转写 | `POST https://api.deepai.org/speech_to_text`（字段 `voiceRecording`） |
 | 联网搜索 | `POST https://api.deepai.org/deepai_code/web_search` |
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
-| 协议头 | `X-DeepAI-Code-Theos: 4`（计费车道版本；2/3/5 一律 426） |
+| 协议头 | `X-DeepAI-Code-Theos: 4`（计费车道版本；推理端点 2/3/5 一律 426，`/models` `/theos` 自 2026-11-11 起放宽到 1–4，见 `docs/recon.md` §3） |
 | 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每个出口代理随机一次，随该代理的所有 JSON 请求发出；桌面端是每进程一次） |
 | 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1`（`focus` 只在焦点状态已知时才追加） |
 | **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
@@ -577,7 +577,8 @@ docker run -d --name deepaicode2api \
   deepaicode2api
 ```
 
-> `X-DeepAI-Code-Theos: 4` 是硬门槛：2/3/5 一律 `426 lane_version_unsupported`。
+> `X-DeepAI-Code-Theos: 4` 是**推理**的硬门槛：2/3/5 在 `/chat/completions` 上返回
+> `426 lane_version_unsupported`（`/models` `/theos` 已放宽到 1–4，见 `docs/recon.md` §3）。
 > `X-DeepAI-Code-Machine` 仍是计量模型的必需头：缺失时返回 `400 machine_required`。
 > 容器里通常读不到宿主机的 SMBIOS UUID，因此 `DEEPAI_MACHINE_ID` 在容器部署时**必填**。
 > 填桌面端所在机器的原始 UUID 即可复用同一份每日免费额度。
@@ -598,7 +599,7 @@ docker run -d --name deepaicode2api \
 
 ## 十、限制与说明
 
-- `X-DeepAI-Code-Theos` 必须是 `4`（0.3.19 起至今未变，0.3.30 / 0.3.32 / 0.3.35 复核仍为 4）；车道不符时上游对所有端点返回 426，需要升级网关；
+- `X-DeepAI-Code-Theos` 必须发 `4`（0.3.19 起至今未变，0.3.30 / 0.3.32 / 0.3.35 复核仍为 4）；推理端点车道不符返回 426 `lane_version_unsupported`（元数据端点 1–4 都接受，别用它判断上游可用性）；
 - 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.35**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
 - 推理请求按桌面端实测值发 `user-agent: node` + `accept: */*`，**不带** Chrome UA / `sec-ch-ua` / `Accept-Language`（推理侧只发桌面端请求头）；
 - `X-DeepAI-Code-Machine` 缺失时计量模型返回 `machine_required`，因此无 SMBIOS 的环境必须设置 `DEEPAI_MACHINE_ID`；

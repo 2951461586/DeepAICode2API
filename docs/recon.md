@@ -76,6 +76,7 @@
 | POST | `/deepai_code/sessions/delete` | 删除会话 |
 | POST | `/deepai_code/sessions/save` | 会话 / 偏好上传（0.3.20 新增，云端同步） |
 | POST | `/deepai_code/session_turn` | 会话轮次上报（202/204 视为成功） |
+| POST | `/deepai_code/review_tool` | 桌面端 auto 模式的动作审查（0.3.35 新增；15s 超时、失败降级为人工确认。网关不实现也不影响推理） |
 | GET | `/deepai_code/desktop_auth/?state=…&port=…` | 浏览器登录起点 |
 | POST | `/deepai_code/desktop_auth/exchange/` | 用 code 换 Key |
 | GET | `/get_usage_summary` | 订阅与用量（根路径，不在 `/deepai_code` 下） |
@@ -90,7 +91,7 @@
 | 头 | 值 | 作用 |
 | --- | --- | --- |
 | `Api-Key` | 账号 API Key | **鉴权走这个头，不是 `Authorization`** |
-| `X-DeepAI-Code-Theos` | `4` | 计费车道版本（2/3/5 均 426） |
+| `X-DeepAI-Code-Theos` | `4` | 计费车道版本；门槛分端点不同，见下方「车道版本门槛」 |
 | `X-DeepAI-Code-Instance` | 16 字节随机数的 hex（每进程一次） | 进程实例标识，随所有 JSON 请求发出 |
 | `X-DeepAI-Code-Machine` | `sha256(小写原始机器 UUID)` | 按天发放免费额度；计量模型缺失时 `machine_required` |
 | `X-Session-Affinity` | 任意会话 id | 会话粘性（body 的 `prompt_cache_key` 同效） |
@@ -126,8 +127,17 @@
 
 要点：
 
-- 车道 4 是硬门槛：对 `/models` `/theos` `/chat/completions` 一视同仁，
-  不匹配直接 426「This version of DeepAI Code is no longer supported」。
+- 车道版本门槛（**2026-11-11 实测矩阵**；此前“三个端点一视同仁、必须 4”的结论已过期）：
+
+  | 端点 | lane 1 | 2 | 3 | **4** | 5 | 6+ | 0 |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `/models` | 200 | 200 | 200 | 200 | 426 | 426 | 426 |
+  | `/theos` | 200 | 200 | 200 | 200 | 未测 | 426 | 未测 |
+  | `/chat/completions`（`node` UA 真分支） | 未测 | **426** | **426** | 200 | 未测 | 未测 | 未测 |
+
+  → 元数据端点已放宽到 **1–4**，**推理仍只认 `4`**（2/3 直接 426）
+  「This version of DeepAI Code is no longer supported」。网关恒发 `4` 仍然正确，
+  号池不需要按端点区分车道；但“车道不对就全线 426”不能再拿来判断上游可用性。
 - `X-DeepAI-Code-Instance` 只在进程启动时生成一次；网关按「进程 / 出口代理」
   各生成一份即可（`clientFor` 按代理缓存 Client），**不要每请求换值**
   （桌面端也不是每请求换）。
@@ -312,7 +322,28 @@ DeepAI 有两条社交登录实现，**都必须在浏览器里完成**——服
 > 那两个特征今天都不成立了；表里的**样本量与结论方向**仍然有效，字段描述只当历史看。
 > 若要重新体检，请按 §3.1 今天的判据（`provider` 缺失 / `model` 回显 slug / `id` 前缀）重跑。
 
-配合 §3.1（UA 分流）一起看：**`node` UA + 完成签到**，两条都满足才拿到真模型。
+配合 §3.1（UA 分流）一起看：2026-11-08 那轮体检的结论是：**`node` UA 与完成签到**
+两条都满足才拿到真模型（下表）。但 2026-11-11 的单样本显示，签到被拒时仍可能是
+真分支（见下一小节）；因此把它当“主路径”，不当充要条件。
+
+### 签到被拒 ≠ 号坏了【实测 2026-11-11，单样本】
+
+短时间内反复打 `/theos`（2026-11-11 探测时连打约 6 次）会触发当日签到限流：
+
+```text
+GET /deepai_code/theos lane=4 → 403
+{"error":{"message":"DeepAI Code has restarted its check-in too many times today. Try again tomorrow.",
+          "type":"check_in_refused","code":"check_in_refused"}}
+```
+
+- 恢复时机是 `refresh_at`（本机实测次日 `00:04Z` 重置），不需要换号/重登。
+- **拒绝签到之后推理仍走真分支**：同一账号 `provider=InferenceNet`、
+  `usage.cost_details.upstream_inference_completions_cost>0`、`id: gen-<epoch>-<rand>`。
+  即：`check_in_refused` 只封“当天再签到”，不等于账号失效、也不必然掉替身
+  （上面 08 版那张表测的是“完全不签到”，与这条不矛盾，但不能互相替代）。
+- 因此号池侧只需要 `CheckInRefusedLock` 静默到明天（已实现），
+  **体检/探测脚本必须限速**（建议 ≥5 分钟一次），否则一次全量体检就会把
+  一批号的当日签到额度打没。
 
 | 观测 | 结果（14 个号池账号，免费模型 `glm-5.3-flash`） |
 | --- | --- |
