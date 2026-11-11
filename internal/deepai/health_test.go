@@ -38,7 +38,9 @@ func TestTransient(t *testing.T) {
 		{"social_login_required", httpErr(http.StatusForbidden, `{"error":{"code":"social_login_required"}}`), false},
 		{"纯文本 unexpected EOF", errors.New("Get \"https://api.deepai.org\": unexpected EOF"), true},
 		{"今日额度用尽", errors.New(`上游: DeepAI Code has restarted its check-in too many times today`), false},
-		{"Too many requests today", errors.New("查询 Theos: Too many requests today"), true},
+		// 额度到顶当天不会自愈：要如实显示成 degraded，不能当噪声抹掉。
+		{"今日额度到顶（文本）", errors.New("查询 Theos: Too many requests today"), false},
+		{"今日额度到顶（429 体）", httpErr(http.StatusTooManyRequests, `{"error":{"message":"Too many requests today"}}`), false},
 		{"网络错误", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
 		{"普通业务错误", errors.New("boom"), false},
 	}

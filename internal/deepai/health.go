@@ -23,16 +23,21 @@ import (
 // Transient 报告一次失败是否属于「瞬时」类别：只说明这次请求没成，
 // 不代表账号坏了（不该被打成 error，也不该被当成健康度依据）。
 //
-// 判为瞬时的：网络层错误（EOF / reset / 超时）、429、5xx、409 session_busy
+// 判为瞬时的：网络层错误（EOF / reset / 超时）、429 频控、5xx、409 session_busy
 // （容量拒绝）、check_in_refused（能推理、只是当天签到到顶）。
-// 不瞬时的：401 / 无效 Key、social_login_required、email_unverified 等
-// 账号级问题 —— 那些换号也救不回来，必须让运维看见。
+// 不瞬时的：401 / 无效 Key、social_login_required、email_unverified，
+// 以及**今日额度到顶**（`Too many requests today`）—— 后者是“今天真的不能
+// 用”，要如实显示成 degraded，而不是当成噪声抹掉。
 func Transient(err error) bool {
 	if err == nil {
 		return false
 	}
 	var he *HTTPError
 	if errors.As(err, &he) {
+		// 额度到顶优先判定：它即使以 429 返回，也不是“歇一下就好”。
+		if isDailyQuota(string(he.Body)) {
+			return false
+		}
 		switch {
 		case he.Status == http.StatusTooManyRequests:
 			return true
@@ -59,14 +64,16 @@ func Transient(err error) bool {
 	if errors.As(err, &opErr) {
 		return true
 	}
-	// 上游偶尔把“今日额度用尽 / 正在重启”塞进 message 而不是状态码，
-	// 这类只靠类型判断不出来，文本兜底。
+	// 上游偶尔把“正在重启 / 网关挂了”塞进 message 而不是状态码，
+	// 这类只靠类型判断不出来，文本兜底。注意：额度到顶不算。
 	text := strings.ToLower(err.Error())
+	if isDailyQuota(text) {
+		return false
+	}
 	for _, needle := range []string{
 		"unexpected eof",
 		"connection reset",
 		"broken pipe",
-		"too many requests today",
 		"temporarily unavailable",
 		"bad gateway",
 		"service unavailable",
@@ -78,6 +85,14 @@ func Transient(err error) bool {
 		}
 	}
 	return false
+}
+
+// isDailyQuota 识别“今日额度到顶”类文案。
+//
+// 这类失败当天不会自愈（要到 refresh_at 才重置），所以不能算瞬时噪声：
+// 号池要能看出“这个号今天用不了了”。
+func isDailyQuota(text string) bool {
+	return strings.Contains(strings.ToLower(text), "too many requests today")
 }
 
 // AccountReady 报告账号在 now 时刻是否算「就绪」。

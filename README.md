@@ -432,8 +432,11 @@ curl -s -X POST localhost:10087/admin/api/checkin   -H "X-Admin-Password: $DEEPA
 
 `status=error` 只是「上一次请求失败」，不代表账号坏了：调度器只跳过 `blocked`，
 所以 `error` 号照常参与轮询；超过 `deepai.ErrorStaleAfter`（10 分钟）没有再失败，
-后台 30s 的巡检会把它改回 `ok`。瞬时失败（EOF / 429 / 5xx / 容量拒绝 / 签到限流）
-连 `error` 都不会标，只累加 `failures` 与 `last_err`。
+后台 30s 的巡检会把它改回 `ok`。
+
+瞬时失败（EOF / reset / 超时 / 429 频控 / 5xx / 容量拒绝 / 签到限流）连 `error`
+都不会标，只累加 `failures` 与 `last_err`；**今日额度到顶**（`Too many requests today`）
+例外 —— 它当天不会自愈，所以会标成 `error` 并计入 `degraded`，直到次日 `refresh_at`。
 
 ### 6.5 实测：补齐机器指纹前后的额度对比
 

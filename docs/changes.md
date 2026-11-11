@@ -2111,7 +2111,7 @@ sh scripts/lint.sh                   exit 0
 | 改动 | 位置 |
 | --- | --- |
 | `Account.LastErrAt`（Unix 秒）：`error` 带时间戳，健康度按新鲜度判定 | `internal/deepai/types.go` |
-| `Transient(err)`：EOF / reset / 超时 / 429 / 5xx / 409 `session_busy` / `check_in_refused` 判为瞬时；401、`social_login_required` 等账号级问题不判瞬时 | `internal/deepai/health.go` |
+| `Transient(err)`：EOF / reset / 超时 / 429 频控 / 5xx / 409 `session_busy` / `check_in_refused` 判为瞬时；401、`social_login_required`，以及**今日额度到顶**（`Too many requests today`，即使以 429 返回）不判瞬时 | `internal/deepai/health.go` |
 | `AccountReady(a, now)` / `AccountDegraded(a, now)`：停用不算；`blocked` 不算；`error` 只在 `ErrorStaleAfter`（10 分钟）内不算就绪 | 同上 |
 | `MarkAccountFailure(id, err)`：瞬时失败只累加 `failures` / `last_err`，**不动 status**；所有失败调用点改用它（7 处） | `internal/store/store_accounts.go`、`internal/server/{extensions,upstream}.go` |
 | `SetAccountAllowance` 同样按瞬时判定决定是否标 `error`（探测失败常是成片出口抖动） | `internal/store/store_accounts.go` |
