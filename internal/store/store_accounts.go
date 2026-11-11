@@ -48,11 +48,16 @@ type AccountPage struct {
 //
 // 控制台首屏需要在不同步整个账号列表的情况下展示“就绪/总”，
 // 而 Accounts() 会给每个账号做深拷贝。
+//
+// “就绪”的口径见 deepai.AccountReady：error 只在错误还算新鲜时算不健康，
+// blocked 永不算就绪（它不会自愈）。旧实现用的 `status != "error"` 会把
+// 一次概率性 EOF 永久计成不健康，也会把 blocked 算成就绪。
 func (s *Store) AccountCounts() (total, ready int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	now := time.Now()
 	for _, a := range s.st.Accounts {
-		if a.Enabled && a.Status != "error" {
+		if deepai.AccountReady(a, now) {
 			ready++
 		}
 	}
@@ -329,31 +334,79 @@ func (s *Store) NextAccountGroup(group string) *deepai.Account {
 }
 
 // MarkAccountResult 记录一次账号调用结果。
+//
+// 失败时是否把账号标成 error 由瞬时判定决定（见 MarkAccountFailure）：
+// 这个入口保留给“已经确定要记成失败”的调用方（例如不带错误对象的场合）。
 func (s *Store) MarkAccountResult(id string, ok bool, note string) {
+	s.markAccountResult(id, ok, note, false)
+}
+
+// MarkAccountFailure 记录一次带错误对象的失败。
+//
+// 瞬时失败（EOF / 429 / 5xx / 容量拒绝 / 签到限流）只累加 Failures 与
+// last_err，**不动 status**：下一次请求成不成跟这次没关系，一次抖动不该
+// 让账号在控制台上长期显示“不健康”（docs/changes.md §45）。
+func (s *Store) MarkAccountFailure(id string, err error) {
+	if err == nil {
+		return
+	}
+	s.markAccountResult(id, false, err.Error(), deepai.Transient(err))
+}
+
+func (s *Store) markAccountResult(id string, ok bool, note string, transient bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, a := range s.st.Accounts {
 		if a.ID != id {
 			continue
 		}
-		a.LastUsed = time.Now().Unix()
+		now := time.Now().Unix()
+		a.LastUsed = now
 		if ok {
 			a.Failures = 0
 			a.Status = "ok"
 			a.LastErr = ""
+			a.LastErrAt = 0
 			// 注意：不在这里清 ProbeAfter —— 推理成功不等于 /theos 会成功。
 			// 签到限流的账号正是“能推理、不能签到”，清掉冷却会让后台守护
 			// 每分钟又去磕一次 403。探测成功后由 SetAccountAllowance 清零。
 			if note != "" {
 				a.Note = note
 			}
-		} else {
-			a.Failures++
-			a.Status = "error"
-			a.LastErr = note
+			return
+		}
+		a.Failures++
+		a.LastErr = note
+		a.LastErrAt = now
+		if !transient {
+			a.Status = deepai.StatusError
 		}
 		return
 	}
+}
+
+// RecoverStaleErrors 把“已经很久没再失败”的 error 号改回 ok，返回改动个数。
+//
+// 为什么需要一次性扫描：status 是展示与排序的依据，光靠 AccountReady 的懒判定
+// 会让账号列表里的红点与顶部徽章对不上。后台 30s 跳一次（O(n)，与账号数同阶）。
+//
+// blocked 不动：它不会自愈，必须等一次成功 /theos 或人工处理。
+func (s *Store) RecoverStaleErrors(now time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	recovered := 0
+	for _, a := range s.st.Accounts {
+		if a.Status != deepai.StatusError {
+			continue
+		}
+		if now.Sub(time.Unix(a.LastErrAt, 0)) < deepai.ErrorStaleAfter {
+			continue
+		}
+		// 保留 last_err / failures 作为历史，只把“现在是否健康”改回去。
+		a.Status = "ok"
+		recovered++
+	}
+	return recovered
 }
 
 // BlockAccount 把账号标记为“上游策略拦截”（当前来源：social_login_required）。
@@ -387,8 +440,13 @@ func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) 
 		}
 		a.LastUsed = time.Now().Unix()
 		if err != nil {
-			a.Status = "error"
+			// 瞬时错误（EOF / 429 / 签到限流）不该把账号打成 error：
+			// 探测失败经常是成片的出口抖动，不是账号本身坏了。
+			if !deepai.Transient(err) {
+				a.Status = deepai.StatusError
+			}
 			a.LastErr = err.Error()
+			a.LastErrAt = time.Now().Unix()
 			a.Failures++
 			a.ProbeFailures++
 			a.ProbeAfter = time.Now().Add(probeBackoff(a.ProbeFailures)).Unix()
@@ -397,6 +455,7 @@ func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) 
 		a.Theos = al
 		a.Status = "ok"
 		a.LastErr = ""
+		a.LastErrAt = 0
 		a.Failures = 0
 		a.ProbeFailures = 0
 		a.ProbeAfter = 0

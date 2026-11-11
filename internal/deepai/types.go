@@ -16,7 +16,10 @@
 // `X-DeepAI-Code-Machine` 机器指纹；`/theos` 还要带签到 nonce 与心跳。
 package deepai
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // 上游协议常量。
 const (
@@ -78,6 +81,17 @@ const (
 	// 与普通错误不同：它不是网络/额度问题，换号重试也救不回来，
 	// 调度器应直接跳过，直到一次成功的 /theos 把它重新置回 ok。
 	StatusBlocked = "blocked"
+
+	// StatusError 是“上一次调用失败”的状态。它能自愈：下一次成功，或
+	// 超过 ErrorStaleAfter 没再失败，就不再算异常（见 AccountReady）。
+	StatusError = "error"
+
+	// ErrorStaleAfter 是“错误还能代表现状”的窗口。
+	//
+	// 选 10 分钟的依据：上游 EOF / 429 “Too many requests today” 这类失败是
+	// 按次、成片出现的，而台号监控 / 真实流量通常 5 分钟内就会再打一次；
+	// 超过 10 分钟没再失败，就说明那是历史噪声，不该继续压在徽章上。
+	ErrorStaleAfter = 10 * time.Minute
 
 	// 路径前缀。
 	ModelBasePath = "/deepai_code"
@@ -253,11 +267,19 @@ type Account struct {
 	MachineID string `json:"machine_id,omitempty"`
 
 	Enabled  bool   `json:"enabled"`
-	Status   string `json:"status"` // ok / error / unknown
+	Status   string `json:"status"` // ok / error / blocked / unknown
 	Note     string `json:"note"`
 	LastUsed int64  `json:"last_used"`
 	LastErr  string `json:"last_err"`
 	Failures int    `json:"failures"`
+
+	// LastErrAt 是最后一次被标为 error 的时间（Unix 秒，0 = 早期字段缺失）。
+	//
+	// 存在的理由：status=error 是**上一次请求**的结果，不是账号的永久属性。
+	// 没有时间戳时，一次概率性 EOF / 429 会让账号永远显示“不健康”，
+	// 徽章长期停在 1/16 而实际号池在正常干活（见 docs/changes.md §45）。
+	// 有了它，「错误是否够新」才能当作健康度判据。
+	LastErrAt int64 `json:"last_err_at,omitempty"`
 
 	// ProbeAfter 是额度探测的下次允许时间（Unix 秒，0 = 无冷却）。
 	//

@@ -12,8 +12,9 @@ import (
 // LockAccountProbe 只加探测冷却与备注：不改状态、不累加失败次数。
 //
 // check_in_refused 这类错误下账号仍可推理（只是落在替身模型分支），
-// 标成 error 会把好号踢出调度；但必须锁住探测，否则后台守护每 5 分钟
-// 会再来磕一次 403（docs/performance.md §14 提到的复探风暴）。
+// 标成 error 虽然不影响调度（调度器只跳过 blocked），但会污染健康度展示；
+// 真正要防的是后台守护每 5 分钟又来磕一次 403 —— 即复探风暴
+// （docs/performance.md §14）。
 func TestLockAccountProbeKeepsStatus(t *testing.T) {
 	st := newStore(t)
 	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})

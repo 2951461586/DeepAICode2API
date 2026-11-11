@@ -24,11 +24,17 @@ function setHealth(cls, text) {
 export function loadHealth() {
   fetch("/health").then(function (r) { return r.json(); }).then(function (h) {
     var ready = h.ready || 0, total = h.accounts || 0;
+    var degraded = h.degraded || 0;
     var healthCls = "";
     if (total === 0) healthCls = "";
-    else if (ready > 0) healthCls = "ok";
+    else if (ready > 0) healthCls = degraded > 0 ? "warn" : "ok";
     else healthCls = "warn";
-    setHealth(healthCls, t("账号 {a}/{b} 就绪 · 模型 {c}", { a: ready, b: total, c: h.models || 0 }));
+    // 只报 ready/total 会把“刚被 429 打了一下”和“真坏了”混成一团，
+    // 所以后端另下 degraded（错误还新鲜的账号数），这里显式带出来。
+    var text = degraded > 0
+      ? t("账号 {a}/{b} 就绪 · {d} 个近期失败 · 模型 {c}", { a: ready, b: total, d: degraded, c: h.models || 0 })
+      : t("账号 {a}/{b} 就绪 · 模型 {c}", { a: ready, b: total, c: h.models || 0 });
+    setHealth(healthCls, text);
     $("#upstream").textContent = t("机器指纹 {m} · 默认 {d}",
       { m: h.machine_id || t("不可用"), d: h.default_model || "-" });
   }).catch(function () { setHealth("err", t("不可达")); });

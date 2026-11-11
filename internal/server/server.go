@@ -172,13 +172,20 @@ func (s *Server) RefreshModels(ctx context.Context) ([]deepai.Model, error) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	accts := s.Store.Accounts()
-	ok := 0
+	ok, degraded, blocked := 0, 0, 0
 	fresh, due := 0, 0
 	now := time.Now()
 	for _, a := range accts {
-		// 尚未探测过的账号按“可用”计，避免刚导入时健康度显示为 0。
-		if a.Enabled && a.Status != "error" {
+		// 就绪口径见 deepai.AccountReady：error 只有“错误还新鲜”时才不算就绪，
+		// 而 blocked 不会自愈，一律不算。
+		if deepai.AccountReady(a, now) {
 			ok++
+		}
+		if deepai.AccountDegraded(a, now) {
+			degraded++
+		}
+		if a.Enabled && a.Status == deepai.StatusBlocked {
+			blocked++
 		}
 		// 额度时效：fresh = 15 分钟内探过；due = 后台守护会去重探的。
 		if a.Theos != nil && a.Theos.CheckedAt > 0 &&
@@ -194,6 +201,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":        "ok",
 		"accounts":      len(accts),
 		"ready":         ok,
+		"degraded":      degraded,
+		"blocked":       blocked,
 		"quota_fresh":   fresh,
 		"quota_due":     due,
 		"models":        len(models),

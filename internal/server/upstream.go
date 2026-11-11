@@ -75,7 +75,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		if err != nil {
 			s.releaseAccount(acct.ID)
 			lastErr = err
-			s.Store.MarkAccountResult(acct.ID, false, err.Error())
+			s.Store.MarkAccountFailure(acct.ID, err)
 			if ctx.Err() != nil {
 				break
 			}
@@ -94,7 +94,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		if readErr != nil {
 			s.releaseAccount(acct.ID)
 			lastErr = readErr
-			s.Store.MarkAccountResult(acct.ID, false, readErr.Error())
+			s.Store.MarkAccountFailure(acct.ID, readErr)
 			continue
 		}
 		httpErr := &deepai.HTTPError{Op: "上游推理", Status: resp.StatusCode, Body: payload}
@@ -173,7 +173,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		}
 
 		lastErr = httpErr
-		s.Store.MarkAccountResult(acct.ID, false, httpErr.Error())
+		s.Store.MarkAccountFailure(acct.ID, httpErr)
 		if ctx.Err() != nil {
 			break
 		}

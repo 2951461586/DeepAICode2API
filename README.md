@@ -217,7 +217,7 @@ export ANTHROPIC_MODEL=glm-5.3-flash
 | --- | --- |
 | `/` | 内嵌单页控制台（无外部依赖） |
 | `/ping` | `pong` |
-| `/health` | 账号 / 模型 / 机器指纹摘要 |
+| `/health` | 账号 / 模型 / 机器指纹摘要；`ready` / `degraded` / `blocked` 三个计数（口径见 §6.4 末段） |
 | `/admin/api/*` | 账号、密钥、日志、统计、设置、配额、登录 |
 
 ---
@@ -421,6 +421,19 @@ curl -s -X POST localhost:10087/admin/api/checkin   -H "X-Admin-Password: $DEEPA
 
 控制台「刷新全部配额」会按 `remaining` 自动翻页，直到整池都探过；
 `/health` 额外给出 `quota_fresh`（15 分钟内探过）与 `quota_due`（守护会去重探）。
+
+`/health` 的三个账号计数（`ready` / `degraded` / `blocked`）口径：
+
+| 字段 | 含义 |
+| --- | --- |
+| `ready` | 停用的不算；`blocked` 不算（不会自愈）；`error` 只有**错误还新鲜**（10 分钟内）时不算 |
+| `degraded` | `error` 且错误在 10 分钟内 —— 控制台胶囊会额外显示「N 个近期失败」 |
+| `blocked` | 被上游策略拦截（`social_login_required` 等），需要人工处理 |
+
+`status=error` 只是「上一次请求失败」，不代表账号坏了：调度器只跳过 `blocked`，
+所以 `error` 号照常参与轮询；超过 `deepai.ErrorStaleAfter`（10 分钟）没有再失败，
+后台 30s 的巡检会把它改回 `ok`。瞬时失败（EOF / 429 / 5xx / 容量拒绝 / 签到限流）
+连 `error` 都不会标，只累加 `failures` 与 `last_err`。
 
 ### 6.5 实测：补齐机器指纹前后的额度对比
 

@@ -52,6 +52,11 @@ func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-saveTick.C:
+			// status=error 只代表“上一次请求失败”。没再出现新失败就说明那是历史噪声，
+			// 把它改回 ok，否则徽章 / 账号列表会永远灰着（docs/changes.md §45）。
+			if n := st.RecoverStaleErrors(time.Now()); n > 0 {
+				log.Printf("[decay] %d 个账号的错误标记已超过 %s 未复现，重置为 ok", n, deepai.ErrorStaleAfter)
+			}
 			if err := st.Save(); err != nil {
 				log.Printf("定期保存状态失败: %v", err)
 			}

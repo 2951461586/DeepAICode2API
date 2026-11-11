@@ -12,6 +12,7 @@
 - 42 0.3.35 协议复查（针对号池）：车道门槛分端点、`/review_tool`、签到限流
 - 43 体检三连：gateway 单测、前端拆分与死代码、工具链升级 + 连接预热
 - 44 补测两个模型指纹：qwen-3.8-max-prime / gpt-6-astra（替身分支 + 请求体形状）
+- 45 号池健康度显示修复：status=error 不再永久污染徽章
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2084,3 +2085,58 @@ sh scripts/lint.sh                   exit 0
 本节与索引）。代码零改动 —— 网关的 responses 透传由调用方给 body，不构造它。
 
 **成本**：本批共约 0.5 Theos（远低于按价签估的 195）。
+
+---
+
+## 45. 号池健康度显示修复：`status=error` 不再永久污染徽章
+
+**现象**：控制台顶部胶囊显示 **1/16 就绪**，但离线直读状态文件、自己打上游的探测
+结果是 **15/16 出过 200**；升级前后都是这个数，不是升级打坏的。
+
+**根因**（三处叠加）：
+
+1. `ready = enabled && status != "error"`（`store.AccountCounts`、`server.handleHealth`），
+   而 `status` 是**持久化字段**，只有「网关自己跑通一次推理」或「一次成功 /theos」
+   才会写回 `ok`；失败则写 `error` 且永不清除。
+2. 失败来源是**网关自身流量**：外部订阅监控每 300s 打一次，上游概率性 EOF /
+   `Too many requests today` 就把那个号标成 `error`。离线探测脚本直读状态文件、
+   自打上游、**不回写 store**，所以实测正常而徽章纹丝不动。
+3. 同一行判断还把 `blocked`（上游策略拦截，不会自愈）算成**就绪**，方向反了。
+
+补充事实：`error` **不影响调度**（`pool.Scheduler.Pick` 只跳过 `blocked`），
+只影响展示与排序 —— 号池一直在用。
+
+**修复**（展示口径与记账口径一起改）：
+
+| 改动 | 位置 |
+| --- | --- |
+| `Account.LastErrAt`（Unix 秒）：`error` 带时间戳，健康度按新鲜度判定 | `internal/deepai/types.go` |
+| `Transient(err)`：EOF / reset / 超时 / 429 / 5xx / 409 `session_busy` / `check_in_refused` 判为瞬时；401、`social_login_required` 等账号级问题不判瞬时 | `internal/deepai/health.go` |
+| `AccountReady(a, now)` / `AccountDegraded(a, now)`：停用不算；`blocked` 不算；`error` 只在 `ErrorStaleAfter`（10 分钟）内不算就绪 | 同上 |
+| `MarkAccountFailure(id, err)`：瞬时失败只累加 `failures` / `last_err`，**不动 status**；所有失败调用点改用它（7 处） | `internal/store/store_accounts.go`、`internal/server/{extensions,upstream}.go` |
+| `SetAccountAllowance` 同样按瞬时判定决定是否标 `error`（探测失败常是成片出口抖动） | `internal/store/store_accounts.go` |
+| `RecoverStaleErrors(now)`：后台 30s 巡检把「超过 10 分钟没再失败」的 `error` 改回 `ok`（保留 `last_err` 作历史），日志 `[decay] N 个账号…` | `internal/store`、`tasks.go` |
+| `/health` 新增 `degraded`（错误仍新鲜）与 `blocked` 计数；胶囊在 `degraded>0` 时显示「账号 N/M 就绪 · K 个近期失败 · 模型 X」 | `internal/server/server.go`、`web/js/overview.js` + i18n |
+| 顺手修正 `LockAccountProbe` 测试里「标 error 会把好号踢出调度」的错误注释（调度器只跳过 blocked） | `internal/store/store_accounts_test.go` |
+
+老状态文件没有 `last_err_at`（= 0），按「历史噪声」处理 → 升级后第一次巡检就把
+历史 `error` 号自愈成 `ok`，随后由真实流量按需重新标记。
+
+**为什么是 10 分钟**：上游这类失败按次、成片出现，监控与真实流量通常 5 分钟内就会
+再打一次；超过 10 分钟没再失败，说明是历史噪声。`degraded` 仍会把「刚刚 429 过」的号
+如实标出来，不会把两种状态混成「1/16」。
+
+**验证**：
+
+```text
+go test ./internal/deepai    TestTransient(16 例) / TestAccountReady(8 例) / TestAccountDegraded
+go test ./internal/store     MarkAccountFailure 瞬时 vs 账号级 / RecoverStaleErrors / AccountCounts / SetAccountAllowance
+go test ./internal/server    TestHealthReadySemantics（accounts=5 ready=2 degraded=1 blocked=1）
+go test ./...                10 个包全绿
+node scripts/console-smoke.mjs 12 条断言全过
+sh scripts/lint.sh           exit 0
+```
+
+**影响**：调度、号池轮询、容量退避零改动；只改「失败怎么写进状态」与「健康度怎么算」。
+现场那 2 个当天额度打满的号（`zhuhaoyi181` / `ming49798`）会显示为 `degraded`
+且不计入 `ready`，明日额度重置后随一次成功 `/theos` 自动恢复。

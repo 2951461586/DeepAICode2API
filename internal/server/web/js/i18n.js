@@ -116,6 +116,7 @@ var I18N_EN = {
   "登录会话已过期，请重新发起。":"Sign-in session expired, please retry.",
   // 模板句（t() 插值）
   "账号 {a}/{b} 就绪 · 模型 {c}":"{a}/{b} ready · {c} models",
+  "账号 {a}/{b} 就绪 · {d} 个近期失败 · 模型 {c}":"{a}/{b} ready · {d} recently failing · {c} models",
   "机器指纹 {m} · 默认 {d}":"Machine {m} · default {d}",
   "共 {n} 个账号":"{n} accounts",
   "共 {n} 个账号 · 第 {p}/{t} 页 · 显示 {a}-{b}":"{n} accounts · page {p}/{t} · showing {a}-{b}",
