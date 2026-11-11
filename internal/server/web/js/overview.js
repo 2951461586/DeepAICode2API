@@ -35,6 +35,8 @@ export function loadHealth() {
       ? t("账号 {a}/{b} 就绪 · {d} 个近期失败 · 模型 {c}", { a: ready, b: total, d: degraded, c: h.models || 0 })
       : t("账号 {a}/{b} 就绪 · 模型 {c}", { a: ready, b: total, c: h.models || 0 });
     setHealth(healthCls, text);
+    // 侧边栏收起后只剩一颗小圆点，完整文案放 tooltip 里，不至于丢信息。
+    $("#health").title = text;
     $("#upstream").textContent = t("机器指纹 {m} · 默认 {d}",
       { m: h.machine_id || t("不可用"), d: h.default_model || "-" });
   }).catch(function () { setHealth("err", t("不可达")); });

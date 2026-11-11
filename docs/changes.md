@@ -14,6 +14,7 @@
 - 44 补测两个模型指纹：qwen-3.8-max-prime / gpt-6-astra（替身分支 + 请求体形状）
 - 45 号池健康度显示修复：status=error 不再永久污染徽章
 - 46 修「操作」菜单无反应 + 管理口令改成独立登录页
+- 47 侧边栏状态文字溢出修复 + 侧边栏收起/展开
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2197,4 +2198,54 @@ go test ./internal/server
 go test ./...                                       10 个包全绿
 node scripts/console-smoke.mjs                      13 条断言（含新增的菜单开合）
 sh scripts/lint.sh                                  exit 0
+```
+
+---
+
+## 47. 侧边栏底部状态文字溢出修复 + 侧边栏支持收起/展开
+
+### 47.1 溢出：「账号 N/M 就绪 · K 个近期失败 · 模型 X」顶出侧边栏
+
+**现象**：号池出现近期失败（`degraded > 0`）时，侧边栏底部那颗状态胶囊的文案变长，
+直接顶出 208px 的侧边栏，压在正文上。
+
+**根因**：全局 `.badge` 是 `display:inline-flex` + `white-space:nowrap` + 固定 `height:20px`
+（按钮/表格里的短标签需要这个形状），而底部那颗胶囊的文案是**动态**的：
+
+```text
+账号 14/16 就绪            38 字符 → 放得下
+账号 14/16 就绪 · 2 个近期失败 · 模型 22    ⇒ 170px+，208px 栏内必然溢出
+```
+
+**修复**（只针对侧边栏内的胶囊，不动全局 `.badge`）：
+
+- `.side-foot{min-width:0}`：flex 子项默认 `min-width:auto`，不置 0 时文本不会收缩换行；
+- `.side-foot .badge{white-space:normal;height:auto;align-items:flex-start;border-radius:var(--r-sm);overflow-wrap:anywhere}`；
+- `.side-foot .badge .dot{margin-top:5px}`：换行后圆点仍与首行对齐；
+- `.side-meta{overflow-wrap:anywhere}`：64 位机器指纹是超长单 token，原来只 `word-break`。
+
+### 47.2 侧边栏收起 / 展开
+
+- 品牌行右侧新增 `#sideToggle`（箭头按钮，`aria-expanded` 同步）。
+- 收起态只做一件事：`body.side-collapsed{--sidebar:var(--sidebar-min)}` —— 因为
+  `.sidebar{width:var(--sidebar)}` 与 `.main{margin-left:var(--sidebar)}` 都读同一个变量，
+  JS 不需要量尺寸、也不需要在两处同步宽度；两处各自 `transition` 220ms。
+- 收起后：品牌文字、导航文字、`side-meta` 隐藏，导航只剩居中图标（按钮带 `title`，
+  悬停仍能认路）；底部状态胶囊变成一颗 **26px 状态灯**，颜色仍是 ok/warn/err，
+  完整文案进 `title`（`loadHealth` 里设置），信息不丢。
+- 选择记在 `localStorage["deepaicode2api_sidebar"]`，刷新/重开保持。
+- **移动端不参与**：`<=900px` 时侧边栏是抽屉，宽度固定 `--sidebar-full`、开关按钮隐藏，
+  收起态的规则在媒体查询里被覆盖（否则手机上会缩成 64px 的窄条）。
+- 导航文案从裸文本改成 `<span class="nav-text">`，收起时才能整体隐藏（`display:none`
+  不能作用于匿名文本节点）。
+
+**验证**：
+
+```text
+node scripts/console-smoke.mjs      14 条断言（新增「侧边栏收起 / 展开」：接线/切态/回切）
+go test ./internal/server           契约测试全绿（按页面校验 id、i18n 正反向棘轮）
+go test ./...                       10 个包全绿
+sh scripts/lint.sh                  exit 0
+真实实例抽查："/" 返回 5 个 .nav-text 与 #sideToggle；style.css 含 --sidebar-min 与
+            body.side-collapsed 规则。
 ```

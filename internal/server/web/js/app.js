@@ -243,6 +243,29 @@ $("#lang").onclick = function () {
   if ($("#tab-logs").classList.contains("on")) refreshLogs();
 };
 
+/* ================= 侧边栏伸缩 ================= */
+// 收起态只改 body 上的一个 class：CSS 里把 --sidebar 换成 --sidebar-min，
+// 侧边栏宽度与 .main 的左边距就一起跟着变（220ms 过渡），JS 不需要量尺寸。
+var SIDE_KEY = "deepaicode2api_sidebar";
+
+function applySide(collapsed) {
+  document.body.classList.toggle("side-collapsed", !!collapsed);
+  var b = $("#sideToggle");
+  if (b) b.setAttribute("aria-expanded", collapsed ? "false" : "true");
+}
+
+$("#sideToggle").onclick = function () {
+  var next = !document.body.classList.contains("side-collapsed");
+  applySide(next);
+  try { localStorage.setItem(SIDE_KEY, next ? "collapsed" : "expanded"); } catch { /* 隐私模式忽略 */ }
+};
+
+(function initSide() {
+  var saved = null;
+  try { saved = localStorage.getItem(SIDE_KEY); } catch { /* 隐私模式忽略 */ }
+  if (saved === "collapsed") applySide(true);
+})();
+
 /* ================= 启动 ================= */
 setReload(refresh);
 applyLang();

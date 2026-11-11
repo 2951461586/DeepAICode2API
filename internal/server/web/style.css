@@ -7,6 +7,10 @@
     --ok-bg:rgba(78,201,138,.12); --warn-bg:rgba(224,169,59,.12); --err-bg:rgba(240,106,99,.12);
     --r:8px; --r-sm:6px; --r-lg:10px;
     --sidebar:208px;
+    /* 侧边栏收起后的宽度（只剩图标 + 状态灯） */
+    --sidebar-min:64px;
+    /* 展开态宽度（移动端抽屉固定用它，不受收起状态影响） */
+    --sidebar-full:208px;
     --shadow:0 10px 30px rgba(0,0,0,.35);
   }
   :root[data-theme="light"]{
@@ -36,6 +40,7 @@
     display:flex;flex-direction:column;gap:14px;
     background:var(--card);border-right:1px solid var(--line);
     padding:14px 12px;
+    transition:width .16s ease,padding .16s ease;
   }
   .brand{display:flex;align-items:center;gap:9px;padding:4px 6px 10px}
   .brand-mark{
@@ -57,10 +62,49 @@
   nav.nav button.on{background:var(--card2);color:var(--fg)}
   nav.nav button.on svg{opacity:1}
 
-  .side-foot{margin-top:auto;display:flex;flex-direction:column;gap:8px;padding:8px 6px 2px}
-  .side-meta{font-size:11px;color:var(--faint);line-height:1.5;word-break:break-word}
+  .side-foot{margin-top:auto;display:flex;flex-direction:column;gap:8px;padding:8px 6px 2px;min-width:0}
+  .side-meta{font-size:11px;color:var(--faint);line-height:1.5;word-break:break-word;overflow-wrap:anywhere}
+  /* 底部那颗胶囊的文案会随健康度变长
+     （“账号 14/16 就绪 · 2 个近期失败 · 模型 22”）。全局 .badge 是
+     white-space:nowrap + 固定 20px 高，在 208px 的侧边栏里会直接顶出去，
+     所以这里单独放开换行与高度。 */
+  .side-foot .badge{
+    white-space:normal;height:auto;align-items:flex-start;
+    padding:5px 8px;line-height:1.45;border-radius:var(--r-sm);
+    max-width:100%;overflow-wrap:anywhere;
+  }
+  .side-foot .badge .dot{margin-top:5px}
 
-  .main{margin-left:var(--sidebar);flex:1;min-width:0;display:flex;flex-direction:column}
+  /* ---------- 侧边栏收起 / 展开 ---------- */
+  .side-toggle{
+    margin-left:auto;flex:none;width:24px;height:24px;padding:0;
+    display:grid;place-items:center;border:1px solid var(--line);
+    border-radius:var(--r-sm);background:transparent;color:var(--dim);
+    cursor:pointer;transition:color .12s,border-color .12s;
+  }
+  .side-toggle:hover{color:var(--fg);border-color:var(--faint)}
+  .side-toggle svg{width:13px;height:13px;transition:transform .18s ease}
+  /* 收起态：只改 --sidebar 一处，.sidebar 宽度与 .main 左边距自动跟随 */
+  body.side-collapsed{--sidebar:var(--sidebar-min)}
+  body.side-collapsed .sidebar{padding:14px 8px}
+  body.side-collapsed .brand{justify-content:center;padding:4px 0 10px;gap:6px}
+  body.side-collapsed .brand-text,
+  body.side-collapsed .nav-text,
+  body.side-collapsed .side-foot .badge > span,
+  body.side-collapsed .side-meta{display:none}
+  body.side-collapsed .side-toggle{margin-left:0}
+  body.side-collapsed .side-toggle svg{transform:rotate(180deg)}
+  body.side-collapsed nav.nav button{justify-content:center;gap:0;padding:0}
+  /* 收起后底部只留一颗状态灯（颜色仍然表示 ok/warn/err，悬停看 tooltip） */
+  body.side-collapsed .side-foot{align-items:center;padding:8px 0 2px}
+  body.side-collapsed .side-foot .badge{
+    width:26px;height:26px;padding:0;border-radius:50%;
+    justify-content:center;align-items:center;
+  }
+  body.side-collapsed .side-foot .badge .dot{margin-top:0}
+
+  .main{margin-left:var(--sidebar);flex:1;min-width:0;display:flex;flex-direction:column;
+    transition:margin-left .16s ease}
   .topbar{
     position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:8px;
     height:52px;padding:0 20px;background:rgba(25,25,25,.82);
@@ -244,7 +288,14 @@
 
   /* ---------- 响应式 ---------- */
   @media (max-width:900px){
-    .sidebar{transform:translateX(-100%);transition:transform .18s ease;box-shadow:var(--shadow)}
+    .sidebar{width:var(--sidebar-full);transform:translateX(-100%);transition:transform .18s ease;box-shadow:var(--shadow)}
+    /* 手机上侧边栏是抽屉：不参与「收起成图标」那套（宽度已固定用 --sidebar-full） */
+    body.side-collapsed .brand-text,body.side-collapsed .nav-text,
+    body.side-collapsed .side-meta,body.side-collapsed .side-foot .badge>span{display:initial}
+    body.side-collapsed .side-foot .badge{width:auto;height:auto;padding:5px 8px;border-radius:var(--r-sm);justify-content:flex-start}
+    body.side-collapsed .side-toggle{display:none}
+    body.side-collapsed nav.nav button{justify-content:flex-start;gap:9px;padding:0 9px}
+    body.side-collapsed .brand{justify-content:flex-start;padding:4px 6px 10px}
     .sidebar.open{transform:none}
     .main{margin-left:0}
     button.icon-btn.only-mobile{display:inline-flex}

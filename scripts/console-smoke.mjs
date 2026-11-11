@@ -174,6 +174,16 @@ check('行内菜单 open / close', () => {
   dom.closeMenu(); // 幂等：重复关闭不应抛异常
 });
 
+// 侧边栏伸缩：只靠 body 上的 class + CSS 变量，JS 一旦没接线按钮就死掉。
+check('侧边栏收起 / 展开', () => {
+  const btn = el('#sideToggle');
+  if (typeof btn.onclick !== 'function') throw new Error('侧边栏开关没接线');
+  btn.onclick();
+  if (!document.body.classList.contains('side-collapsed')) throw new Error('没切到收起态');
+  btn.onclick();
+  if (document.body.classList.contains('side-collapsed')) throw new Error('没切回展开态');
+});
+
 check('fmtCompact 纯函数', () => {
   if (format.fmtCompact(1500) !== '1.5K') throw new Error('fmtCompact(1500) = ' + format.fmtCompact(1500));
 });

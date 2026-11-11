@@ -13,6 +13,7 @@ var I18N_EN = {
   "日志":"Logs", "设置":"Settings", "控制台":"Console",
   // 顶栏
   "刷新":"Refresh", "退出":"Sign out",
+  "收起 / 展开侧边栏":"Collapse / expand sidebar",
   "退出登录（清除本标签页的口令）":"Sign out (clears this tab's password)",
   // 页头
   "号池健康、用量统计与上游模型目录":"Pool health, usage and upstream model catalog",
