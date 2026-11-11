@@ -127,6 +127,11 @@ const keys = await load('render/keys.js');
 const logs = await load('render/logs.js');
 const settings = await load('render/settings.js');
 const format = await load('format.js');
+// 从 app.js 拆出去的三块（概览 / 登录面板 / 设置表单）单独装配一次：
+// 拆模块最容易出的就是「文件都在、逻辑都对，但没人调用 init*」。
+const overview = await load('overview.js');
+const oauth = await load('oauth.js');
+const settingsForm = await load('settings-form.js');
 
 check('renderAccounts 空列表', () => {
   accounts.renderAccounts([], 0);
@@ -158,6 +163,27 @@ check('perSecondText 纯函数', () => {
   if (perSecondText({ theosPerSecond: {} }) !== '—') throw new Error('空 map 应为 —');
   if (perSecondText({ theosPerSecond: { standard: '0.5' } }) !== '0.5') throw new Error('单档位应只显示数值');
   if (perSecondText({ theosPerSecond: { a: '1', b: '2' } }) !== 'a: 1 · b: 2') throw new Error('多档位格式不对');
+});
+
+check('renderOverview 空数据', () => {
+  overview.renderOverview({ stats: {}, models: [], keys: [] });
+  if (el('#kpis').children.length === 0) throw new Error('KPI 卡片没画出来');
+});
+check('renderOverview 带模型', () => {
+  overview.renderOverview({
+    stats: {}, keys: [], models_updated: 0,
+    models: [{ id: 'm1', name: 'M1', reasoning: true, input: ['text'], contextWindow: 100, maxTokens: 10, theosPerRequest: '0' }],
+  });
+  if (el('#models').children.length === 0) throw new Error('模型表没写入行');
+});
+check('loadHealth', () => {
+  overview.loadHealth();
+});
+check('initOAuth / initSettingsForm 可重复装配', () => {
+  oauth.initOAuth({ refresh() {} });
+  settingsForm.initSettingsForm({ refresh() {} });
+  if (typeof el('#oauthLogin').onclick !== 'function') throw new Error('登录按钮没接线');
+  if (typeof el('#saveSettings').onclick !== 'function') throw new Error('设置保存没接线');
 });
 
 if (failures.length) {

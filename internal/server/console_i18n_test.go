@@ -173,3 +173,105 @@ func TestConsoleI18nNoDuplicateKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestConsoleI18nNoDeadEntries 是覆盖率棘轮的**反向**方向：词条必须在源码里
+// 真的被用到，否则就是死词条。
+//
+// 为什么需要这条：功能下线（注册链路 / 指纹库 / 代理池输入框）时，源码删了
+// 但字典没人清理，词条会一直烂在里面。正向棘轮（覆盖率）只看「缺不缺」，
+// 对「多不多」完全无感 —— 2026-11-11 首次引入本测试时清掉了 9 条死词条。
+//
+// 判定方式：把字典块本身从源码里挖掉，剩下的 JS + 标记里出现该原文即算「在用」。
+// 字典里形如 {"a\":\"b\"} 的转义键先反转义再匹配，避免因为 JSON 示例里的
+// 反斜杠误判成死词条。
+func TestConsoleI18nNoDeadEntries(t *testing.T) {
+	script := consoleJS()
+	dict := i18nDictionary(t, script)
+	// 挖掉字典：否则每个键都能在字典声明处匹配到自己。
+	// 同时去掉注释：注释里顺带提到某个词条（例如“阶段 A 的搬家”）不算文案在用 ——
+	// 第一版没去注释，把一个真死词条当成“还在用”放过了。
+	rest := stripJSComments(strings.Replace(script, i18nDictBlock(t, script), "", 1)) +
+		"\n" + stripHTMLComments(consoleMarkup())
+
+	var dead []string
+	for key := range dict {
+		decoded := strings.NewReplacer(`\"`, `"`, `\\`, `\`).Replace(key)
+		if strings.Contains(rest, decoded) || strings.Contains(rest, key) {
+			continue
+		}
+		dead = append(dead, key)
+	}
+	if len(dead) > 0 {
+		t.Errorf("以下词条在源码里已经没人用了（删掉它们，功能下线时别只删代码）：\n  %s",
+			strings.Join(dead, "\n  "))
+	}
+}
+
+// stripJSComments 去掉 // 与 /* */ 注释，字符串字面量与模板串原样保留。
+func stripJSComments(src string) string {
+	var b strings.Builder
+	b.Grow(len(src))
+	inStr, inTpl, inLine, inBlock := false, false, false, false
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch {
+		case inLine:
+			if c == '\n' {
+				inLine = false
+				b.WriteByte(c)
+			}
+		case inBlock:
+			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
+				inBlock = false
+				i++
+			}
+		case inStr, inTpl:
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(src) {
+				i++
+				b.WriteByte(src[i])
+				continue
+			}
+			if inStr && c == '"' {
+				inStr = false
+			}
+			if inTpl && c == '`' {
+				inTpl = false
+			}
+		default:
+			if c == '/' && i+1 < len(src) && src[i+1] == '/' {
+				inLine = true
+				i++
+				continue
+			}
+			if c == '/' && i+1 < len(src) && src[i+1] == '*' {
+				inBlock = true
+				i++
+				continue
+			}
+			if c == '"' {
+				inStr = true
+			}
+			if c == '`' {
+				inTpl = true
+			}
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// stripHTMLComments 去掉 <!-- ... -->，理由同上。
+func stripHTMLComments(src string) string {
+	for {
+		start := strings.Index(src, "<!--")
+		if start < 0 {
+			return src
+		}
+		end := strings.Index(src[start:], "-->")
+		if end < 0 {
+			return src
+		}
+		src = src[:start] + src[start+end+3:]
+	}
+}

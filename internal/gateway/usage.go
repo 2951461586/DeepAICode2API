@@ -11,15 +11,6 @@ type Usage struct {
 	Cost             float64
 }
 
-// Add 累加用量。
-func (u *Usage) Add(v Usage) {
-	u.PromptTokens += v.PromptTokens
-	u.CompletionTokens += v.CompletionTokens
-	u.TotalTokens += v.TotalTokens
-	u.ReasoningTokens += v.ReasoningTokens
-	u.Cost += v.Cost
-}
-
 // ParseUsage 兼容 chat/completions 与 responses 两种用量字段。
 func ParseUsage(v any) Usage {
 	m, ok := v.(map[string]any)

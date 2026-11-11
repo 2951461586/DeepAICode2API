@@ -309,9 +309,6 @@ func (s *Store) RemoveAccount(id string) bool {
 	return false
 }
 
-// NextAccount 以轮询方式挑一个可用账号（全部分组）。
-func (s *Store) NextAccount() *deepai.Account { return s.NextAccountGroup("") }
-
 // NextAccountGroup 在指定分组内以轮询方式挑一个可用账号。
 //
 // group 为空表示全部分组。连续失败过多的账号会被跳过；全组不可用时

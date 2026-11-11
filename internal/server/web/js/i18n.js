@@ -1,7 +1,7 @@
 // 控制台 i18n：字典 + 文本替换。
 //
 // 键是**中文原文**：静态标记与动态渲染共用一套替换，新增文案只要补词条，
-// 不必给每个节点加 data-i18n。带插值的句子走 t("模板 {n}", {...})。
+// 不必给每个节点加 data-i18n。带插值的句子走 t("共 {n} 个账号", {...})。
 //
 // 缺口由 console_i18n_test.go 兜底（差集即失败），补词条时该测试会告诉你还差哪些。
 //
@@ -28,8 +28,7 @@ var I18N_EN = {
   "重置统计":"Reset stats",
   // 面板
   "模型目录":"Model catalog", "手动添加":"Add manually", "账号列表":"Account list",
-  "任务参数":"Task options", "进度":"Progress", "新建密钥":"New key",
-  "密钥列表":"Key list", "运行参数":"Runtime options",
+  "密钥列表":"Key list", "新建密钥":"New key", "运行参数":"Runtime options",
   // 按钮
   "添加 API Key":"Add API key", "创建密钥":"Create key", "上一页":"Prev", "下一页":"Next",
   "取消":"Cancel", "打开 DeepAI 登录页":"Open DeepAI sign-in",
@@ -53,23 +52,15 @@ var I18N_EN = {
   "账号名称（可选）":"Account name (optional)",
   "API Key（DeepAI 账号密钥）":"API key (DeepAI account key)",
   "密钥备注（可选）":"Key note (optional)", "分组（默认 default）":"Group (default)",
-  "每页":"Per page", "数量（1-50）":"Count (1-50)", "并发（1-5）":"Concurrency (1-5)",
-  "邮箱域名（可选）":"Mail domain (optional)", "邮箱后端":"Mail backend",
-  "号池分组":"Pool group", "指定邮箱（可选，数量必须为 1）":"Specific email (count must be 1)",
-  "指定密码（可选）":"Specific password (optional)", "自动收信验证":"Auto verify by email",
-  "代理池（每行一个，http://user:pass@host:port；留空使用服务端 .env）":
-    "Proxy pool (one per line, http://user:pass@host:port; empty = server .env)",
+  "每页":"Per page",
+  "号池分组":"Pool group",
   "请求超时（秒）":"Request timeout (s)", "最大重试次数":"Max retries",
   "日志保留条数":"Log keep", "CORS 允许来源（逗号分隔，留空=仅本机）":"CORS origins (comma separated; empty = loopback only)",
   "兜底模型（无法识别的模型名回落到它，留空=目录默认）":"Fallback model (empty = catalog default)",
-  "模型别名（JSON，如 {\"claude-sonnet-4\":\"glm-5.3-flash\"}）":"Model aliases (JSON)",
   "管理密码（留空则保持；设置后管理接口必须携带）":"Admin password (empty = keep current)",
-  "不修改请留空":"Leave empty to keep", "留空使用配置域名":"Empty = configured domain",
-  "留空自动创建临时邮箱":"Empty = create temp mailbox", "留空自动生成":"Empty = auto generate",
-  "关闭浏览器指纹库（使用固定 UA）":"Disable browser fingerprint library (use fixed UA)",
+  "不修改请留空":"Leave empty to keep",
   // 下拉项
-  "自动":"Auto", "静态域名（无收件箱）":"Static domain (no inbox)", "固定邮箱":"Fixed mailbox",
-  "开启（验证后 +200 Theos）":"On (+200 Theos after verify)", "关闭":"Off",
+  "自动":"Auto",
   "最近 50":"Last 50", "最近 200":"Last 200", "全部":"All",
   // 表头
   "账号":"Account", "分组":"Group", "来源":"Source", "套餐 / 验证":"Plan / verified",
@@ -78,14 +69,14 @@ var I18N_EN = {
   "端点":"Endpoint", "输入":"Input", "备注":"Note", "请求数":"Requests",
   "创建时间":"Created", "时间":"Time", "模型":"Model", "流式":"Stream", "耗时":"Latency",
   "字符":"Chars", "Token":"Tokens", "成本":"Cost", "错误":"Error",
-  "邮箱":"Email", "阶段":"Stage", "代理 / 指纹":"Proxy / fingerprint",
+  "邮箱":"Email",
   // 状态 / 片段
   "未探测":"untested", "已停用":"disabled", "已验证":"verified", "未验证":"unverified",
   "是":"yes", "否":"no", "无":"none", "推理":"reasoning",
   "本页无数据":"No rows on this page",
   "暂无账号，点击「导入本机桌面端」或「浏览器登录」":"No accounts yet — import desktop creds or use browser sign-in",
   "暂无密钥（未签发时 /v1 允许无密钥调用）":"No keys yet (/v1 allows keyless calls until one exists)",
-  "暂无日志":"No logs", "暂无记录":"No records",
+  "暂无日志":"No logs",
   "等待浏览器完成登录…":"Waiting for browser sign-in…",
   "登录页会在新标签页打开；如果没有自动打开，请点击下面的按钮。":
     "The sign-in page opens in a new tab; use the button below if it did not.",
@@ -128,8 +119,6 @@ var I18N_EN = {
   "机器指纹 {m} · 默认 {d}":"Machine {m} · default {d}",
   "共 {n} 个账号":"{n} accounts",
   "共 {n} 个账号 · 第 {p}/{t} 页 · 显示 {a}-{b}":"{n} accounts · page {p}/{t} · showing {a}-{b}",
-  "单号平均 {mean}s · p50 {p50}s · p95 {p95}s · 入池 {ok}/{n}":
-    "avg {mean}s · p50 {p50}s · p95 {p95}s · enrolled {ok}/{n}",
   "确定删除账号 {name}？":"Delete account {name}?",
   "不可用":"unavailable", "不可达":"unreachable",
   "加载失败：":"Load failed: ", "失败：":"Failed: ", "日志加载失败：":"Logs failed: ",
@@ -137,7 +126,7 @@ var I18N_EN = {
   "保存失败：":"Save failed: ",
   "配额刷新完成：":"Quota refresh done: ",
   "请在右上角填写管理密码":"Enter the admin password at top right",
-  "登录成功：":"Signed in: ", "运行中…":"Running…",
+  "登录成功：":"Signed in: ",
   "深色":"Dark", "浅色":"Light",
   "切换白天 / 黑夜模式":"Toggle light / dark mode",
   // KPI 标签
@@ -155,7 +144,6 @@ var I18N_EN = {
   "API 密钥":"API key",
   "已设置，留空则不修改":"Set; leave blank to keep",
   "未识别的模型名返回 404（不做静默回落）":"Unknown model names return 404 (no silent fallback)",
-  "模板 {n}":"Template {n}",
   "配额刷新：":"Quota refresh: ",
   "兑换失败：":"Exchange failed: ",
   "轮询失败：":"Poll failed: ",

@@ -84,18 +84,6 @@ func (p *ProxyPool) Next() string {
 	return raw
 }
 
-// All 返回代理列表副本。
-func (p *ProxyPool) All() []string {
-	if p == nil {
-		return nil
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	out := make([]string, len(p.entries))
-	copy(out, p.entries)
-	return out
-}
-
 // ProxyLabel 返回不含凭据的 host:port（用于日志 / 控制台）。
 func ProxyLabel(raw string) string {
 	raw = strings.TrimSpace(raw)
