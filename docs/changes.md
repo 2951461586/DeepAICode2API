@@ -11,6 +11,7 @@
 
 - 42 0.3.35 协议复查（针对号池）：车道门槛分端点、`/review_tool`、签到限流
 - 43 体检三连：gateway 单测、前端拆分与死代码、工具链升级 + 连接预热
+- 44 补测两个模型指纹：qwen-3.8-max-prime / gpt-6-astra（替身分支 + 请求体形状）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2049,3 +2050,37 @@ node scripts/console-smoke.mjs       12 条断言全过
 govulncheck@v1.9.0                   No vulnerabilities found.
 sh scripts/lint.sh                   exit 0
 ```
+
+---
+
+## 44. 补测两个模型指纹：`qwen-3.8-max-prime` / `gpt-6-astra`
+
+**触发**：§40.5 留的尾巴（两个模型拿不到有效输出，估需 195 Theos）。本次用号池账号
+直接打上游、同账号跑免费模型做对照，不用外部检测器。
+
+**结果**（详见 `docs/model-fingerprint-2026-11-10.md` 文末）：
+
+| 模型 | 样本 | `id` | 回显 | `provider` | cost | 输出 |
+| --- | ---: | --- | --- | --- | --- | --- |
+| `qwen-3.8-max-prime` | 4 | `gen_<ULID>` | `alibaba/qwen3.8-max-prime` | 缺失 | 0 | ✅ |
+| `gpt-6-astra` | 4 | `gen_<ULID>` | `openai/gpt-6-astra` | 缺失 | 0 | ✅ |
+| `glm-5.3-flash`（同账号对照） | 2 | `gen-<epoch>-<rand>` | `z-ai/glm-5.3-flash` | `InferenceNet`/`Friendli` | 7e-6 / 3.2e-5 | ✅ |
+
+1. 两个模型**都能正常出结果**，§40.5 记的"超时 / 3/3 空响应"是**检测器侧**问题
+   （并发 3 采样 + 不支持 responses 端点），不是上游不可用。
+2. 按 §3.1 判据两者都落在**替身分支**；同账号下 `glm-5.3-flash` 是干净的真分支，
+   所以差异是模型级路由，不是账号/代理异常。
+3. **替身现在会回显真实 vendor slug**（`alibaba/…` / `openai/…`），不再是
+   `reflection/beam` —— §3.1 里"不回显 slug"这条**辅助**判据对这两个模型失效。
+4. **目录价 ≠ 实扣**：`qwen` 价签 15、`astra` 价签 50，实测每个样本只扣
+   **0.03–0.07 Theos**（对照组的 `upstream_inference_cost` 也只有 1e-5 美元级）。
+   拿 `theosPerRequest` 估算号池成本会高估两个数量级。
+5. 新发现 `/responses` 的**请求体形状**要求：`system` 放在 `input[0]`（不是顶层
+   `instructions`）、user content 是 `[{type:"input_text",text}]` 数组、带
+   `store:false` 与 `prompt_cache_key`；缺了直接 400
+   `This request is not one DeepAI Code sends.`。
+
+**改动**：只改文档（`docs/model-fingerprint-2026-11-10.md` 补测小节 + 原表两行标注、
+本节与索引）。代码零改动 —— 网关的 responses 透传由调用方给 body，不构造它。
+
+**成本**：本批共约 0.5 Theos（远低于按价签估的 195）。
