@@ -10,6 +10,7 @@
 本文按时间顺序追加，最新条目在最末。查最新结论从这里跳：
 
 - 42 0.3.35 协议复查（针对号池）：车道门槛分端点、`/review_tool`、签到限流
+- 43 体检三连：gateway 单测、前端拆分与死代码、工具链升级 + 连接预热
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -1980,3 +1981,71 @@ go test ./...    OK
 - `docs/changes.md`：本节 + 索引。
 
 **验证**：仅文档改动，`sh scripts/lint.sh` 仍全绿（gofmt / vet / test 未触碰代码）。
+
+---
+
+## 43. 体检三连：gateway 单测、前端拆分与死代码、工具链升级 + 连接预热
+
+**触发**：2026-11-11 全仓扫描（deadcode / 覆盖率 / env 与文档漂移 / i18n 词条
+使用率），按优先级 P1 → P2 → P3 落地。含一次实测修正：`govulncheck` 在 go1.25
+上报了一条**可达**的 stdlib 漏洞，因此工具链直接落到 1.26.11。
+
+### 43.1 P1：`internal/gateway` 补单测 + 文档/配置纠偏
+
+- 新包 `gateway_test.go`：该包此前没有测试文件（靠 `internal/server` 间接覆盖）。
+  补齐整型/浮点/长度的宽松转换、Responses 工具选择与输出、Anthropic 图片与文档
+  data URL 的全部边角分支，并断言「非法输入返回零值、不 panic」。
+  覆盖：`ConvertResponsesToolChoice` / `AnthropicDocumentDataURL` 0% → 100%，
+  `ResponsesToolOutput` 28.6% → 100%，`IntOf`/`FloatOf`/`LenOfString` → 100%。
+- README 数字与实测对齐：badge `260 → 333 用例`；正文「315 用例 / 8.8k 行 / 9 包」
+  → 「333 用例（含 44 子用例）/ 9.8k 行 / 10 包」。
+- `.env.example` 补齐 10 个真实可配项（HOST/PORT/DATA_PATH/DATA_DIR/ENV_FILE、
+  API_ORIGIN/API_KEY/API_KEY_NAME、T3CODE_HOME/DEEPAI_CODE_HOME），并标注
+  `DEEPAI_REGISTER_PROXY_POOL` 是兼容别名；本机 `.env` 清掉 7 个孤儿键
+  （`TEMPMAIL_*` / `DEEPAI_REGISTER_*` / `DEEPAI2API_GATEWAY`，代码与文档零引用）。
+
+### 43.2 P2：前端拆三块 + 死代码/死词条
+
+- `app.js` 514 → 283 行，只留装配与取数；新增 `overview.js`（KPI/模型表/health）、
+  `oauth.js`（登录面板 + 粘贴回调）、`settings-form.js`（设置保存）。
+  两块子面板用 `init*({refresh})` 回调注入，避免与 `app.js` 循环导入。
+- `console-smoke.mjs` 补 4 条断言（`renderOverview` 空/带数据、`loadHealth`、
+  `init*` 可重复装配）——拆模块最怕「文件都在但没人调用」。
+- i18n 字典 134 → **118 条**：删掉 16 条死词条（注册/邮箱链路、机器指纹库、
+  代理池输入框、性能模板等下线功能残留）。新增**反向棘轮**
+  `TestConsoleI18nNoDeadEntries`：词条必须在源码里真的被用到。判定时会先剥掉
+  JS/HTML 注释 —— 第一版没剥，`阶段`（只出现在一句注释里）被误判成「还在用」。
+- 死代码（`deadcode` 实测，全仓库零引用）：删 `Store.NextAccount`、`Usage.Add`、
+  `ProxyPool.All`。`Store.Logs` / `SaveCounters` / `logStore.tail` 与
+  `Client.CheckIn` / `Lane` / `EnvInt` / `waitQuotaReprobe` 属测试用访问器，保留
+  （`deadcode` 默认忽略 `_test.go`，所以它们会一直出现在报告里）。
+
+### 43.3 P3：工具链 1.24 → 1.26.11 + 连接预热
+
+- `go.mod` `go 1.24` → **`go 1.26.11`**（patch 级：CI 的 setup-go 按 go-version-file
+  装的就是这个补丁版）；`Dockerfile` builder 换 `golang:1.26-alpine`；README badge 同步。
+- CI 的 `govulncheck` pin 从 v1.1.4（1.24 时代）→ **v1.9.0**，注释改成讲清「为什么
+  是 1.26.11 而不是 1.26」。
+- **为什么必须升到 1.26.11**：go1.25 实测命中 `GO-2026-6859`
+  「HTTP/1 server crash due to MaxBytesReader header race in net/http」，
+  且 trace 落到 `main.go`（`ListenAndServe`/`Shutdown`）与 `internal/server`，
+  属**可达**漏洞；`Fixed in: net/http@go1.26.11`。升级后重跑输出
+  `No vulnerabilities found.`。
+- 连接预热 `Server.WarmUpstream`（`internal/server/warmup.go`）：按号池里实际用到的
+  出口各打一次 `/models`（免鉴权、不烧 Theos），把 DNS/TCP/TLS（含代理 CONNECT）
+  提前做完；4 并发、单出口 10s、总预算 60s，在 `tasks.go` 的 background goroutine
+  里跑，失败静默。目标是把首个推理请求的整段握手从关键路径上拿掉
+  （r2 压测冷启动 p90 4129ms → 热连接约 2000ms）。
+  单测覆盖「同一出口只预热一次」「空号池不发请求」「上游 500 静默返回 0」。
+
+**验证**：
+
+```text
+go build ./...                       OK（go1.26.11）
+go vet ./...                         OK
+go test ./...                        10 个包全绿
+gofmt -l .                           无输出
+node scripts/console-smoke.mjs       12 条断言全过
+govulncheck@v1.9.0                   No vulnerabilities found.
+sh scripts/lint.sh                   exit 0
+```

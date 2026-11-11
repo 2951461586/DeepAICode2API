@@ -1,3 +1,3 @@
 module deepaicode2api
 
-go 1.24
+go 1.26.11

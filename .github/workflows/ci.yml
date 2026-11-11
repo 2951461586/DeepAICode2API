@@ -43,27 +43,32 @@ jobs:
       - name: test
         run: go test -race -count=1 ./...
 
-      # govulncheck 是 Go 模块，不能直接跟 @latest：golang.org/x/vuln 从 v1.2.0 起
-      # 要求 go >= 1.25（v1.8.0+ 要 1.26），而本项目 go.mod 是 1.24、setup-go
-      # 又把 GOTOOLCHAIN 设为 local，@latest 会在 300ms 内直接失败：
+      # govulncheck 是 Go 模块，不能直接跟 @latest：它的 go.mod 会要求更高的 Go
+      # 版本，而 setup-go 把 GOTOOLCHAIN 设为 local，不匹配时会在 300ms 内直接失败：
       #   requires go >= 1.26.0 (running go 1.24.13; GOTOOLCHAIN=local)
-      # 这里 pin 到与 1.24 兼容的最后一个版本；升 Go 后同步抬这个版本号即可。
-      # 漏洞库是运行时从 vuln.go.dev 拉的，pin 住工具不影响扫描时效。
+      # 本项目 go.mod 已升到 1.26.11，因此 pin 到 v1.9.0（当前支持 1.26 的最新版）。
+      # 漏洞库是运行时从 vuln.go.dev 拉的，pin 住扫描器不影响扫描时效。
       #
-      # 退出码收敛为 0：本仓库是 stdlib-only，命中的多是 Go 工具链 CVE，修不修
-      # 取决于要不要抬 go.mod 的版本。直接让步骤失败会在 run 页面上挂出一串
+      # 为什么要升到 1.26.11：go1.25 的 net/http 有可达漏洞 GO-2026-6859
+      # （MaxBytesReader 头竞争导致 HTTP/1 server 崩溃），Fixed in: net/http@go1.26.11。
+      # 升上来之后本仓库实测输出 "No vulnerabilities found."。
+      #
+      # 退出码收敛为 0：本仓库是 stdlib-only，将来命中的多半仍是 Go 工具链 CVE，
+      # 修不修取决于要不要再抬 go.mod。直接让步骤失败会在 run 页面上挂出一串
       # failure 注解（每条 trace 一条）让人以为 CI 挂了；这里报告进日志，只留一条
       # warning 提示。
       - name: vulncheck
         run: |
           set +e
-          report=$(go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./... 2>&1)
+          report=$(go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./... 2>&1)
           code=$?
           set -e
-          # runner 会把日志里任意位置的 “文件.go:行:列: 说明” 转成 failure 级注解，
-          # 一次扫描动辄十几条（每条 trace 一条），加前缀也拦不住。把 “go:行:列”
-          # 改写成 “go(行:列)”，信息不丢，但不再匹配注解格式。
-          printf '%s\n' "$report" | sed -E 's#([A-Za-z0-9_./-]+\.go):([0-9]+):([0-9]+)#\1(\2:\3)#g'
+          # runner 会把日志里任意位置的“文件.go:行:列: 说明”转成 failure 级注解，
+          # 一次扫描动辄十几条（每条 trace 一条），加前缀也拦不住。把“go:行:列”
+          # 改写成“go(行:列)”，信息不丢，但不再匹配注解格式。
+          # 正则单独放变量：整条塞一行会超 80 列（本文件其余行都在 80 内）。
+          rewrite='s#([A-Za-z0-9_./-]+\.go):([0-9]+):([0-9]+)#\1(\2:\3)#g'
+          printf '%s\n' "$report" | sed -E "$rewrite"
           # `go run` 会把子进程的任何非 0 退出码压成 1，真正的 3（发现漏洞）只
           # 留在输出文本里，所以按内容判而不是只看退出码。
           if [ "$code" -eq 0 ]; then

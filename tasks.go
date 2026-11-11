@@ -32,6 +32,21 @@ func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
 	modelTick := time.NewTicker(6 * time.Hour)
 	defer modelTick.Stop()
 
+	// 连接预热：按号池里实际用到的出口各打一次 /models，把 DNS/TCP/TLS
+	// （含代理 CONNECT）提前做完。首个真实推理请求就少付一次整段握手。
+	//
+	// 放在独立 goroutine 里且失败静默：预热是纯优化，不能因为某个代理
+	// dead 就拖慢监听或记错误日志。总预算 60s 与请求路径完全无关。
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		start := time.Now()
+		n := srv.WarmUpstream(ctx)
+		if n > 0 {
+			log.Printf("[warmup] 已预热 %d 个出口的上游连接（%s）", n, time.Since(start).Round(time.Millisecond))
+		}
+	}()
+
 	for {
 		select {
 		case <-stop:
