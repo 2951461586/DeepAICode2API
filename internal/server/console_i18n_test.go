@@ -208,6 +208,8 @@ func TestConsoleI18nNoDeadEntries(t *testing.T) {
 }
 
 // stripJSComments 去掉 // 与 /* */ 注释，字符串字面量与模板串原样保留。
+//
+// 块注释里的换行会保留：控制台的契约测试要靠它从 `src` 直接数出行号。
 func stripJSComments(src string) string {
 	var b strings.Builder
 	b.Grow(len(src))
@@ -224,6 +226,10 @@ func stripJSComments(src string) string {
 			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
 				inBlock = false
 				i++
+				continue
+			}
+			if c == '\n' {
+				b.WriteByte(c)
 			}
 		case inStr, inTpl:
 			b.WriteByte(c)

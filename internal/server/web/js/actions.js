@@ -7,21 +7,33 @@ import { api } from './api.js';
 import { toast } from './ui.js';
 
 // 由 app.js 在启动时注入（通常是 refresh）。
-let reload = () => {};
-export function setReload(fn) { reload = fn; }
+//
+// 默认值必须是「可调用的空实现」而不是裸 identifiers：拆分前这里写的是裸
+// `refresh()`，模块里根本没有这个绑定，任何操作成功后的收尾都会抛
+// `refresh is not a function`（被 .catch 吃掉，错误提示还会伪装成「失败」）。
+let reload = function () { return Promise.resolve(); };
+export function setReload(fn) { if (typeof fn === "function") reload = fn; }
 
 export function accountOp(action, extra){
   var body = { action: action };
   if (extra) for (var k in extra) body[k] = extra[k];
   return api("/admin/api/accounts", {method:"POST", body:body}).then(function(){
     toast("操作成功", "ok");
-    return refresh();
+    return reload();
   }).catch(function(e){ toast("失败：" + e.message, "err"); });
 }
 
 export function keyOp(kind, key){
   return api("/admin/api/keys?" + kind + "=" + encodeURIComponent(key), {method:"DELETE"})
-    .then(function(){ toast("操作成功","ok"); return refresh(); })
+    .then(function(){ toast("操作成功","ok"); return reload(); })
+    .catch(function(e){ toast("失败：" + e.message, "err"); });
+}
+
+// keySetGroup 是「改绑分组」：同样是变更 + 重拉，放在这里让 render 层不必
+// 自己发请求（render/*.js 是纯绘制层，且拿不到注入的 reload）。
+export function keySetGroup(key, group){
+  return api("/admin/api/keys", {method:"POST", body:{action:"set-group", key:key, group:group}})
+    .then(function(){ toast("操作成功", "ok"); return reload(); })
     .catch(function(e){ toast("失败：" + e.message, "err"); });
 }
 
@@ -51,5 +63,5 @@ export function finishCheckin(done, bad){
   toast("配额刷新完成：" + done + " 个账号，失败 " + bad.length +
     (bad.length ? "\n" + bad.slice(0, 5).map(function(x){ return x.name + ": " + x.err; }).join("\n") : ""),
     bad.length ? "err" : "ok");
-  return refresh();
+  return reload();
 }

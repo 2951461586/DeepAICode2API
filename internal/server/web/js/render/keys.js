@@ -4,9 +4,7 @@ import { $, cell, row, pill, emptyRow, menuToggle, openMenu } from '../dom.js';
 import { t, translateDom } from '../i18n.js';
 import { fmtTime } from '../format.js';
 import { sortCopy, sortState } from '../table.js';
-import { api } from '../api.js';
-import { keyOp } from '../actions.js';
-import { toast } from '../ui.js';
+import { keyOp, keySetGroup } from '../actions.js';
 
 export function keyMenu(k){
   var m = menuToggle("操作");
@@ -18,9 +16,7 @@ export function keyMenu(k){
         var g = prompt(t("密钥绑定的分组（留空=全部）"), k.group || "");
         if (g === null) return;
         // 列表里是脱敏 Key；服务端 resolveKeyRef 能认出掩码形式。
-        api("/admin/api/keys", {method:"POST", body:{action:"set-group", key:k.key, group:String(g).trim()}})
-          .then(function(){ toast("操作成功", "ok"); return refresh(); })
-          .catch(function(e){ toast("失败：" + e.message, "err"); });
+        keySetGroup(k.key, String(g).trim());
       }},
       { sep: true },
       { label: "删除", danger: true, fn: function(){

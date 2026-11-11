@@ -117,6 +117,18 @@ const check = (name, fn) => {
     console.log(`  FAIL ${name}: ${e && e.message}`);
   }
 };
+// checkAsync 同 check，但等异步链路跑完：变更类操作的收尾是 Promise，
+// 裸写 check 会在 catch 真正执行前就判定通过（这正是「refresh is not a
+// function」能被藏住的原因）。
+const checkAsync = async (name, fn) => {
+  try {
+    await fn();
+    console.log(`  PASS ${name}`);
+  } catch (e) {
+    failures.push(`${name}: ${e && e.message}`);
+    console.log(`  FAIL ${name}: ${e && e.message}`);
+  }
+};
 
 console.log('控制台冒烟：');
 
@@ -214,6 +226,30 @@ check('initOAuth / initSettingsForm 可重复装配', () => {
   settingsForm.initSettingsForm({ refresh() {} });
   if (typeof el('#oauthLogin').onclick !== 'function') throw new Error('登录按钮没接线');
   if (typeof el('#saveSettings').onclick !== 'function') throw new Error('设置保存没接线');
+});
+
+// 变更类操作的收尾：拆分后「刷新」只能经 setReload 注入，这里盯住注入值真的被
+// 调到。2026-11-11 的真实回归：accountOp / keyOp / finishCheckin / 改绑分组 4 处
+// 还写着裸 `refresh()`，收尾抛 TypeError 又被 .catch 吃成「失败：refresh is not
+// a function」——看起来像接口挂了。
+await checkAsync('变更操作收尾走注入的 reload', async () => {
+  const actions = await load('actions.js');
+  let reloads = 0;
+  actions.setReload(() => { reloads++; });
+  // 先跑拆分前就存在的三条：它们就是当初留着裸 refresh() 的地方。
+  await actions.accountOp('toggle', { id: 1 });
+  await actions.keyOp('toggle', 'sk-x');
+  await actions.finishCheckin(2, []);
+  if (reloads !== 3) throw new Error(`3 条收尾只触发 reload ${reloads} 次（期望 3）`);
+  if (typeof actions.keySetGroup !== 'function') {
+    throw new Error('actions.js 没导出 keySetGroup（改绑分组必须走「变更 + 重拉」）');
+  }
+  await actions.keySetGroup('sk-x', 'grp');
+  if (reloads !== 4) throw new Error(`改绑分组后 reload 共 ${reloads} 次（期望 4）`);
+  const txt = String(el('#toast').textContent || '');
+  if (txt.includes('refresh is not')) throw new Error('收尾仍引用裸 refresh：' + txt);
+  // 只认错误前缀：finishCheckin 的成功文案里也含「失败 0」。
+  if (txt.includes('失败：')) throw new Error('收尾报错：' + txt);
 });
 
 if (failures.length) {

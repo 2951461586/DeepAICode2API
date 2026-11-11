@@ -15,6 +15,7 @@
 - 45 号池健康度显示修复：status=error 不再永久污染徽章
 - 46 修「操作」菜单无反应 + 管理口令改成独立登录页
 - 47 侧边栏状态文字溢出修复 + 侧边栏收起/展开
+- 48 控制台 4 处裸 `refresh()`：注入式 reload + 静态契约 + 冒烟异步断言
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2248,4 +2249,49 @@ go test ./...                       10 个包全绿
 sh scripts/lint.sh                  exit 0
 真实实例抽查："/" 返回 5 个 .nav-text 与 #sideToggle；style.css 含 --sidebar-min 与
             body.side-collapsed 规则。
+```
+
+## 48. 控制台拆分遗留的裸 `refresh()`（4 处收尾全报「失败：refresh is not a function」）
+
+**现象**：账号启停/删除、密钥启停/删除、「查询上游配额」、「改绑分组」成功后，
+toast 显示 `失败：refresh is not a function`；数据其实已经改成，只是列表不刷新。
+
+**根因**：`app.js` 拆分时把刷新函数留在装配层，下层模块靠 `setReload(fn)` 注入，
+但 4 处收尾仍写着裸 `refresh()`：
+
+| 位置 | 场景 |
+| --- | --- |
+| `js/actions.js` `accountOp` | 账号启停 / 删除 / 手工加号 |
+| `js/actions.js` `keyOp` | 密钥启停 / 删除 |
+| `js/actions.js` `finishCheckin` | 配额查询成功后的重拉 |
+| `js/render/keys.js` keyMenu「改绑分组」 | 同款 |
+
+模块作用域里没有这个绑定，等到「操作成功后的收尾」才抛 `TypeError`；更糟的是它被
+同一个 `.catch` 接住，错误被包装成接口失败——看起来像后端挂了。
+
+**修复**：
+
+- 4 处一律改成注入的 `reload()`，默认值从空箭头函数改成**可调用的空实现**
+  （`function(){ return Promise.resolve(); }`），注入前调用也不会炸；
+- `setReload` 忽略非函数入参，避免装配顺序变化把 `reload` 设成 `undefined`；
+- 「改绑分组」原本在 `render/keys.js` 里自己发请求，抽成 `actions.keySetGroup(key, group)`：
+  render 层只绘制、变更类操作统一走 actions（才能共用同一条 reload 收尾）。
+
+**回归防线**（这两条以前都不存在，所以拆分时漏改也没人发现）：
+
+- `internal/server/console_reload_test.go`：静态契约——`actions.js` 与 `render/*.js`
+  不允许出现裸 `refresh(`，并断言注入点仍在（`setReload` 导出 + 默认空实现）。
+  扫描前先剥注释（复用 `console_i18n_test.go` 的 `stripJSComments`，并让它保留块注释
+  里的换行，行号才报得准）；
+- `scripts/console-smoke.mjs`：新增 `checkAsync` 与「变更操作收尾走注入的 reload」——
+  真跑 4 条操作链路，断言注入的 reload 被调 4 次、toast 里没有 `失败：` 前缀。
+  对拆分前的代码复跑会直接报 `refresh is not defined`（已实测）。
+
+**验证**：
+
+```text
+node scripts/console-smoke.mjs      15 条断言全 PASS（新增的那条对旧代码 FAIL）
+go test ./internal/server -run TestConsole      契约全绿
+go test ./... -count=1                          10 个包全绿
+gofmt -l . && go vet ./...                      无输出
 ```
