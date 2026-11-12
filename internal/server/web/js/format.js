@@ -21,7 +21,9 @@ export function fmtCost(n){
 // 量级很大、不需要逐位精确的列。精确值放 title 里随悬停可见。
 export function fmtCompact(n){
   var v = Number(n);
-  if (!isFinite(v)) return "0";
+  // v 已经是 Number：用 Number.isFinite 而不是全局 isFinite（后者会先做类型转换，
+  // 对 "12abc" 这类字符串会返回真）。
+  if (!Number.isFinite(v)) return "0";
   var abs = Math.abs(v);
   if (abs < 1000) return String(v);
   var units = [[1e9,"B"],[1e6,"M"],[1e3,"K"]];

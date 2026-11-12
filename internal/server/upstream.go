@@ -243,9 +243,9 @@ func writeUpstreamErr(w http.ResponseWriter, err error) {
 	var he *deepai.HTTPError
 	if errors.As(err, &he) {
 		if json.Valid(he.Body) && len(he.Body) > 0 {
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			w.WriteHeader(he.Status)
-			_, _ = w.Write(he.Body)
+			// 走统一的原始 JSON 写出：Content-Type 与状态码只在 writeRawJSON 一处维护，
+			// 避免每个错误分支各拼一遍响应头。写的是 JSON，不是 HTML。
+			writeRawJSON(w, he.Status, he.Body)
 			return
 		}
 		writeErr(w, he.Status, he.Error(), "upstream_error")

@@ -92,7 +92,7 @@ export function renderOverview(d) {
     // free 由后端 Model.Free() 下发（单一口径）；旧响应没有这个字段时才回退本地判断。
     var free = (m.free === undefined)
       ? (!m.premier && (price === "—" || String(price) === "0"))
-      : !!m.free;
+      : Boolean(m.free);
     var input = (m.input || []).join(" + ");
     if (m.reasoning) input = input ? input + " · " + t("推理") : t("推理");
     tb.appendChild(row([

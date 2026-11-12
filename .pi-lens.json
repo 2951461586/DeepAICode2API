@@ -1,0 +1,66 @@
+{
+  "$schema": "https://raw.githubusercontent.com/apmantza/pi-lens/master/docs/schema/pi-lens-config-v1.json",
+
+  "ignore": [
+    "dist/",
+    "bin/",
+    "exports/",
+    "coverage.out",
+    "*.out",
+    ".env",
+    ".env.*",
+    "deepaicode2api-data*.json",
+    "deepaicode2api-data*.jsonl",
+    "*.jsonl",
+    "*.bak"
+  ],
+
+  "lsp": {
+    "disabledServers": [
+      "bash",
+      "css",
+      "docker",
+      "html",
+      "python",
+      "typos",
+      "yaml"
+    ],
+    "warmFiles": [
+      "internal/server/server.go",
+      "internal/server/upstream.go",
+      "internal/server/admin_actions.go",
+      "internal/store/store.go",
+      "internal/deepai/client.go"
+    ]
+  },
+
+  "dispatch": {
+    "disabledRunners": [
+      "vale",
+      "markdownlint",
+      "yamllint"
+    ]
+  },
+
+  "rules": {
+    "high-complexity": {
+      "threshold": 25,
+      "ignorePaths": ["internal/server/upstream.go"]
+    },
+    "high-fan-out": {
+      "threshold": 30
+    },
+    "nil-map-assignment": {
+      "disable": ["nil-map-assignment"]
+    },
+    "waitgroup-done-scope": {
+      "disable": ["waitgroup-done-scope"]
+    },
+    "no-console-except-error-js": {
+      "ignorePaths": ["internal/server/web/js/api.js"]
+    },
+    "no-array-reverse-mutation-js": {
+      "ignorePaths": ["internal/server/web/js/render/logs.js"]
+    }
+  }
+}

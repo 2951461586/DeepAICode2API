@@ -722,6 +722,7 @@ go build -ldflags "-X main.version=v0.1.1" -o bin/deepaicode2api .
 | `docs/performance.md` | 压测数据与优化方案：单号 E2E、阶段分解、P0/P1/P2 收益测算 |
 | `docs/optimization-plan.md` | 首轮扫描的完整优化方案（已全部实施，保留作为设计依据） |
 | `docs/optimization-plan-r2.md` | 第二轮扫描（写放大 / 控制台 / 复探）的方案与收益测算 |
+| `docs/pi-lens.md` | 本仓的 pi-lens 配置说明：关了什么、为什么、怎么验证与恢复 |
 | `.env.example` | 全部可配置项与说明 |
 | `Makefile` | `make build / test / test-race / lint / cover` |
 

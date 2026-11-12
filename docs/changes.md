@@ -19,6 +19,7 @@
 - 49 后端 P0/P1/P2 + 前端 P0/P1/P2 一轮落地：选号热路径、流式 idle 超时、优雅关闭、按密钥限流、口令防爆破、request id/JSONL/metrics、gzip、CSP/ETag
 - 50 概览 KPI 增「今日 token / 缓存命中率」、账号列表脱敏开关、版本号与更新检查、v0.1.0 发布
 - 51 全量扫描落地：Keys() 竞态、请求日志完整性、回退路径空闲超时、落盘失败上报、8 项优化重构、遗留清理（v0.1.1）
+- 52 项目的 pi-lens 配置：扫描范围、关闭未安装 runner/LSP、规则策略与两处真实修复
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2605,3 +2606,70 @@ go test -cover ./internal/gateway/                  gateway 13.3% → 94.3%
 实测确认 `-race` 报错）、`TestPassthroughNonJSONIsLogged`（旧实现不写日志）、
 `TestAdminMutationReportsSaveFailure` 与 `TestAdminKeysRejectsMalformedJSON`
 （旧实现回 200）。
+
+## 52. 项目的 pi-lens 配置：从默认值到按本仓裁剪（2026-11-12）
+
+此前本仓**没有**任何 pi-lens 配置（`effective_config` 显示 `documents: []`、
+provenance 全 0），机器上也没有 `~/.pi-lens/config.json` —— 等于全程跑默认值。
+默认值对「零工具链 + 中文长文 + 路由装配风格」的仓并不合适，表现为每会话几十条
+`tool-not-found` 与几条稳定的误报。
+
+### 52.1 证据先行
+
+`~/.pi-lens/extension.log` 里与本仓相关的 spawn 失败统计（近两天）：
+
+| 次数 | 工具 | 说明 |
+| ---: | --- | --- |
+| 16 | `typos` | 未安装；中文文档还会大量误报 |
+| 10 + 6 + 4 | `vscode-html/css-language-server` | 未安装 |
+| 6 + 5 | `bash-language-server` | 未安装 |
+| 5 + 5 | `yamllint` / `yaml-language-server` | 未安装 |
+| 5 + 5 | `pyright` / `basedpyright-langserver` | 未安装 |
+| 2 + 1 | `docker-langserver` / `jscpd` | 未安装 |
+
+同时把 `lens_diagnostics mode=full` 跑了一遍前端与 5 个热点 Go 文件，得到
+4 条真实可改 + 5 条结构性误报（见下）。
+
+### 52.2 改了什么
+
+新增仓库根 `.pi-lens.json`（项目级，可提交、不参与编译）：
+
+| 段 | 内容 | 理由 |
+| --- | --- | --- |
+| `ignore` | `dist/`、`bin/`、`exports/`、`coverage.out`、`*.out`、`.env*`、`deepaicode2api-data*.json*`、`*.jsonl`、`*.bak` | 运行期状态含上游 Key，本就不该进任何索引 |
+| `lsp.disabledServers` | `bash` / `css` / `docker` / `html` / `python` / `typos` / `yaml` | 对应 server 均未安装；关掉后相关文件显示 *unconfirmed* 而不是每会话刷失败 |
+| `dispatch.disabledRunners` | `vale` / `markdownlint` / `yamllint` | 中文长文与两份 YAML 不在本仓质量门禁内 |
+| `rules.high-complexity` | 阈值 15 → 25；`internal/server/upstream.go` 单独豁免 | `openModel` 是已知调度状态机（cc 39），拆分需单独设计 |
+| `rules.high-fan-out` | 20 → 30 | 默认值对路由/装配风格偏严 |
+| `rules.nil-map-assignment` | disable | 规则不追踪 `&m` 写入：`var m map[…]` + `json.Unmarshal(raw, &m)` 合法 |
+| `rules.waitgroup-done-scope` | disable | 规则把 `ctx.Done()` 也当成 `WaitGroup.Done()`（误报 3 处） |
+| `rules.no-console-except-error-js` | `ignorePaths: js/api.js` | 该处 `console.warn` 是刻意保留的英文界面排障输出 |
+| `rules.no-array-reverse-mutation-js` | `ignorePaths: render/logs.js` | 写法是 `list.slice().reverse()`，规则看不穿 `.slice()` |
+
+顺带**改代码**而不是豁免的两处（真实问题）：
+
+- `format.js`：`isFinite(v)` → `Number.isFinite(v)`（v 已是 Number，全局版会先做类型转换）；
+- `overview.js`：`!!m.free` → `Boolean(m.free)`（等价且不触发 `no-extra-boolean-cast-js`）；
+- `upstream.go`：上游错误体的三行手写响应头 → 复用 `writeRawJSON`，顺带消掉
+  Semgrep 的 XSS 误报（网关写的是 JSON / SSE，不是 HTML，`html/template` 不适用）。
+
+### 52.3 验证
+
+```text
+effective_config path=internal/server/upstream.go
+  documents=[project .pi-lens.json] · provenanceCounts.project=29 · recordCounts={}
+  7 个 server 显示 disabled-by-config（含 key 与 tier）
+
+lens_diagnostics path=internal/server/web/js scope=paths mode=full source=lsp
+  0 findings（2 条按规则策略隐藏，均已在 docs/pi-lens.md 记录原因）
+
+lens_diagnostics path=internal/server/upstream.go … 5 个热点文件
+  0 findings（4 条按规则策略隐藏）
+```
+
+`recordCounts` 第一版有 2 条 `PILENS_CFG_0005`：`typos` 与 `jscpd` 不是合法的
+`dispatch.disabledRunners` id（`typos` 属于 LSP 辅助 server，已由
+`lsp.disabledServers` 关闭）。修正后为空 —— 这类告警是配置是否真的被接受的
+第一判据。
+
+配置说明与「以后怎么打开」写在 `docs/pi-lens.md`。
