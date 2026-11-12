@@ -109,9 +109,15 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodDelete {
+	switch r.Method {
+	case http.MethodDelete:
 		s.Store.ClearLogs()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	case http.MethodGet:
+	default:
+		// 以前只拦 DELETE，POST / PUT 会把日志当查询结果回包，容易被当成“写成功”。
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET / DELETE", "invalid_request_error")
 		return
 	}
 	// 支持 limit / since / endpoint / account / min_status / q。

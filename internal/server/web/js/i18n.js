@@ -124,6 +124,8 @@ var I18N_EN = {
   "确定删除账号 {name}？":"Delete account {name}?",
   "不可用":"unavailable", "不可达":"unreachable",
   "加载失败：":"Load failed: ", "失败：":"Failed: ", "日志加载失败：":"Logs failed: ",
+  "日志渲染失败：":"Log render failed: ",
+  "账号渲染失败：":"Account render failed: ",
   "查询失败：":"Query failed: ", "刷新失败：":"Refresh failed: ", "创建失败：":"Create failed: ",
   "保存失败：":"Save failed: ",
   "配额刷新完成：":"Quota refresh done: ",

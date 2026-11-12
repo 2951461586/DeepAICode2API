@@ -212,3 +212,46 @@ func TestVersionStatusSingleFlight(t *testing.T) {
 		}
 	}
 }
+
+// TestVersionStatusSurvivesCallerCancel 守住「第一个调用方断开」的缓存污染。
+//
+// 以前单飞的 leader 直接用调用方的 ctx：控制台刚打开就关掉标签页 → 在途的
+// GitHub 查询被 abort → 失败结果写进缓存 6 小时 → 之后所有人打开控制台都是
+// 「无法检查更新」，而 GitHub 其实完全可达。
+func TestVersionStatusSurvivesCallerCancel(t *testing.T) {
+	hits := withUpdateFeed(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(120 * time.Millisecond) // 让 leader 的查询真正在路上
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v9.9.9"})
+	})
+
+	s, _ := newTestServer(t, nil)
+	s.SetVersion("v0.1.0")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan versionInfo, 1)
+	go func() { done <- s.versionStatus(ctx) }()
+	time.Sleep(20 * time.Millisecond) // 等 leader 拿到单飞权
+	cancel()
+	<-done
+
+	// 等 leader 真正收尾（它的查询已与调用方上下文脱钩，应正常返回）。
+	deadline := time.Now().Add(2 * time.Second)
+	var got versionInfo
+	for time.Now().Before(deadline) {
+		got = s.versionStatus(context.Background())
+		if got.Latest != "" || got.Error != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got.Error != "" {
+		t.Fatalf("调用方取消不应污染缓存：%+v", got)
+	}
+	if got.Latest != "v9.9.9" || !got.UpdateAvailable {
+		t.Fatalf("缓存结果不对：%+v", got)
+	}
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("上游应只被查一次，实际 %d 次（取消可能触发了重查）", n)
+	}
+}

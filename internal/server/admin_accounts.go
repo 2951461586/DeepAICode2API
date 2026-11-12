@@ -119,26 +119,33 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 
 	results := make([]map[string]any, 0, len(out))
 	settled := make(map[string]bool, len(out))
+	probed := 0
 	for _, o := range out {
 		if o.Account == nil {
 			continue
 		}
-		settled[o.Account.ID] = true
 		item := map[string]any{"id": o.Account.ID, "name": o.Account.Name}
 		switch {
 		case o.Skipped:
-			// 已有探测在跑：既不算失败，也不算这次探过。
+			// 已有探测在跑：既不算失败，也不算这次探过，所以**不进 settled**。
+			// 进 settled 会让 remaining 把它当成「已探过」而收敛，而它其实还
+			// 处于未知状态；不进则下一批会把它重新算进 remaining，等另一路
+			// 探完自然就散了。
 			item["ok"] = true
 			item["skipped"] = true
 			item["note"] = "已有探测在进行"
-		case o.Allowance == nil && o.Err == nil:
-			item["ok"] = false
-			item["err"] = "探测已取消"
 		default:
-			item["ok"] = o.Err == nil
-			item["theos"] = o.Allowance
-			if o.Err != nil {
-				item["err"] = o.Err.Error()
+			settled[o.Account.ID] = true
+			probed++
+			if o.Allowance == nil && o.Err == nil {
+				item["ok"] = false
+				item["err"] = "探测已取消"
+			} else {
+				item["ok"] = o.Err == nil
+				item["theos"] = o.Allowance
+				if o.Err != nil {
+					item["err"] = o.Err.Error()
+				}
 			}
 		}
 		results = append(results, item)
@@ -159,7 +166,8 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":        true,
 		"total":     total,
-		"probed":    len(batch),
+		"probed":    probed,              // 真正发起探测的账号数（skipped 不算）
+		"skipped":   len(batch) - probed, // 已有探测在跑、本轮跳过的
 		"remaining": remaining,
 		"results":   results,
 	})

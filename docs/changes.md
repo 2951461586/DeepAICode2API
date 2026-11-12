@@ -7,6 +7,14 @@
 
 ### 索引（倒序，最新在前）
 
+**版本 → 条目**（发版时对着这里找本次改了什么）：
+
+| 版本 | 条目 | 一句话 |
+| --- | --- | --- |
+| v0.1.2 | 53、54 | 控制台日志页漏 import（`renderLogs`）+ 二次全扫 7 处遗留 |
+| v0.1.1 | 49、50、51、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 概览 KPI、账号脉敏、版本检查、项目级 pi-lens 配置 |
+| v0.1.0 | 45、46、47、48 | 号池健康度、行内菜单与登录页、侧边栏、注入式 reload |
+
 本文按时间顺序追加，最新条目在最末。查最新结论从这里跳：
 
 - 42 0.3.35 协议复查（针对号池）：车道门槛分端点、`/review_tool`、签到限流
@@ -20,6 +28,8 @@
 - 50 概览 KPI 增「今日 token / 缓存命中率」、账号列表脱敏开关、版本号与更新检查、v0.1.0 发布
 - 51 全量扫描落地：Keys() 竞态、请求日志完整性、回退路径空闲超时、落盘失败上报、8 项优化重构、遗留清理（v0.1.1）
 - 52 项目的 pi-lens 配置：扫描范围、关闭未安装 runner/LSP、规则策略与两处真实修复
+- 53 日志页报「日志加载失败：renderLogs is not defined」：补回漏掉的 import + 导入契约测试
+- 54 二次全扫：英文空态漏翻、设置 0 被吞、概览连带失败、更新检查缓存污染、签到计数虚高
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2673,3 +2683,126 @@ lens_diagnostics path=internal/server/upstream.go … 5 个热点文件
 第一判据。
 
 配置说明与「以后怎么打开」写在 `docs/pi-lens.md`。
+
+## 53. 日志页报「日志加载失败：renderLogs is not defined」（v0.1.1 拆 app.js 漏了一条 import）
+
+**现象**：打开控制台「请求日志」页（或点「刷新」/ 换筛选 / 点「重新加载」），
+toast 显示 `日志加载失败：renderLogs is not defined`，日志表永远是空的。
+而浏览器 devtools 里 `/admin/api/logs` 是 200，响应体里日志正常。
+
+**根因**：`app.js` 拆分时 `refreshLogs()` 留在装配层（取数 + 渲染都在这一处），
+但文件顶部的 import 块只有 `renderAccounts` / `renderKeys` / `renderSettings`，
+漏了 `./render/logs.js`。ES module 的未绑定标识符**不在加载时**报错，只在执行到
+`renderLogs(state.logs)` 这一行时抛 `ReferenceError`；它又被同一个 `.catch`
+接住，于是被改写成了「日志加载失败」——提示指向接口，实际接口没问题。
+
+所以「取数正常、渲染炸掉」被压成一句话，排查成本全落在读代码上。同类事故
+在本仓已经发生过一次（提交 `ca0ed43`：4 处收尾还在调裸 `refresh()`）。
+
+**修复**：
+
+| 位置 | 改动 |
+| --- | --- |
+| `js/app.js` | 补 `import { renderLogs } from './render/logs.js'` |
+| `js/app.js` `refreshLogs` | 取数与渲染**分开收尾**：接口失败才报「日志加载失败：」，渲染失败报「日志渲染失败：」并单独 try/catch；接口失败时不再拿空数组覆盖旧表格 |
+| `js/i18n.js` | 补英文词条「日志渲染失败：」→ `Log render failed: `（否则英文界面漏翻） |
+
+**回归防线**（这两条以前都没有，所以漏改没人发现）：
+
+- `console_imports_test.go`（新增）：静态契约——某文件调用了别的模块导出的
+  函数就**必须** import 它；import 的路径要能解析到内嵌资源、导出名要真的存在。
+  对旧代码复跑直接 FAIL：`web/js/app.js:172 调用了 renderLogs()，但本文件没有 import 它`。
+- `scripts/console-smoke.mjs`：加载 `app.js` 前先把 `#tab-logs` 标成当前页，
+  让 `start()` 真的跑一遍 `refreshLogs()`，再断言 toast 不含「日志加载失败 /
+  日志渲染失败」且日志表写进了行。旧代码复跑：`FAIL ... renderLogs is not defined`。
+  （此前冒烟只 import `app.js` 不点任何页签，这条链路一次都没走过。）
+
+**验证**：
+
+```text
+node scripts/console-smoke.mjs      16 条全放行（新增 1 条）
+go test ./...                       13 个包全绿（新增 2 条契约）
+sh scripts/lint.sh                  exit 0（gofmt / vet / JS 语法 / 冒烟 / 测试）
+```
+
+## 54. 二次全扫（v0.1.1 之后）：7 处遗留，5 类根因
+
+**扫描方式**：`go test -race -cover`、`go vet`、`scripts/lint.sh`、逐文件通读前端（1920 行
+ES module）、后端按「未覆盖函数 / 静默错误 / 未受约束的资源增长」定向抽查。以下是
+**读代码能证明 + 复跑能证伪**的遗留项，按影响排序。
+
+### 54.1 前端：英文界面空态整段是中文（真实用户可见）
+
+| 位置 | 现象 |
+| --- | --- |
+| `dom.js` `emptyRow` | 「暂无日志 / 暂无密钥 / 暂无账号 / 无」在 EN 界面原样显示中文 |
+
+根因：`emptyRow` 直接用 `mk(td, text)` 写文本，而空态分支渲染完就 `return`，
+**不经过** `translateDom`（日志页连 `translateDom` 都没调过；账号/密钥/模型靠
+`refresh()` 末尾那次全局 `translateDom(document.body)` 兜住，日志页没有这一步）。
+而空态恰恰是新装用户的默认视图。
+
+修复：`emptyRow` 内部过 `t()`——空态是唯一不经过 `translateDom` 的单元格，源头修一处
+四个表全好。冒烟新增「英文界面空态不落中文」：切 `en` 后逐个空渲染四张表，断言无 CJK。
+
+### 54.2 前端：设置里的显式 `0` 被吞成空框
+
+`render/settings.js` 的注释写着「0 是合法值（关闭），不能用 `|| ""` 吞掉」，代码却
+还在用 `s.rate_limit_rps || ""`：把限流关掉（存成 0）后重开控制台，输入框是空的，
+看着像「没设置」。改为 `num()`（只把 `undefined/null` 显示成空串）并覆盖三个限流字段。
+
+### 54.3 前端：账号接口失败会把整个概览拖成空白
+
+`refresh()` 原来是 `Promise.all([overview, loadAccounts])`：账号页一失败，`renderOverview`
+/ `renderKeys` / `renderSettings` 全都不执行，KPI 与模型表停在上一轮（首次就是全空），
+提示只有一句「加载失败」。改为两个接口各自收尾，互不影响。
+
+同时 `loadAccounts()` 现在**自己接住错误**并分离取数与渲染（同 `refreshLogs` 的处理）：
+分页器 / 导航 / 筛选都是直接调它而不接 promise，以前任何失败都会变成浏览器控制台里的
+unhandled rejection；渲染抛错也会被包成「接口失败」。新增 i18n 词条「账号渲染失败：」。
+
+### 54.4 后端：更新检查的错误会被缓存 6 小时（关个标签页就能污染）
+
+`versionStatus` 的单飞 leader 直接用调用方 `ctx` 去查 GitHub：控制台刚打开就关掉/刷新
+页面 → 请求取消 → 查询 abort → **失败结果写进缓存 6 小时**，之后所有人打开控制台都显示
+「无法检查更新」，而 GitHub 其实可达。改用 `context.WithoutCancel(ctx)`，预算仍由
+`fetchLatestRelease` 的 8s 超时兜底。回归：`TestVersionStatusSurvivesCallerCancel`
+（旧代码复跑：`Error:Get ...: context canceled` 且 `Cached:true`）。
+
+### 54.5 后端：签到「已有探测在跑」既算探过、又算收敛
+
+`handleAdminCheckin` 里 `probed: len(batch)` 把跳过的也算成本次探过，而跳过的条目又写进
+`settled`，于是 `remaining` 认为它已完成。结果：控制台报「配额刷新完成：N 个账号」，
+其中一部分根本没测；`remaining` 归零后也不再重试。现在 `probed` 只计真正发起探测的、
+新增 `skipped` 字段，且跳过**不进** `settled`（与函数里原有的注释一致）。
+回归：`TestCheckinSkipsInFlightProbes`。
+
+### 54.6 顺手收紧的两处
+
+- `handleAdminLogs`：以前只拦 `DELETE`，`POST/PUT/PATCH` 会落进查询分支把日志回包，
+  调用方看到 200 容易误判「写成功」。现在只接受 `GET / DELETE`，其余 405
+  （回归：`TestLogsEndpointRejectsUnsupportedMethod`）。
+- 清理：`gzipWriter.req`（写了没人读）、`app.js` 的 `state.data`（早已不用的字段）、
+  `render/logs.js` 的 `l.latency_ms + "ms"`（缺字段会显示 `undefinedms`）。
+
+### 54.7 明确记下、本轮不改的三处
+
+| 位置 | 为什么不改 |
+| --- | --- |
+| `store.Record` 丢掉 `logs.append` 的写盘错误 | 要做得对需要「限频告警 + 指标」，否则坏盘上每请求刷一行日志；等于给日志加一条观测通道，单独一轮 |
+| `settingsPatch.apply` 忽略 `request_timeout_sec / max_retries / log_keep` 的 0 | 这三个字段后端把 0 当非法值，改成允许 0 得先定义「0 = 不超时 / 不保留」的语义，属于协议变更 |
+| 日志轮转时清空内存环形缓冲 | `QueryLogs` 走文件扫描（最多回读 4MB），环形缓冲只是扫描失败时的兜底，实际不可见 |
+
+### 54.8 验证
+
+```text
+sh scripts/lint.sh                 exit 0（gofmt / vet / JS 语法 / 冒烟 / 测试）
+node scripts/console-smoke.mjs     18 条全放行（新增 2 条）
+go test -race -cover ./...         13 包全绿；internal/server 77.6%
+反向验证                           5 条新断言对旧代码复跑全部 FAIL：
+                                  空态中文 / 设置 0 被吞 / 缓存污染 / 签到计数 / logs 405
+```
+
+冒烟桩同步修了一处**测试自身的失真**：`El.textContent = ""` 以前只改属性、不清子节点，
+渲染函数清表格的写法在桩里等于没清，断言会看到已经不在页面上的旧行。现在赋值为
+setter，语义与真实 DOM 一致。

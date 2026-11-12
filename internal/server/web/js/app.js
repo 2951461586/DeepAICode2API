@@ -22,6 +22,7 @@ import { api, pw } from './api.js';
 import { setReload } from './actions.js';
 import { renderAccounts } from './render/accounts.js';
 import { renderKeys } from './render/keys.js';
+import { renderLogs } from './render/logs.js';
 import { renderSettings } from './render/settings.js';
 import { renderOverview, loadHealth } from './overview.js';
 import { initOAuth } from './oauth.js';
@@ -31,7 +32,9 @@ import { initEvents } from './events.js';
 import { initTheme, initSidebar, initDrawer } from './theme.js';
 import { initAccountPager } from './pager.js';
 
-var state = { data: null };
+// state 是控制台的共享运行时数据：overview 的最近一次响应与日志列表。
+// 账号分页数据不进这里（渲染时作为参数传入，避免两份“当前页”）。
+var state = {};
 
 /* ================= 页面状态（URL 同步） ================= */
 // 筛选条件与页码写进 hash：#accounts?group=g1&status=ok&page=2
@@ -111,9 +114,11 @@ function restoreFromHash() {
 /* ================= 取数 ================= */
 
 // 首屏只拉 overview（不含账号列表），账号走服务端分页。
+//
+// 两个接口各自收尾：账号接口失败不该把概览的 KPI / 模型表一起拖成空白
+// （以前用 Promise.all，任一个 reject 则 renderOverview 永远不执行）。
 function refresh() {
-  return Promise.all([api("/admin/api/overview"), loadAccounts()]).then(function (res) {
-    var d = res[0];
+  var overview = api("/admin/api/overview").then(function (d) {
     state.overview = d;
     renderOverview(d);
     renderKeys(d);
@@ -124,9 +129,13 @@ function refresh() {
     // 401 由 api() 统一处理（清口令 + 跳登录页），这里只报错误本身。
     toast(t("加载失败：") + e.message, "err");
   });
+  return Promise.all([overview, loadAccounts()]);
 }
 
 // loadAccounts 按当前页码拉一页账号（服务端分页）。
+//
+// 取数与渲染分开收尾，并且**自己把错接住**：分页器 / 导航 / 筛选都是直接调它
+// 而不接 promise，任何未捕获的拒绝都会变成浏览器控制台里的 unhandled rejection。
 function loadAccounts() {
   var q = "offset=" + (ui.acctPage * ui.acctPageSize) + "&limit=" + ui.acctPageSize;
   var st = sortState.accounts;
@@ -138,8 +147,16 @@ function loadAccounts() {
   if (g) q += "&group=" + encodeURIComponent(g);
   if (s) q += "&status=" + encodeURIComponent(s);
   if (kw) q += "&q=" + encodeURIComponent(kw);
-  return api("/admin/api/accounts?" + q).then(function (page) {
-    renderAccounts(page.items, page.total);
+  return api("/admin/api/accounts?" + q).catch(function (e) {
+    toast(t("加载失败：") + e.message, "err");
+    return null;
+  }).then(function (page) {
+    if (!page) return;
+    try {
+      renderAccounts(page.items, page.total);
+    } catch (e) {
+      toast(t("账号渲染失败：") + e.message, "err");
+    }
     return page;
   });
 }
@@ -160,10 +177,20 @@ function refreshLogs() {
     var ts = Math.floor(new Date(since).getTime() / 1000);
     if (ts > 0) q += "&since=" + ts;
   }
-  return api("/admin/api/logs?" + q).then(function (d) {
+  // 取数与渲染分开收尾：渲染层抛错（模块漏 import、DOM 结构变了）不该被
+  // 包成「日志加载失败」——那会让人去查接口，而其实 /admin/api/logs 是 200。
+  return api("/admin/api/logs?" + q).catch(function (e) {
+    toast(t("日志加载失败：") + e.message, "err");
+    return null;
+  }).then(function (d) {
+    if (!d) return; // 取数已经报过错，别拿旧数据覆盖成「空日志」
     state.logs = d.logs || [];
-    renderLogs(state.logs);
-  }).catch(function (e) { toast(t("日志加载失败：") + e.message, "err"); });
+    try {
+      renderLogs(state.logs);
+    } catch (e) {
+      toast(t("日志渲染失败：") + e.message, "err");
+    }
+  });
 }
 
 /* ================= 装配 ================= */

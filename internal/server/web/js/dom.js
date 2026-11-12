@@ -64,8 +64,13 @@ export function row(cells){
 
 export function pill(text, cls){ return mk("span", "badge " + (cls||""), text); }
 
+// emptyRow 画「空态」行。
+//
+// 文本过一遍 t()：空态行是**唯一**一种不经过 translateDom 的单元格（渲染函数
+// 在追加空态行后就 return 了，日志页更是连 translateDom 都不调），英文界面
+// 因此会直接显示中文——而空态恰恰是新装用户的默认视图。
 export function emptyRow(cols, text){
-  var c = cell(text, "muted");
+  var c = cell(t(text), "muted");
   c.colSpan = cols;
   var r = mk("tr");
   r.appendChild(c);

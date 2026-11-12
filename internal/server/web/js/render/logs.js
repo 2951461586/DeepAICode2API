@@ -39,7 +39,7 @@ export function renderLogs(logs){
     tokCell.title = fmtNum(l.tokens_in) + " / " + fmtNum(l.tokens_out);
     tb.appendChild(row([
       cell(fmtTime(l.time), "muted"), cell(l.endpoint || "-", "mono muted"), cell(l.model, "mono"),
-      cell(t(l.stream ? "是" : "否"), "mono"), st, cell(l.latency_ms + "ms", "mono"),
+      cell(t(l.stream ? "是" : "否"), "mono"), st, cell((l.latency_ms || 0) + "ms", "mono"),
       charsCell, tokCell,
       cell(fmtCost(l.cost), "mono"),
       cell(l.account, "mono"), errCell

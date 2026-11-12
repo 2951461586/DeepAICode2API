@@ -43,7 +43,6 @@ func compressibleType(ct string) bool {
 // WriteHeader，此时类型已知；提前决定就得让每个 handler 自己声明。
 type gzipWriter struct {
 	http.ResponseWriter
-	req       *http.Request
 	gz        *gzip.Writer
 	decided   bool
 	compress  bool
@@ -118,7 +117,7 @@ func withGzip(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		gw := &gzipWriter{ResponseWriter: w, req: r}
+		gw := &gzipWriter{ResponseWriter: w}
 		defer gw.close()
 		next.ServeHTTP(gw, r)
 	})

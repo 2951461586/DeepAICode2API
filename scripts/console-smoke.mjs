@@ -37,7 +37,7 @@ class El {
     this.classList = new ClassList();
     this.style = {};
     this.dataset = {};
-    this.textContent = '';
+    this._text = '';
     this.value = '';
     this.checked = false;
     this.disabled = false;
@@ -46,9 +46,14 @@ class El {
     this.offsetWidth = 120;
     this.offsetHeight = 40;
   }
-  appendChild(child) { if (child) { child.parentNode = this; this.children.push(child); } return child; }
-  append(...kids) { kids.forEach((k) => this.appendChild(k)); }
+  appendChild(child) { if (child) { child.parentNode = this; this.children.push(child); } return child; }  append(...kids) { kids.forEach((k) => this.appendChild(k)); }
   removeChild(child) { this.children = this.children.filter((c) => c !== child); if (child) child.parentNode = null; return child; }
+  // textContent 必须像真实 DOM 一样「赋值即清空子节点」：
+  // 渲染函数清表格用的就是 tb.textContent = ""，桩里不清会把上一轮的行留着，
+  // 断言就会看到已经不存在于页面上的旧内容。
+  get textContent() { return this._text; }
+  set textContent(v) { this._text = String(v == null ? '' : v); this.children = []; }
+
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return this.attrs[k] ?? null; }
   addEventListener() {}
@@ -133,8 +138,22 @@ const checkAsync = async (name, fn) => {
 console.log('控制台冒烟：');
 
 // 1) 顶层接线：import 即执行（事件绑定、applyLang、refresh 的调用链）
+//
+// 先把日志页标成「当前页」：app.js 的 start() 会按这个 class 决定要不要跑
+// refreshLogs()，否则「取数 + 渲染」那条链在冒烟里一次都走不到。
+// 2026-11-11 的真实回归：app.js 拆分时漏了 `import { renderLogs }`，未绑定
+// 标识符只在执行到那一行时才抛，又被 .catch 包成「日志加载失败」（其实接口 200）。
+el('#tab-logs').classList.add('on');
 await load('app.js');
+await new Promise((r) => setTimeout(r, 0)); // 等 app.js 里的异步链跑完
 check('app.js 顶层执行', () => {});
+check('app.js 启动即刷新日志页', () => {
+  const txt = String(el('#toast').textContent || '');
+  if (txt.includes('日志加载失败') || txt.includes('日志渲染失败')) {
+    throw new Error('日志页取数/渲染报错：' + txt);
+  }
+  if (el('#logs').children.length === 0) throw new Error('日志表没有写入行');
+});
 
 // 2) 四个渲染函数：喂固定数据，确认不抛异常且真的往表里写了行
 const accounts = await load('render/accounts.js');
@@ -148,6 +167,8 @@ const overview = await load('overview.js');
 const oauth = await load('oauth.js');
 const settingsForm = await load('settings-form.js');
 const dom = await load('dom.js');
+// 语言状态是模块级单例：切到 en 再渲染，能直接看出哪些文案走了 t()、哪些没走。
+const i18n = await load('i18n.js');
 
 check('renderAccounts 空列表', () => {
   accounts.renderAccounts([], 0);
@@ -198,6 +219,31 @@ check('侧边栏收起 / 展开', () => {
 
 check('fmtCompact 纯函数', () => {
   if (format.fmtCompact(1500) !== '1.5K') throw new Error('fmtCompact(1500) = ' + format.fmtCompact(1500));
+});
+check('renderSettings 保留显式 0', () => {
+  // 0 是「限流关闭」的合法值：曾经用 `|| ""`，结果设置被吞成空框、看上去像没生效。
+  settings.renderSettings({ request_timeout_sec: 0, max_retries: 0, log_keep: 0, rate_limit_rps: 0, rate_limit_burst: 0, key_concurrency: 0 });
+  const zeros = ['#sRps', '#sBurst', '#sConcurrency'].filter((s) => el(s).value !== '0');
+  if (zeros.length) throw new Error('显式 0 被吞成空值：' + zeros.join(','));
+});
+check('英文界面空态不落中文', () => {
+  // 空态行是唯一不经过 translateDom 的单元格，英文界面曾经直接显示中文
+  // （而空态正是新装用户的默认视图）。
+  i18n.setLang('en');
+  const cjk = /[\u4e00-\u9fff]/;
+  logs.renderLogs([]);
+  keys.renderKeys({ keys: [] });
+  accounts.renderAccounts([], 0);
+  overview.renderOverview({ stats: {}, models: [], keys: [] });
+  const where = [];
+  ['#logs', '#keys', '#accounts', '#models'].forEach((sel) => {
+    const text = el(sel).children
+      .map((r) => (r.children || []).map((c) => String(c.textContent || '')).join(' '))
+      .join(' ');
+    if (cjk.test(text)) where.push(sel + ': ' + text);
+  });
+  i18n.setLang('zh');
+  if (where.length) throw new Error('英文空态仍是中文：' + where.join(' | '));
 });
 check('perSecondText 纯函数', () => {
   const { perSecondText } = format;

@@ -97,7 +97,10 @@ func (s *Server) versionStatus(ctx context.Context) versionInfo {
 		s.versionInFlight = done
 		s.versionMu.Unlock()
 
-		info := s.queryLatestVersion(ctx, current)
+		// 查询不能挂在「第一个打开控制台的人」的请求上下文上：他一关标签页，
+		// 在途的查询就被 abort，而失败结果会被缓存 6 小时——之后所有人都会看到
+		// 「无法检查更新」。剔除取消信号，预算由 fetchLatestRelease 的 updateTimeout 兜底。
+		info := s.queryLatestVersion(context.WithoutCancel(ctx), current)
 		// 失败也写缓存：否则离线环境下每次刷新控制台都要等 8s 超时。
 		s.storeVersionCache(info)
 

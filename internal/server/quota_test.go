@@ -280,3 +280,49 @@ func TestProbeAsyncFailureDoesNotMarkAccount(t *testing.T) {
 		t.Fatalf("自动复探失败污染了账号状态: status=%q failures=%d", got.Status, got.Failures)
 	}
 }
+
+// TestCheckinSkipsInFlightProbes 守住「已有探测在跑」时的计数语义。
+//
+// 以前 probed 直接取 len(batch)，把跳过的一起算成本次探过；而跳过的那一条又被
+// 塞进 settled，于是 remaining 也认为它「已收敛」。结果：控制台报「配额刷新
+// 完成：N 个账号」，其中一部分根本没测；且 remaining 归零后不再重试。
+func TestCheckinSkipsInFlightProbes(t *testing.T) {
+	var hits atomic.Int64
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = io.WriteString(w, `{"enabled":true,"balance":"1.00"}`)
+	})
+	s, _ := newTestServer(t, u)
+
+	// 占住 acc-1 的探测槽位，模拟「另一路正在探」。
+	if !s.claimProbe("acc-1") {
+		t.Fatal("占用探测槽位失败")
+	}
+	defer s.releaseProbe("acc-1")
+
+	rec := postAdmin(t, s, "/admin/api/checkin", `{"id":"acc-1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	out := decodeJSON[map[string]any](t, rec.Body.Bytes())
+	if out["probed"] != float64(0) {
+		t.Fatalf("跳过的探测被算成 probed: %#v", out)
+	}
+	if out["skipped"] != float64(1) {
+		t.Fatalf("skipped = %v，期望 1: %#v", out["skipped"], out)
+	}
+	// 跳过 ≠ 已探过：它仍是未知状态，必须留在 remaining 里等下一批。
+	if out["remaining"] != float64(1) {
+		t.Fatalf("remaining = %v，期望 1（跳过不应收敛）", out["remaining"])
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("跳过时不应打上游，实际 %d 次", got)
+	}
+	results, _ := out["results"].([]any)
+	if len(results) != 1 {
+		t.Fatalf("results 条数 = %d，期望 1", len(results))
+	}
+	if item, _ := results[0].(map[string]any); item["skipped"] != true {
+		t.Fatalf("results[0] 应标记 skipped: %#v", results[0])
+	}
+}

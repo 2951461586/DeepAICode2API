@@ -3,7 +3,7 @@
 [![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod)
-[![tests](https://img.shields.io/badge/tests-542%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-547%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#三接口清单)
 [![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -28,7 +28,7 @@
 | 账号接入 | 浏览器登录（Google / Apple / 邮箱密码）、桌面端凭据导入、手工 API Key；入池自动分配机器指纹与代理 |
 | 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 设置 |
 | 安全 | 密钥鉴权、管理口令、同源写保护、状态文件 AES-256-GCM 可选加密 |
-| 可回归 | 542 个用例（412 顶层 + 130 子用例）/ 12.8k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 10 个含测试的包（另 3 个无测试）+ 前端语法与冒烟 |
+| 可回归 | 547 个用例（417 顶层 + 130 子用例）/ 13.1k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 10 个含测试的包（另 3 个无测试）+ 前端语法与冒烟（18 条） |
 
 ```text
 ┌──────────────┐  /v1/chat/completions   ┌────────────────┐   Api-Key + Theos 头   ┌─────────────────────────────┐
@@ -503,7 +503,7 @@ curl -s -X POST localhost:10087/admin/api/checkin   -H "X-Admin-Password: $DEEPA
   支持按**端点 / 账号 / 最小状态码 / 关键字 / 起始时间**过滤（字符与 token 同样是 K/M）。
 - **设置**：超时、重试、日志保留、CORS、兜底模型、严格模型模式、模型别名、管理密码，
   以及按密钥限流（RPS / burst / 并发上限，0 = 不限）。
-- **顶栏版本号**：显示构建版本（`v0.1.1`），点击跳转 releases 页；控制台启动时会
+- **顶栏版本号**：显示构建版本（`v0.1.2`），点击跳转 releases 页；控制台启动时会
   向 `/admin/api/version` 查一次最新 release（服务端缓存 6 小时），有新版则高亮提示。
 - **登录**：管理口令走独立的 `/login` 页（入口 `POST /admin/api/auth` 校验），
   成功后才进控制台；口令只保存在**本标签页**的 `sessionStorage`，顶栏只有「退出」。
@@ -641,7 +641,7 @@ docker run -d --name deepaicode2api \
 
 ```bash
 make build                       # Makefile 自动取 git describe 作为版本
-go build -ldflags "-X main.version=v0.1.1" -o bin/deepaicode2api .
+go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 ./bin/deepaicode2api -version    # 打印版本后退出
 ```
 
@@ -651,8 +651,9 @@ go build -ldflags "-X main.version=v0.1.1" -o bin/deepaicode2api .
   离线、被墙或仓库不可达时只返回当前版本（`error` 字段说明原因），
   不会影响控制台使用，也不会在界面上弹错误。
 - **开发构建**（`version=dev`）不做更新比对：否则永远提示「有新版本」。
-- 发版流程：`git tag v0.1.1 && git push origin v0.1.1`，再用
-  `sh scripts/release.sh v0.1.1 --publish` 交叉编译各平台二进制并创建 GitHub Release。
+- 发版流程：`git tag v0.1.2 && git push origin v0.1.2`，再用
+  `sh scripts/release.sh v0.1.2 --publish` 交叉编译各平台二进制并创建 GitHub Release
+  （构建前先 `rm -rf dist`：脚本按版本号命名产物，旧版本文件会被一起上传）。
 
 ## 十、限制与说明
 

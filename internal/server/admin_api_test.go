@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"deepaicode2api/internal/deepai"
@@ -140,5 +141,31 @@ func TestLogsEndpointFilters(t *testing.T) {
 	}
 	if len(d.Logs) != 1 || d.Logs[0]["endpoint"] != "chat" {
 		t.Fatalf("过滤未生效: %#v", d.Logs)
+	}
+}
+
+// TestLogsEndpointRejectsUnsupportedMethod 守住 /admin/api/logs 的方法集合。
+//
+// 以前只拦 DELETE：POST / PUT 会落到「查询」分支，把日志原样回包。调用方看到
+// 200 很容易以为是「写成功了」，实际什么都没发生。
+func TestLogsEndpointRejectsUnsupportedMethod(t *testing.T) {
+	s, key := newTestServer(t, nil)
+	s.Store.Record(store.LogEntry{Time: 1, Endpoint: "chat", Status: 200}, 0)
+
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch} {
+		rec := do(t, s, m, "/admin/api/logs", key, "{}")
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s /admin/api/logs = %d，期望 405", m, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), `"logs"`) {
+			t.Errorf("%s /admin/api/logs 仍回了日志体：%s", m, rec.Body.String())
+		}
+	}
+	// GET / DELETE 必须照旧。
+	if rec := do(t, s, http.MethodGet, "/admin/api/logs", key, ""); rec.Code != http.StatusOK {
+		t.Errorf("GET = %d，期望 200", rec.Code)
+	}
+	if rec := do(t, s, http.MethodDelete, "/admin/api/logs", key, ""); rec.Code != http.StatusOK {
+		t.Errorf("DELETE = %d，期望 200", rec.Code)
 	}
 }
