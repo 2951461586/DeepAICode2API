@@ -255,3 +255,46 @@ func TestLoginCallbackExchangeFailure(t *testing.T) {
 		t.Error("兑换失败后会话应被清理")
 	}
 }
+
+// TestLoginSessionsPrunesExpiredOnGet 覆盖会话回收：放弃的登录不能永久占着端口。
+//
+// put 只在「发起新登录」时清理；用户放弃一次登录后再也不发起，会话与其回环
+// 监听就会一直留着。登录页的每次轮询 / 打开都会走 get，这里顺手回收。
+func TestLoginSessionsPrunesExpiredOnGet(t *testing.T) {
+	ls := newLoginSessions()
+	old := &loginSession{ID: "old", Created: time.Now()}
+	fresh := &loginSession{ID: "fresh", Created: time.Now()}
+	ls.put(old)
+	ls.put(fresh)
+
+	// put 之后再把 old 变旧，模拟「放了一段时间没人管」。
+	ls.mu.Lock()
+	old.Created = time.Now().Add(-2 * loginTTL)
+	ls.mu.Unlock()
+
+	// 请求的会话即使过期也原样返回：调用方要靠它区分 expired 与 404。
+	if got := ls.get("old"); got == nil {
+		t.Fatal("被请求的过期会话仍应返回（由调用方判定 expired）")
+	}
+	ls.mu.Lock()
+	_, keptOld := ls.m["old"]
+	ls.mu.Unlock()
+	if !keptOld {
+		t.Fatal("被请求的会话不应在 get 里被删掉")
+	}
+
+	// 换一个 id 请求：old 这次是「兄弟会话」，应被回收；fresh 不受影响。
+	if got := ls.get("fresh"); got == nil {
+		t.Fatal("未过期会话不应被回收")
+	}
+	ls.mu.Lock()
+	_, stillOld := ls.m["old"]
+	_, keptFresh := ls.m["fresh"]
+	ls.mu.Unlock()
+	if stillOld {
+		t.Fatal("过期兄弟会话应被 get 回收")
+	}
+	if !keptFresh {
+		t.Fatal("fresh 不应被回收")
+	}
+}

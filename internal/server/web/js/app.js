@@ -5,28 +5,31 @@
 //   - overview.js      KPI、模型表、/health 状态胶囊
 //   - oauth.js         浏览器登录面板 + 回调粘贴
 //   - settings-form.js 设置表单保存
-//   - 本文件            取数（refresh / loadAccounts / refreshLogs）、导航、
-//                       分页与筛选、表头排序、主题、抽屉
+//   - events.js        事件接线（导航 / 顶栏 / 筛选 / 排序 / 语言 / 脱敏）
+//   - theme.js         主题、侧边栏、移动端抽屉
+//   - pager.js         账号分页控件
+//   - 本文件           取数（refresh / loadAccounts / refreshLogs）、URL 状态、
+//                       启动顺序与登录门
 //
-// 约定：往下层传的是回调（initOAuth({refresh})）而不是 import 本文件的函数，
-// 否则 oauth.js ⇄ app.js 会循环导入（ESM 下表现为 TDZ 报错）。
-import {
-  t, translateDom, applyLang, setLang, getLang,
-} from './i18n.js';
+// 约定：往下层传的是回调（initEvents({refresh, loadAccounts, …})）而不是 import
+// 本文件的函数，否则 app.js ⇄ 子模块会循环导入（ESM 下表现为 TDZ 报错）。
+import { t, translateDom, applyLang } from './i18n.js';
 import { ui } from './state.js';
-import { $, closeMenu } from './dom.js';
-import { sortState, markSort, toggleSort } from './table.js';
+import { $ } from './dom.js';
+import { sortState } from './table.js';
 import { toast } from './ui.js';
-import { api, pw, clearPw } from './api.js';
-import { accountOp, checkin, setReload } from './actions.js';
+import { api, pw } from './api.js';
+import { setReload } from './actions.js';
 import { renderAccounts } from './render/accounts.js';
 import { renderKeys } from './render/keys.js';
-import { renderLogs } from './render/logs.js';
 import { renderSettings } from './render/settings.js';
 import { renderOverview, loadHealth } from './overview.js';
 import { initOAuth } from './oauth.js';
 import { initSettingsForm } from './settings-form.js';
 import { checkUpdate } from './version.js';
+import { initEvents } from './events.js';
+import { initTheme, initSidebar, initDrawer } from './theme.js';
+import { initAccountPager } from './pager.js';
 
 var state = { data: null };
 
@@ -105,12 +108,6 @@ function restoreFromHash() {
   return h.tab;
 }
 
-/* ================= 行内操作菜单 ================= */
-document.addEventListener("click", function () { closeMenu(); });
-document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeMenu(); });
-window.addEventListener("resize", closeMenu);
-window.addEventListener("scroll", closeMenu, true);
-
 /* ================= 取数 ================= */
 
 // 首屏只拉 overview（不含账号列表），账号走服务端分页。
@@ -169,211 +166,33 @@ function refreshLogs() {
   }).catch(function (e) { toast(t("日志加载失败：") + e.message, "err"); });
 }
 
-/* ================= 导航 ================= */
-document.querySelectorAll("nav button").forEach(function (b) {
-  b.onclick = function () {
-    document.querySelectorAll("nav button").forEach(function (x) { x.classList.remove("on"); });
-    document.querySelectorAll("section").forEach(function (x) { x.classList.remove("on"); });
-    b.classList.add("on");
-    $("#tab-" + b.dataset.tab).classList.add("on");
-    if (b.dataset.tab === "logs") refreshLogs();
-    if (b.dataset.tab === "accounts") loadAccounts();
-    syncHash(b.dataset.tab);
-  };
-});
+/* ================= 装配 ================= */
+// 顺序即依赖：先装上交互接线，再装子面板，最后才启动取数。
+initMenusAndPanels();
 
-/* ================= 顶部按钮 ================= */
-// 退出登录：只清本标签页的口令，不动别的状态。
-$("#logout").onclick = function () {
-  clearPw();
-  location.replace("/login");
-};
-$("#refresh").onclick = function () { refresh(); if ($("#tab-logs").classList.contains("on")) refreshLogs(); };
-$("#importLocal").onclick = function () { accountOp("import", {}); };
-$("#addManual").onclick = function () {
-  var key = $("#manualKey").value.trim();
-  if (!key) { toast("请填写 API Key", "err"); return; }
-  accountOp("manual", { api_key: key, name: $("#manualName").value.trim() }).then(function () {
-    $("#manualKey").value = ""; $("#manualName").value = "";
+function initMenusAndPanels() {
+  initTheme();
+  initSidebar();
+  initDrawer();
+  initEvents({
+    refresh: refresh,
+    loadAccounts: loadAccounts,
+    refreshLogs: refreshLogs,
+    syncHash: syncHash,
+    state: state,
   });
-};
-$("#checkinAll").onclick = function () { checkin(null); };
-$("#refreshModels").onclick = function () {
-  toast("正在从上游刷新模型目录…");
-  api("/admin/api/models", { method: "POST", body: {} }).then(function (r) {
-    toast("模型目录已更新：共 " + r.count + " 个模型", "ok");
-    return refresh();
-  }).catch(function (e) { toast("刷新失败：" + e.message, "err"); });
-};
-$("#addKey").onclick = function () {
-  api("/admin/api/keys", { method: "POST", body: { name: $("#keyName").value.trim(), group: $("#keyGroup").value.trim() } }).then(function (r) {
-    toast("已创建密钥（仅显示一次）：\n" + r.key, "ok");
-    $("#keyName").value = "";
-    return refresh();
-  }).catch(function (e) { toast("创建失败：" + e.message, "err"); });
-};
-$("#reloadLogs").onclick = refreshLogs;
-$("#clearLogs").onclick = function () {
-  if (!confirm("确定清空全部日志？")) return;
-  api("/admin/api/logs", { method: "DELETE" }).then(function () { toast("已清空", "ok"); return refreshLogs(); })
-    .catch(function (e) { toast("失败：" + e.message, "err"); });
-};
-$("#clearStats").onclick = function () {
-  if (!confirm("确定重置统计？")) return;
-  api("/admin/api/stats", { method: "DELETE" }).then(function () { toast("已重置", "ok"); return refresh(); })
-    .catch(function (e) { toast("失败：" + e.message, "err"); });
-};
-$("#logLimit").onchange = refreshLogs;
-
-/* ================= 子面板（各自独立的模块） ================= */
-initOAuth({ refresh: refresh });
-initSettingsForm({ refresh: refresh });
-
-/* ================= 登录状态 ================= */
-// 清理旧版本遗留在 localStorage 里的口令（那时顶栏还有输入框）。
-try { localStorage.removeItem("deepaicode2api_pw"); } catch { /* 隐私模式忽略 */ }
-
-/* ================= 主题（白天 / 黑夜） ================= */
-// 优先用上次的选择；没选过就跟随系统 prefers-color-scheme。
-function applyTheme(mode) {
-  document.documentElement.setAttribute("data-theme", mode);
-  var moon = $("#themeIconMoon"), sun = $("#themeIconSun"), label = $("#themeLabel");
-  // 用 class 而不是 style.display：HTML 里已改成 .hidden 工具类（CSP 禁止内联样式）。
-  if (moon) moon.classList.toggle("hidden", mode === "light");
-  if (sun) sun.classList.toggle("hidden", mode !== "light");
-  if (label) {
-    // 文案变了就得让 translateDom 重记中文原文，否则切回英文时会复现上一次的标签。
-    label.__zh = undefined;
-    label.textContent = mode === "light" ? "浅色" : "深色";
-    translateDom(label.parentNode);
-  }
-}
-(function initTheme() {
-  var mode = null;
-  try { mode = localStorage.getItem("deepaicode2api_theme"); } catch { /* 隐私模式忽略 */ }
-  if (mode !== "light" && mode !== "dark") {
-    mode = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
-  }
-  applyTheme(mode);
-})();
-$("#theme").onclick = function () {
-  var next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
-  applyTheme(next);
-  try { localStorage.setItem("deepaicode2api_theme", next); } catch { /* 隐私模式忽略 */ }
-};
-
-/* ================= 账号分页控件 ================= */
-$("#acctSize").value = String(ui.acctPageSize);
-$("#acctPrev").onclick = function () { if (ui.acctPage > 0) { ui.acctPage--; syncHash("accounts"); loadAccounts(); } };
-$("#acctNext").onclick = function () { ui.acctPage++; syncHash("accounts"); loadAccounts(); };
-$("#acctSize").onchange = function () {
-  var v = parseInt(this.value, 10);
-  if (v !== 20 && v !== 50 && v !== 100) return;
-  ui.acctPageSize = v;
-  ui.acctPage = 0;
-  try { localStorage.setItem("deepaicode2api_acct_page_size", String(v)); } catch { /* 隐私模式忽略 */ }
-  loadAccounts();
-};
-
-/* ================= 账号 / 日志筛选 ================= */
-function applyAcctFilters() { ui.acctPage = 0; syncHash("accounts"); loadAccounts(); }
-$("#acctFilterApply").onclick = applyAcctFilters;
-$("#acctFilterClear").onclick = function () {
-  $("#acctGroup").value = ""; $("#acctStatus").value = ""; $("#acctQuery").value = "";
-  applyAcctFilters();
-};
-$("#acctStatus").onchange = applyAcctFilters;
-
-// debounce：输入停下 250ms 再查，避免每敲一个字打一次 /admin/api/accounts。
-function debounce(fn, ms) {
-  var t = null;
-  return function () {
-    clearTimeout(t);
-    t = setTimeout(fn, ms);
-  };
-}
-var acctQueryDebounced = debounce(applyAcctFilters, 250);
-$("#acctGroup").onkeydown = $("#acctQuery").onkeydown = function (ev) {
-  if (ev.key === "Enter") applyAcctFilters();
-};
-$("#acctGroup").oninput = $("#acctQuery").oninput = acctQueryDebounced;
-
-$("#logFilterApply").onclick = function () { syncHash("logs"); refreshLogs(); };
-$("#logFilterClear").onclick = function () {
-  $("#logEndpoint").value = ""; $("#logAccount").value = ""; $("#logMinStatus").value = "";
-  $("#logKeyword").value = ""; $("#logSince").value = "";
-  syncHash("logs");
-  refreshLogs();
-};
-$("#logEndpoint").onchange = function () { syncHash("logs"); refreshLogs(); };
-var logQueryDebounced = debounce(function () { syncHash("logs"); refreshLogs(); }, 250);
-$("#logKeyword").onkeydown = $("#logAccount").onkeydown = function (ev) {
-  if (ev.key === "Enter") { syncHash("logs"); refreshLogs(); }
-};
-$("#logKeyword").oninput = $("#logAccount").oninput = logQueryDebounced;
-
-/* ================= 表头排序 ================= */
-// accounts 走服务端（分页必须如此），其余三张小表在前端排。
-function wireSort(sel, name, onChange) {
-  document.querySelectorAll(sel + " th[data-sort]").forEach(function (th) {
-    th.addEventListener("click", function () {
-      toggleSort(name, th.getAttribute("data-sort"));
-      markSort(sel, sortState[name]);
-      onChange();
-    });
+  // 分页器只改 ui 状态，取数与 hash 同步仍由本文件负责。
+  initAccountPager(function () {
+    syncHash("accounts");
+    loadAccounts();
   });
-}
-wireSort("#acctTable", "accounts", function () { ui.acctPage = 0; loadAccounts(); });
-wireSort("#modelTable", "models", function () { if (state.overview) renderOverview(state.overview); });
-wireSort("#keyTable", "keys", function () { if (state.overview) renderKeys(state.overview); });
-wireSort("#logTable", "logs", function () { renderLogs(state.logs || []); });
-
-/* ================= 语言切换 ================= */
-$("#lang").onclick = function () {
-  setLang(getLang() === "en" ? "zh" : "en");
-  try { localStorage.setItem("deepaicode2api_lang", getLang()); } catch { /* 隐私模式忽略 */ }
+  initOAuth({ refresh: refresh });
+  initSettingsForm({ refresh: refresh });
+  setReload(refresh);
   applyLang();
-  refresh();
-  if ($("#tab-logs").classList.contains("on")) refreshLogs();
-};
-
-/* ================= 侧边栏伸缩 ================= */
-// 收起态只改 body 上的一个 class：CSS 里把 --sidebar 换成 --sidebar-min，
-// 侧边栏宽度与 .main 的左边距就一起跟着变（220ms 过渡），JS 不需要量尺寸。
-var SIDE_KEY = "deepaicode2api_sidebar";
-
-function applySide(collapsed) {
-  document.body.classList.toggle("side-collapsed", !!collapsed);
-  var b = $("#sideToggle");
-  if (b) b.setAttribute("aria-expanded", collapsed ? "false" : "true");
 }
 
-$("#sideToggle").onclick = function () {
-  var next = !document.body.classList.contains("side-collapsed");
-  applySide(next);
-  try { localStorage.setItem(SIDE_KEY, next ? "collapsed" : "expanded"); } catch { /* 隐私模式忽略 */ }
-};
-
-(function initSide() {
-  var saved = null;
-  try { saved = localStorage.getItem(SIDE_KEY); } catch { /* 隐私模式忽略 */ }
-  if (saved === "collapsed") applySide(true);
-})();
-
-/* ================= 账号列表：脱敏开关 ================= */
-// 脱敏在渲染层做（不是后端字段）：开关能立即生效，且不影响搜索/筛选 ——
-// 搜索仍然对完整的邮箱 / 名称生效，只是显示时打码。
-$("#acctMask").checked = !!ui.mask;
-$("#acctMask").onchange = function () {
-  ui.mask = !!this.checked;
-  try { localStorage.setItem("deepaicode2api_acct_mask", ui.mask ? "1" : "0"); } catch { /* 隐私模式忽略 */ }
-  loadAccounts();
-};
-
-/* ================= 启动 ================= */
-setReload(refresh);
-applyLang();
-
+/* ================= 健康心跳 ================= */
 // 后台标签页不轮询：既省上游配额，也不用为空页面反复唤醒定时器。
 var healthTimer = null;
 function startHealthPolling() {
@@ -410,23 +229,3 @@ if (pw()) {
     start();
   }).catch(start);
 }
-
-// 移动端侧边栏抽屉。包成 IIFE 是因为原来那一段是独立 <script>，
-// 内部用 `return` 做「元素不齐就整体放弃」的早退；ES module 顶层不允许 return。
-(function initDrawer() {
-  var toggle = document.getElementById("navToggle");
-  var sidebar = document.getElementById("sidebar");
-  var scrim = document.getElementById("scrim");
-  if (!toggle || !sidebar || !scrim) return;
-  function setOpen(open) {
-    sidebar.classList.toggle("open", open);
-    scrim.classList.toggle("on", open);
-  }
-  toggle.addEventListener("click", function () { setOpen(!sidebar.classList.contains("open")); });
-  scrim.addEventListener("click", function () { setOpen(false); });
-  document.querySelectorAll("nav.nav button").forEach(function (b) {
-    b.addEventListener("click", function () { setOpen(false); });
-  });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape") setOpen(false); });
-  // 深链接（#accounts?…）由 start() 里的 restoreFromHash 统一处理。
-})();

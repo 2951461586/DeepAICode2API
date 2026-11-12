@@ -107,6 +107,23 @@ func (ls *loginSessions) put(s *loginSession) {
 func (ls *loginSessions) get(id string) *loginSession {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
+	// 顺手回收陈旧的兄弟会话（连同它们的回环监听）。
+	//
+	// 只在 put 时清理不够：「发起登录 → 用户放弃 → 再也不发起」这条路径会让
+	// 会话与监听一直留着（每个占一个端口）。登录页每次轮询 / 打开都会走到这里，
+	// 相当于低频 janitor，不需要额外的后台 goroutine。
+	//
+	// 请求的那个会话即使已过期也原样返回：调用方需要区分「过期」（429/200+expired）
+	// 与「不存在」（404），不能在这里被吞成 nil。
+	for k, v := range ls.m {
+		if k == id {
+			continue
+		}
+		if time.Since(v.Created) > loginTTL {
+			delete(ls.m, k)
+			go shutdownLoginServer(v.srv)
+		}
+	}
 	return ls.m[id]
 }
 
@@ -257,7 +274,9 @@ func (s *Server) handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SessionID string `json:"session_id"`
 	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+	if !decodeOptionalJSON(w, r, &body) {
+		return
+	}
 	if strings.TrimSpace(body.SessionID) == "" {
 		writeErr(w, http.StatusBadRequest, "缺少 session_id", "invalid_request_error")
 		return
@@ -437,7 +456,7 @@ func (s *Server) completeLogin(session *loginSession) map[string]any {
 		}
 	}
 	isNew := s.Store.UpsertAccount(acct)
-	_ = s.Store.Save()
+	s.persist()
 	s.probeAndSaveAsync(acct)
 
 	return map[string]any{

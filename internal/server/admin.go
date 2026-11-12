@@ -68,7 +68,10 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 			Group  string `json:"group"`
 			Key    string `json:"key"`
 		}
-		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+		// 畸形 JSON 直接报错；空体仍然合法（等价于「新建一把默认密钥」）。
+		if !decodeOptionalJSON(w, r, &body) {
+			return
+		}
 		// action=set-group：只改绑定分组（保持密钥值不变）；其余 / 空值仍为新建。
 		if body.Action == "set-group" {
 			key := s.resolveKeyRef(strings.TrimSpace(body.Key))
@@ -77,12 +80,16 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			ok := s.Store.SetKeyGroup(key, body.Group)
-			_ = s.Store.Save()
+			if !s.persistOrFail(w) {
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": ok, "group": s.Store.KeyGroup(key)})
 			return
 		}
 		k := s.Store.AddKey(body.Name, body.Group)
-		_ = s.Store.Save()
+		if !s.persistOrFail(w) {
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": k.Key})
 	case http.MethodDelete:
 		q := r.URL.Query()
@@ -92,7 +99,9 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 		if ref := q.Get("toggle"); ref != "" {
 			_ = s.Store.ToggleKey(s.resolveKeyRef(ref))
 		}
-		_ = s.Store.Save()
+		if !s.persistOrFail(w) {
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法", "invalid_request_error")
@@ -194,7 +203,9 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Store.UpdateSettings(func(st *store.Settings) { body.apply(st) })
-	_ = s.Store.Save()
+	if !s.persistOrFail(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": sanitizedSettings(s.Store.Settings())})
 }
 

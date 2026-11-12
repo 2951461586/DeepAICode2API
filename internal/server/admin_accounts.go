@@ -73,7 +73,10 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 		Limit     int    `json:"limit"`
 		StaleOnly bool   `json:"stale_only"`
 	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+	// 可以不传参数（等价于「探一批全部账号」），但畸形 JSON 必须报错。
+	if !decodeOptionalJSON(w, r, &body) {
+		return
+	}
 
 	now := time.Now()
 	var targets []*deepai.Account

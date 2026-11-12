@@ -48,9 +48,10 @@ fmt:
 lint:
 	@sh scripts/lint.sh
 
-## cover: 覆盖率
+## cover: 覆盖率（-coverpkg 统计跨包调用：gateway 转换层主要经 server 端到端覆盖）
 cover:
-	go test -cover ./internal/...
+	go test -coverpkg=./internal/... -coverprofile=coverage.out ./...
+	@go tool cover -func=coverage.out | tail -1
 
 ## bench: 性能基线（选号 / 账号分页 / 全忙判定）
 bench:
@@ -60,6 +61,6 @@ bench:
 docker:
 	docker build -t deepaicode2api:$(VERSION) .
 
-## clean: 清理构建产物
+## clean: 清理构建产物（含发布包与覆盖率文件）
 clean:
-	rm -rf $(BIN)
+	rm -rf $(BIN) dist coverage.out

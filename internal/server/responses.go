@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -22,14 +23,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 
-	raw, err := readBodyWithLimit(w, r)
-	if err != nil {
-		writeErr(w, http.StatusRequestEntityTooLarge, "请求体过大", "invalid_request_error")
-		return
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error(), "invalid_request_error")
+	payload, ok := decodeJSONRequest[map[string]any](w, r, func(code int, msg string) {
+		writeErr(w, code, msg, "invalid_request_error")
+	})
+	if !ok {
 		return
 	}
 
@@ -71,6 +68,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 	payload["stream"] = rl.stream
 	body, err := json.Marshal(payload)
 	if err != nil {
+		rl.doneStatus(http.StatusBadRequest, 0, Usage{}, err)
 		writeErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")
 		return
 	}
@@ -92,7 +90,12 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 		}
 		var out map[string]any
 		if err := json.Unmarshal(rawResp, &out); err != nil {
+			// 上游回的不是 JSON（HTML 登录页 / SSE 帧 / 纯文本限流提示）。
+			// 保持原样透传 + 200（客户端拿到的与上游一致），但**必须留日志**：
+			// 旧实现在这里直接 return，请求会从控制台日志与统计里彻底消失。
 			writeRawJSON(w, http.StatusOK, rawResp)
+			rl.doneStatus(http.StatusOK, 0, Usage{},
+				fmt.Errorf("上游响应不是合法 JSON（已原样透传）: %w", err))
 			return
 		}
 		rewriteResponsesModel(out, rl.model)
@@ -181,6 +184,7 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 
 	body, err := json.Marshal(chatPayload)
 	if err != nil {
+		rl.doneStatus(http.StatusBadRequest, 0, Usage{}, err)
 		writeErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")
 		return
 	}

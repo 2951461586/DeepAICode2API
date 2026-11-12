@@ -21,14 +21,10 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	start := time.Now()
 
-	raw, err := readBodyWithLimit(w, r)
-	if err != nil {
-		writeAnthropicErr(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "请求体过大")
-		return
-	}
-	var req anthropicRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "请求体解析失败: "+err.Error())
+	req, ok := decodeJSONRequest[anthropicRequest](w, r, func(code int, msg string) {
+		writeAnthropicErr(w, code, "invalid_request_error", msg)
+	})
+	if !ok {
 		return
 	}
 	if len(req.Messages) == 0 {
@@ -85,6 +81,7 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 
 	body, err := json.Marshal(payload)
 	if err != nil {
+		rl.doneStatus(http.StatusBadRequest, 0, Usage{}, err)
 		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "请求序列化失败")
 		return
 	}
@@ -178,14 +175,10 @@ func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Reque
 		writeAnthropicErr(w, http.StatusMethodNotAllowed, "invalid_request_error", "仅支持 POST")
 		return
 	}
-	raw, err := readBodyWithLimit(w, r)
-	if err != nil {
-		writeAnthropicErr(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "请求体过大")
-		return
-	}
-	var req anthropicRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "请求体解析失败")
+	req, ok := decodeJSONRequest[anthropicRequest](w, r, func(code int, msg string) {
+		writeAnthropicErr(w, code, "invalid_request_error", msg)
+	})
+	if !ok {
 		return
 	}
 	payload, err := anthropicToChatPayload(&req, s.resolveModel(req.Model).ID)

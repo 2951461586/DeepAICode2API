@@ -10,15 +10,25 @@ import (
 // --- 密钥 ---
 
 // Keys 返回密钥快照。
+//
+// 元素必须逐份拷贝：调用方拿到切片后会在锁外读字段（控制台的 safeKeyList），
+// 而 ValidKey 在每个数据面请求上都会就地累加 LastUsed / Requests。返回号池里的
+// 活指针会让「控制台开着 + 有流量」变成实打实的数据竞争（-race 可复现）。
 func (s *Store) Keys() []*APIKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*APIKey, len(s.st.Keys))
-	copy(out, s.st.Keys)
+	for i, k := range s.st.Keys {
+		c := *k
+		out[i] = &c
+	}
 	return out
 }
 
 // AddKey 新增密钥（group 为空时归入 default）。
+//
+// 返回值是副本：调用方通常紧接着读 Key 字段返回给用户，不应让它持有号池里的
+// 活指针（同 Keys 的理由）。
 func (s *Store) AddKey(name, group string) *APIKey {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -34,7 +44,8 @@ func (s *Store) AddKey(name, group string) *APIKey {
 		CreatedAt: time.Now().Unix(),
 	}
 	s.st.Keys = append(s.st.Keys, k)
-	return k
+	c := *k
+	return &c
 }
 
 // KeyGroup 返回某个网关密钥绑定的号池分组（未知密钥返回空串）。

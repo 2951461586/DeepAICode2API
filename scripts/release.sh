@@ -3,8 +3,8 @@
 #
 # 用法：
 #   sh scripts/release.sh                 # 用 git describe 作为版本，只构建
-#   sh scripts/release.sh v0.1.0          # 指定版本
-#   sh scripts/release.sh v0.1.0 --publish  # 构建后用 gh 创建 / 更新 Release
+#   sh scripts/release.sh v0.1.1          # 指定版本
+#   sh scripts/release.sh v0.1.1 --publish  # 构建后用 gh 创建 / 更新 Release
 #
 # 产物在 dist/（已 gitignore）。CGO 关闭，因此都是静态单文件。
 set -eu

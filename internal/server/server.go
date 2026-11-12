@@ -91,9 +91,11 @@ type Server struct {
 
 	// versionMu / versionCache / versionAt 缓存「最新 release」的查询结果，
 	// 避免每次打开控制台都去打 GitHub（未认证请求有速率限制）。
-	versionMu    sync.Mutex
-	versionCache *versionInfo
-	versionAt    time.Time
+	// versionInFlight 非 nil 表示已有一个 goroutine 在查（并发请求等它的结果）。
+	versionMu       sync.Mutex
+	versionCache    *versionInfo
+	versionAt       time.Time
+	versionInFlight chan struct{}
 }
 
 // New 构造服务。

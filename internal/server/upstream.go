@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/logx"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,9 +69,19 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		used = acct
 
 		client := s.clientFor(acct)
-		// 与桌面端一致：推理前先补签到（仅在挑战过期时，失败不阻塞）。
+		// 与桌面端一致：推理前先补签到（仅在挑战过期 / 未回传时才会真的发请求）。
+		//
+		// 这是**同步**调用：最坏占掉 checkInAttemptTimeout（10s）的推理延迟。
+		// 没不能改异步：nonce 回传是上游判定「真实客户端」的依据，先发聊天再补
+		// 签到会让那次请求落到替身分支（见 docs/recon.md §5.1）。失败不影响本次
+		// 推理，但「慢」是用户能感知的，所以超过阈值留一条日志（之前这笔等待
+		// 在任何日志里都看不到）。
 		if path == deepai.PathChat || path == deepai.PathResponses {
+			ciStart := time.Now()
 			client.EnsureCheckIn(ctx, acct)
+			if d := time.Since(ciStart); d >= checkInSlowWarn {
+				logx.Warn("签到阻塞了推理请求", "account", acctLabel(acct), "ms", d.Milliseconds())
+			}
 		}
 		resp, err := client.OpenModel(ctx, acct, path, body, affinity)
 		if err != nil {
@@ -85,13 +96,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 
 		if resp.StatusCode/100 == 2 {
 			s.Store.MarkAccountResult(acct.ID, true, "")
-			// 槽位随响应体一起释放：流式响应可能持续数分钟。
-			// 外面再套一层空闲超时：上游发完首帧后挂住时，能主动收尾并归还槽位，
-			// 而不是把连接和账号槽位挂到客户端断开为止。
-			resp.Body = newIdleTimeoutBody(
-				&releaseBody{ReadCloser: resp.Body, release: func() { s.releaseAccount(acct.ID) }},
-				upstreamIdleTimeout,
-			)
+			resp.Body = s.holdResponseBody(resp.Body, acct.ID)
 			return resp, acct, nil
 		}
 
@@ -113,7 +118,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 				if retry, err2 := client.OpenModel(ctx, acct, path, alt, affinity); err2 == nil {
 					if retry.StatusCode/100 == 2 {
 						s.Store.MarkAccountResult(acct.ID, true, "")
-						retry.Body = &releaseBody{ReadCloser: retry.Body, release: func() { s.releaseAccount(acct.ID) }}
+						retry.Body = s.holdResponseBody(retry.Body, acct.ID)
 						return retry, acct, nil
 					}
 					payload2, _ := io.ReadAll(io.LimitReader(retry.Body, 4<<20))
@@ -188,6 +193,24 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		lastErr = s.noAccountError()
 	}
 	return nil, used, lastErr
+}
+
+// checkInSlowWarn 是「签到阻塞推理」的告警阈值。
+//
+// 正常签到是 1~2 个 RTT（百毫秒级）；超过这个值说明上游变慢或正在走重试，
+// 用户能感知到首包延迟，需要留痕。
+const checkInSlowWarn = 2 * time.Second
+
+// holdResponseBody 把上游响应体包成两层：外层空闲超时，内层归还账号槽位。
+//
+// 两条「返回 2xx」的路径（正常响应与请求体形状回退重试）必须完全一致：
+// 漏掉任何一层，上游发完首帧后挂住时就会把连接与账号槽位一起挂到客户端断开。
+// 历史上回退路径就漏了外层，这是回归测试要锁住的点。
+func (s *Server) holdResponseBody(body io.ReadCloser, acctID string) io.ReadCloser {
+	return newIdleTimeoutBody(
+		&releaseBody{ReadCloser: body, release: func() { s.releaseAccount(acctID) }},
+		upstreamIdleTimeout,
+	)
 }
 
 // callJSON 发起一次非流式上游请求并解析 JSON。

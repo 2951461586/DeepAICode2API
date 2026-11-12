@@ -145,7 +145,9 @@ func (s *Server) adminImport(w http.ResponseWriter, raw []byte) {
 			"username": res.Account.Username, "path": res.Path, "new": isNew,
 		})
 	}
-	_ = s.Store.Save()
+	if !s.persistOrFail(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(imported), "imported": imported})
 }
 
@@ -164,7 +166,9 @@ func (s *Server) adminManual(w http.ResponseWriter, raw []byte) {
 		acct.Group = strings.TrimSpace(body.Group)
 	}
 	isNew := s.Store.UpsertAccount(acct)
-	_ = s.Store.Save()
+	if !s.persistOrFail(w) {
+		return
+	}
 	s.probeAndSaveAsync(acct)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "new": isNew, "id": acct.ID})
 }
@@ -236,7 +240,9 @@ func (s *Server) adminRemove(w http.ResponseWriter, raw []byte) {
 		return
 	}
 	removed := s.Store.RemoveAccount(body.ID)
-	_ = s.Store.Save()
+	if !s.persistOrFail(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": removed})
 }
 
@@ -246,7 +252,9 @@ func (s *Server) adminToggle(w http.ResponseWriter, raw []byte) {
 		return
 	}
 	s.Store.UpdateAccount(body.ID, func(a *deepai.Account) { a.Enabled = !a.Enabled })
-	_ = s.Store.Save()
+	if !s.persistOrFail(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -260,7 +268,9 @@ func (s *Server) adminClearErrors(w http.ResponseWriter, raw []byte) {
 		a.Status = "unknown"
 		a.LastErr = ""
 	})
-	_ = s.Store.Save()
+	if !s.persistOrFail(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -284,11 +294,28 @@ func (s *Server) adminAssignMachine(w http.ResponseWriter, raw []byte) {
 		targets = append(targets, a.Clone())
 		return true
 	})
-	_ = s.Store.Save()
+	if !s.persistOrFail(w) {
+		return
+	}
 	// 重新探测配额，让调度能立即看到新指纹下的额度。
 	// 走登记过的批量入口：进程关停时要等这次落盘跑完。
 	s.probeBatchAsync(targets)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
+}
+
+// adminClearProxy 是 assign-proxy 的 clear 分支：把匹配账号的代理置空（回滚用）。
+func (s *Server) adminClearProxy(w http.ResponseWriter, match func(*deepai.Account) bool) {
+	cleared := s.Store.UpdateAccounts(func(a *deepai.Account) bool {
+		if !match(a) || strings.TrimSpace(a.Proxy) == "" {
+			return false
+		}
+		a.Proxy = ""
+		return true
+	})
+	if !s.persistOrFail(w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
 }
 
 // adminAssignProxy 把注册代理池（PROXY_POOL / PROXY_POOL_FILE）轮询分配给号池账号。
@@ -312,15 +339,7 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 	}
 
 	if body.Clear {
-		cleared := s.Store.UpdateAccounts(func(a *deepai.Account) bool {
-			if !match(a) || strings.TrimSpace(a.Proxy) == "" {
-				return false
-			}
-			a.Proxy = ""
-			return true
-		})
-		_ = s.Store.Save()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
+		s.adminClearProxy(w, match)
 		return
 	}
 
@@ -350,7 +369,9 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 		dist[proxy.ProxyLabel(p)]++
 		return true
 	})
-	_ = s.Store.Save()
+	if !s.persistOrFail(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "assigned": assigned, "pool_size": pool.Len(), "proxies": dist,
 	})
@@ -395,6 +416,8 @@ func (s *Server) adminSetGroup(w http.ResponseWriter, raw []byte) {
 		a.Group = target
 		return true
 	})
-	_ = s.Store.Save()
+	if !s.persistOrFail(w) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "moved": moved, "group": target})
 }

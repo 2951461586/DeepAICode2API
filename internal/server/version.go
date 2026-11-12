@@ -69,32 +69,57 @@ func (s *Server) handleAdminVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 // versionStatus 带缓存地查询最新 release。
+//
+// 缓存冷时并发请求会合并：只让一个 goroutine 真去查，其余等它的结果。否则同时
+// 打开多个控制台 / 多标签页刷新，会把「一个 8s 预算的 GitHub 请求」打成 N 个。
 func (s *Server) versionStatus(ctx context.Context) versionInfo {
 	current := s.currentVersion()
 
-	s.versionMu.Lock()
-	if s.versionCache != nil && time.Since(s.versionAt) < updateCacheTTL {
-		cached := *s.versionCache
-		cached.Cached = true
-		cached.Current = current
+	for {
+		s.versionMu.Lock()
+		if s.versionCache != nil && time.Since(s.versionAt) < updateCacheTTL {
+			cached := *s.versionCache
+			cached.Cached = true
+			cached.Current = current
+			s.versionMu.Unlock()
+			return cached
+		}
+		if wait := s.versionInFlight; wait != nil {
+			s.versionMu.Unlock()
+			select {
+			case <-wait:
+				continue // 结果已写进缓存，回到循环顶部直接读
+			case <-ctx.Done():
+				return versionInfo{Current: current, Error: ctx.Err().Error()}
+			}
+		}
+		done := make(chan struct{})
+		s.versionInFlight = done
 		s.versionMu.Unlock()
-		return cached
-	}
-	s.versionMu.Unlock()
 
+		info := s.queryLatestVersion(ctx, current)
+		// 失败也写缓存：否则离线环境下每次刷新控制台都要等 8s 超时。
+		s.storeVersionCache(info)
+
+		s.versionMu.Lock()
+		s.versionInFlight = nil
+		s.versionMu.Unlock()
+		close(done)
+		return info
+	}
+}
+
+// queryLatestVersion 真正去打 GitHub（调用方已负责缓存与并发合并）。
+func (s *Server) queryLatestVersion(ctx context.Context, current string) versionInfo {
 	info := versionInfo{Current: current}
 	// 开发构建（无 tag）不做比对：比出来永远是「有新版本」，只会制造噪音。
 	if current == "dev" {
 		info.Error = "开发构建未注入版本号，不检查更新"
-		s.storeVersionCache(info)
 		return info
 	}
-
 	latest, err := fetchLatestRelease(ctx)
 	if err != nil {
 		info.Error = err.Error()
-		// 失败也缓存：否则离线环境下每次刷新控制台都要等 8 秒超时。
-		s.storeVersionCache(info)
 		return info
 	}
 	info.Latest = latest.Tag
@@ -102,7 +127,6 @@ func (s *Server) versionStatus(ctx context.Context) versionInfo {
 	info.PublishedAt = latest.PublishedAt
 	info.UpdateAvailable = versionNewer(latest.Tag, current)
 	logVersionCheck(info)
-	s.storeVersionCache(info)
 	return info
 }
 

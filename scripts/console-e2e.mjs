@@ -4,7 +4,7 @@
 //   - 点「⋯」能弹出操作菜单
 //   - 点表头会带上 sort/order 参数重新请求
 //   - ?lang=en 会切换文案
-// 用法：node bin/cdp_check.mjs <baseURL> <shotDir>
+// 用法：node scripts/console-e2e.mjs <baseURL> <shotDir>
 const BASE = process.argv[2] || "http://127.0.0.1:10087";
 const SHOT = process.argv[3] || "bin/shots";
 const DEBUG = "http://127.0.0.1:9222";

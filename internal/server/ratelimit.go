@@ -40,6 +40,19 @@ type tokenBucket struct {
 	last   time.Time
 }
 
+const (
+	// keyRateLimiterMaxBuckets 是桶表规模上限：超过后先回收闲置桶再新建。
+	//
+	// 桶按密钥指纹索引，密钥轮换 / 删除后旧桶不会被自动引用；不限规模时
+	// 一个长期运行的网关会把这些「历史密钥」的桶一直留在内存里。
+	keyRateLimiterMaxBuckets = 512
+	// keyRateLimiterIdleTTL 是桶的闲置回收时长。
+	//
+	// 比令牌桶填满所需时间长得多：闲置 30 分钟的桶早已回满，直接丢掉等价于
+	// 「重新建一个满桶」，不会给调用方多放请求。
+	keyRateLimiterIdleTTL = 30 * time.Minute
+)
+
 func newKeyRateLimiter() *keyRateLimiter {
 	return &keyRateLimiter{
 		buckets:  map[string]*tokenBucket{},
@@ -67,6 +80,10 @@ func (l *keyRateLimiter) allow(id string, rps float64, burst int) (bool, time.Du
 
 	b := l.buckets[id]
 	if b == nil {
+		// 表满时先回收闲置桶（持锁，见 sweepLocked），避免密钥轮换把内存顶大。
+		if len(l.buckets) >= keyRateLimiterMaxBuckets {
+			l.sweepLocked(now)
+		}
 		b = &tokenBucket{tokens: float64(burst), last: now}
 		l.buckets[id] = b
 	}
@@ -89,6 +106,21 @@ func (l *keyRateLimiter) allow(id string, rps float64, burst int) (bool, time.Du
 		wait = time.Second
 	}
 	return false, wait
+}
+
+// sweepLocked 回收长期未用的桶（调用方持锁）。
+//
+// 有在途请求的桶不回收：它的 tokens/last 还参与着并发限流的判定。
+func (l *keyRateLimiter) sweepLocked(now time.Time) {
+	for id, b := range l.buckets {
+		if now.Sub(b.last) <= keyRateLimiterIdleTTL {
+			continue
+		}
+		if _, busy := l.inflight[id]; busy {
+			continue
+		}
+		delete(l.buckets, id)
+	}
 }
 
 // acquire 尝试占用一个并发名额；limit <= 0 表示不限。

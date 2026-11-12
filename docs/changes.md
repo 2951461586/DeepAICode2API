@@ -18,6 +18,7 @@
 - 48 控制台 4 处裸 `refresh()`：注入式 reload + 静态契约 + 冒烟异步断言
 - 49 后端 P0/P1/P2 + 前端 P0/P1/P2 一轮落地：选号热路径、流式 idle 超时、优雅关闭、按密钥限流、口令防爆破、request id/JSONL/metrics、gzip、CSP/ETag
 - 50 概览 KPI 增「今日 token / 缓存命中率」、账号列表脱敏开关、版本号与更新检查、v0.1.0 发布
+- 51 全量扫描落地：Keys() 竞态、请求日志完整性、回退路径空闲超时、落盘失败上报、8 项优化重构、遗留清理（v0.1.1）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -1777,6 +1778,11 @@ go build / go vet / gofmt             PASS
 「事件绑定」独立成 `events.js`，但那里都是 DOM 副作用、几乎没有可断言的行为，
 收益低于风险，暂不处理。
 
+> **后续（§51，2026-11-12）**：这条已落地。「事件接线」拆到 `js/events.js`（207 行）、
+> 主题/侧边栏/抽屉到 `js/theme.js`（84 行）、分页到 `js/pager.js`（39 行），
+> `app.js` 降到 231 行（只剩取数 + URL 状态 + 装配）。风险靠既有的
+> `node scripts/console-smoke.mjs`（import 即执行全部顶层接线）兜住。
+
 ---
 
 ## 39. 模型目录：用真实快照刷新，并把「计费口径」收成一处
@@ -2503,3 +2509,99 @@ sh scripts/lint.sh                                  Go + 前端语法 + 冒烟�
 新增测试：`TestParseSemver` / `TestVersionNewer` / `TestAdminVersionEndpoint`
 （含「第二次命中缓存、不打上游」的断言）/ `TestAdminVersionDevBuild` /
 `TestAdminVersionUpstreamFailure` / `TestHealthIncludesVersion`。
+
+## 51. 全量扫描落地：竞态、日志完整性、落盘可观测、前端收口（2026-11-12）
+
+本轮是**扫描驱动**的修正，不是新功能。触发点：对 24.7k 行 Go + 2.5k 行前端做一次
+无假设复查（`go vet` / `gofmt` / `-race` / 覆盖率 / 前端冒烟 / 客户端版本），
+把「测试全绿但行为仍有洞」的地方挑出来。每条都补了能独立复现的回归测试。
+
+### 51.1 P0：`Store.Keys()` 返回活指针 → 真实数据竞争
+
+`Keys()` 只复制了切片，元素仍是号池里的 `*APIKey`；而 `ValidKey` 在**每个**数据面
+请求上都会持写锁累加 `LastUsed / Requests`，控制台的 `safeKeyList` 却在锁外读同一
+结构体。用临时用例并发跑 `ValidKey` × `Keys()` 时 `-race` 稳定报
+`WARNING: DATA RACE`（写 `store_keys.go:104`，读 `admin.go:230`）。
+
+改法：`Keys()` 逐份拷贝（对齐 `Accounts()` 早已有的 Clone 语义），`AddKey` 的返回值
+同样改成副本。回归测试 `TestKeysSnapshotIsRaceFree` 在旧实现下必失败（已实测），
+`TestAddKeyReturnsCopy` 锁住「改返回值不得污染号池」。
+
+### 51.2 P1：请求日志的完整性
+
+| 问题 | 影响 | 改法 |
+| --- | --- | --- |
+| `passthroughResponses` 在「上游回的不是 JSON」分支直接 `return`，没调 `rl.done` | 上游偶发返回 HTML / SSE 时，请求从日志与统计里**彻底消失** | 补记一条 `status=200 + err=上游响应不是合法 JSON（已原样透传）`；`Record` 会把非空 `Err` 计入失败数 |
+| `reqLog.done` 可被多条分支各调一次 | 重复计数（吞吐、错误率翻倍） | 增加 `reqLogState{recorded atomic.Bool}`，`done` 幂等；值类型 `reqLog` 靠指针共享标记 |
+| `statusOf` 把所有错误记成 502 | 上游 400 / 426 / 429 全部记成 502，`min_status` 筛选与归因失真 | 优先 `errors.As(*deepai.HTTPError)` 取真实状态码 |
+| `streamResponsesAsChat` / `streamAnthropic` 的序列化失败分支同样漏记 | 极小概率但同类型 | 一并补 `doneStatus`（状态码由调用方给出） |
+
+回归：`TestReqLogDoneIsIdempotent` / `TestStatusOfUsesUpstreamStatusCode` /
+`TestPassthroughNonJSONIsLogged`。
+
+### 51.3 P1：形状回退路径漏了空闲超时
+
+`openModel` 有两条返回 2xx 的路径。主路径包了
+`newIdleTimeoutBody(releaseBody(...))`；「请求体被拒 → 按桌面端形状重试」那条只包了
+`releaseBody`。上游发完首帧挂住时，账号槽位与连接会挂到客户端断开为止 —— 正是
+`idle.go` 注释里描述的那个坑，只漏了一条分支。
+
+改法：抽出 `holdResponseBody`，两条路径共用。回归：
+`TestShapeFallbackRetryKeepsIdleTimeoutGuard`（断言回退路径的 Body 是
+`*idleTimeoutBody`，且关闭后槽位归零）。
+
+### 51.4 P1：落盘失败静默 + 畸形请求体被当成空请求
+
+- 17 处 `_ = s.Store.Save()`：磁盘满 / Windows 文件被占用时接口仍回 `{"ok":true}`。
+  改为两个入口：`persist()`（尽力而为，失败只记 warn：后台探测、登录入池、扩展用量）
+  与 `persistOrFail(w)`（用户动作，失败回 500）。管理面 14 处走后者，`_ =` 归零。
+- 3 处 `_ = json.NewDecoder(...).Decode(&body)`：畸形 JSON 会被当成空请求继续执行
+  （`POST /admin/api/keys` 会建出一把空名字的密钥并回 200）。改为
+  `decodeOptionalJSON`：**空体仍合法**（「刷新全部配额」不带参数就是空体），
+  畸形 JSON 回 400。
+
+回归：`TestAdminMutationReportsSaveFailure`（把状态文件换成同名目录，让 rename 必然
+失败）/ `TestAdminKeysRejectsMalformedJSON`（400 + 不建密钥 + 空体仍 200）。
+
+### 51.5 优化与重构
+
+| 项 | 改法 |
+| --- | --- |
+| 限流桶表只增不减 | `keyRateLimiter` 增加 `sweepLocked`：超过 512 桶时回收闲置 30 分钟的桶（有在途请求的跳过）。`TestTokenBucketSweepsIdleEntries` |
+| 版本查询无合并 | 缓存冷时并发请求合并：`versionInFlight` 通道，只让一个 goroutine 打 GitHub，其余等结果。`TestVersionStatusSingleFlight`（8 并发只命中 1 次） |
+| 放弃的登录会话占着监听 | `loginSessions.get` 顺手回收过期兄弟会话（连同回环监听），被请求的那个仍原样返回以保留「expired vs 404」语义。`TestLoginSessionsPrunesExpiredOnGet` |
+| 签到阻塞推理不可见 | 不改同步语义（nonce 回传是上游判「真实客户端」的依据，异步会让当次请求落到替身分支），只在阻塞 ≥2s 时记 warn。`checkInSlowWarn` |
+| 转换层单包覆盖率 13.3% | 新增 `internal/gateway/convert_test.go`（含块写入器状态机）：**13.3% → 94.3%**。`make cover` 改用 `-coverpkg` 统计跨包调用 |
+| 三个推理入口重复「读体 → 解析 → 报错」 | 抽出 `decodeJSONRequest[T]`，协议差异（OpenAI / Anthropic 错误信封）由 fail 回调注入。`TestDecodeJSONRequestEnvelopes` 覆盖 4 个端点 |
+| `app.js` 509 行 | 拆 `events.js`（207）/ `theme.js`（84）/ `pager.js`（39），`app.js` 降到 231 行（只剩取数 + URL 状态 + 装配）；依赖回调注入，不 import app.js |
+| 死 CSS | 删掉无引用的 `.flex-1` / `.mt-6` |
+
+### 51.6 卫生与文档
+
+- 删除 `bin/cdp_check.mjs`（`scripts/console-e2e.mjs` 的旧副本，缺 try/catch 与 KPI 断言）
+  与 `bin/loadtest.py`（已被 `scripts/ab-load.mjs` 取代）；修 `console-e2e.mjs` 里过期的用法注释；
+- **本机遗留产物清理（2026-11-12，经确认后执行）**：删除 `exports/`（明文密码台账
+  + 脱敏台账）、`deepaicode2api-data.json.pre-harcleanup.bak`（加密旧备份）、
+  `deepaicode2api-data-logs.jsonl`（407KB 历史请求日志）、`dist/`（39MB v0.1.0 旧构建）。
+  §50.4 里「保留运行期状态 / `exports/` 台账 / `.bak` 备份」的表述作废；
+  运行期状态主文件与 stats 保留，`make clean` 现在一并清理 `dist/` 与 `coverage.out`；
+- 文档漂移对齐：README 用例数 383 → **542（412 顶层 + 130 子用例）**、测试行数
+  11.6k → **12.8k**、「CI 覆盖 11 个包」→ **10 个含测试的包**、`index.html` 288 → 301 行、
+  §8 模块清单补 `events.js` / `theme.js` / `pager.js`；§39 的「app.js 509 行」遗留标记为已落地。
+
+### 51.7 验证
+
+```text
+go build ./... && go vet ./... && gofmt -l .        无输出
+go test -count=1 ./...                              10 个包全绿（542 用例）
+go test -race -count=1 ./...                        10 个包全绿
+node scripts/console-smoke.mjs                      全部通过
+make cover（-coverpkg=./internal/...）               83.2%（原 82.2%）
+go test -cover ./internal/gateway/                  gateway 13.3% → 94.3%
+```
+
+新增 31 个测试函数（合计 542 个用例 / 130 个子用例）。其中「回归」性质的 4 组
+在修复前必失败：`TestKeysSnapshotIsRaceFree` / `TestAddKeyReturnsCopy`（已用旧实现
+实测确认 `-race` 报错）、`TestPassthroughNonJSONIsLogged`（旧实现不写日志）、
+`TestAdminMutationReportsSaveFailure` 与 `TestAdminKeysRejectsMalformedJSON`
+（旧实现回 200）。

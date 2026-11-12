@@ -182,7 +182,7 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Store.SetAccountAllowance(acct.ID, al, nil)
 	rl.done(0, Usage{}, nil)
-	_ = s.Store.Save()
+	s.persist()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"account":  acct.ID,
 		"username": acct.Username,

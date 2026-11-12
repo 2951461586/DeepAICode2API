@@ -227,7 +227,7 @@ func (s *Server) probeBatch(ctx context.Context, accts []*deepai.Account, timeou
 
 	// 全部被去重跳过时无事可存。
 	if len(indexes) > 0 {
-		_ = s.Store.Save()
+		s.persist()
 	}
 	return out
 }

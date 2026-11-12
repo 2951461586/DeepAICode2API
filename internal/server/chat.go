@@ -22,14 +22,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 
-	raw, err := readBodyWithLimit(w, r)
-	if err != nil {
-		writeErr(w, http.StatusRequestEntityTooLarge, "请求体过大", "invalid_request_error")
-		return
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error(), "invalid_request_error")
+	payload, ok := decodeJSONRequest[map[string]any](w, r, func(code int, msg string) {
+		writeErr(w, code, msg, "invalid_request_error")
+	})
+	if !ok {
 		return
 	}
 	if msgs, ok := payload["messages"].([]any); !ok || len(msgs) == 0 {

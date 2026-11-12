@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestParseSemver 覆盖解析边界：v 前缀、预发布后缀、非规范值。
@@ -169,5 +172,43 @@ func TestHealthIncludesVersion(t *testing.T) {
 	out := decodeJSON[map[string]any](t, rec.Body.Bytes())
 	if out["version"] != "v0.1.0" {
 		t.Fatalf("health.version = %v", out["version"])
+	}
+}
+
+// TestVersionStatusSingleFlight 覆盖「缓存冷时并发查询合并」。
+//
+// 控制台可能在多个标签页同时刷新；没有合并时每个请求都会打一次 GitHub，
+// 而未认证的 GitHub API 有速率限制。这里只允许上游被命中一次。
+func TestVersionStatusSingleFlight(t *testing.T) {
+	var hits atomic.Int64
+	withUpdateFeed(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		time.Sleep(40 * time.Millisecond) // 拉长窗口，让并发请求真正重叠
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.2.0"})
+	})
+
+	s, _ := newTestServer(t, nil)
+	s.SetVersion("v0.1.0")
+
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	results := make([]versionInfo, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			results[i] = s.versionStatus(context.Background())
+		}(i)
+	}
+	wg.Wait()
+
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("上游应只被查询一次，实际 %d 次", got)
+	}
+	for i, got := range results {
+		if got.Current != "v0.1.0" || got.Latest != "v0.2.0" || !got.UpdateAvailable {
+			t.Fatalf("第 %d 个结果不对：%+v", i, got)
+		}
 	}
 }
