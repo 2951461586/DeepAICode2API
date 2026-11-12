@@ -2921,7 +2921,15 @@ VERSION=$(git describe --tags) docker compose up -d --build
 - 冒烟新增「缓存命中率用今日口径，累计进 tooltip」（今日 75.0% + tooltip 含 10.0%）
   与「日志 499 用 warn 色」。
 
-### 56.5 验证
+### 56.5 升级当天的过渡态（说清楚，免得当成新 bug）
+
+老版本从来没按天累计 cached，所以升级那一刻 `day_cached_tokens = 0`，而
+`day_tokens_in` 是从状态文件里带过来的（线上当天的 242.4M）。也就是说
+**升级当天**那格可能显示 `0.0%`（或远低于真实值），第二天起才是完整的当日口径。
+分母有值、分子没历史，这种「半个口径」没法补算——真正的修复是前面那句
+「累计值退到 tooltip」：悬停就能看到累计命中率与绝对量。
+
+### 56.6 验证
 
 ```text
 sh scripts/lint.sh                  exit 0（gofmt / vet / JS 语法 / 冒烟 / 测试）
