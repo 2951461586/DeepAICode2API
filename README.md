@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/logo.png" alt="DeepAICode2API" width="128" height="128">
+
 # DeepAICode2API
 
 把本机 **DeepAI Code 桌面端**的上游模型服务，逆向复刻成一个
@@ -730,9 +732,15 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 | `docs/optimization-plan.md` | 首轮扫描的完整优化方案（已全部实施，保留作为设计依据） |
 | `docs/optimization-plan-r2.md` | 第二轮扫描（写放大 / 控制台 / 复探）的方案与收益测算 |
 | `docs/pi-lens.md` | 本仓的 pi-lens 配置说明：关了什么、为什么、怎么验证与恢复 |
+| `docs/assets/` | 项目图标：`logo.png`（512，README 用）/ `logo.ico`（16–256 多尺寸，Windows 用） |
 | `.env.example` | 全部可配置项与说明 |
 | `Makefile` | `make build / test / test-race / lint / cover` |
 
 ## 十二、License
 
 MIT。本项目仅复刻本机已登录客户端的调用链路，请遵守 DeepAI 的服务条款。
+
+> **Logo 例外**：`docs/assets/logo.png` / `logo.ico` 取自 DeepAI Code 桌面端自身的应用图标
+> （`resources/app.asar` 内 `apps/desktop/prod-resources/icon.png`），版权归其所有者，
+> **不在 MIT 授权范围内**；这里只作为「这是哪个上游客户端的网关」的标识使用。
+> 如需自行分发，请先确认图标的使用许可，或换成自己的图。

@@ -12,8 +12,7 @@
 | 版本 | 条目 | 一句话 |
 | --- | --- | --- |
 | v0.1.2 | 53、54 | 控制台日志页漏 import（`renderLogs`）+ 二次全扫 7 处遗留 |
-| v0.1.2 之后 | 55 | 密钥删除/启停的存在性语义 + 控制台 404 自愈（未发版） |
-| v0.1.2 之后 | 56 | 缓存命中率改今日口径、499 客户端断开、docker 构建注入 VERSION（未发版） |
+| v0.1.2 之后 | 55、56、57 | 密钥删除/启停的存在性语义与 404 自愈；缓存命中率改今日口径、499 客户端断开、docker 注入 VERSION；README 居中 + 项目 Logo |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -34,6 +33,7 @@
 - 54 二次全扫：英文空态漏翻、设置 0 被吞、概览连带失败、更新检查缓存污染、签到计数虚高
 - 55 密钥删除/启停的存在性语义：404 不再伪装成功 + 控制台 404 自愈（v0.1.2 之后）
 - 56 缓存命中率口径（今日 vs 累计）、客户端断开记 499 不计失败、docker 版本注入（v0.1.2 之后）
+- 57 项目 Logo（复用 DeepAI Code 桌面端图标）+ README 顶部居中（v0.1.2 之后）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2940,3 +2940,62 @@ go test -race ./...                全绿；internal/server 覆盖率维持 77%+
 线上实测对照（修复前）：`total_cached_tokens=228,175,986`、
 `total_tokens_in=1,510,839,185` → 累计 15.10%（旧卡片显示的就是这个数）；
 `day_tokens_in=242,357,695` → 当日命中率由新的 `day_cached_tokens` 给出。
+
+## 57. 项目 Logo 与 README 顶部居中（v0.1.2 之后，未发版）
+
+**需求**：用本机 DeepAI Code 桌面端的图标当项目 Logo，README 顶部（项目名 / 简介 /
+徽章）居中展示。
+
+### 57.1 图标从哪来
+
+桌面端安装目录里**没有独立的 `.ico`/`.png` 文件**（只有 Electron 打包产物），
+图标有两个来源：
+
+| 来源 | 位置 | 可用尺寸 |
+| --- | --- | --- |
+| asar 内资源 | `resources/app.asar` → `apps/desktop/prod-resources/icon.png` | **1024×1024** PNG（93KB） |
+| exe 内嵌图标组 | `DeepAI Code.exe` 的 `RT_GROUP_ICON`（16/24/32/48/64/128/256，PNG 压缩帧） | 最大 256 |
+
+取 1024 那张（同一套图，分辨率更高），按下面的方式落到仓库：
+
+- `docs/assets/logo.png`：缩到 **512×512**（LANCZOS + optimize），31KB —— README 里按
+  128px 显示，2x 屏也清晰，不必下发 93KB 的原图；
+- `docs/assets/logo.ico`：从同一张图生成 **16/24/32/48/64/128/256** 多尺寸 ICO（26KB），
+  将来做 Windows 快捷方式或 favicon 直接用；
+- `.gitattributes` 补 `*.ico binary`（原本只有 `*.png binary`，避免二进制被当文本 diff）。
+
+### 57.2 README 布局
+
+```html
+<div align="center">
+
+<img src="docs/assets/logo.png" alt="DeepAICode2API" width="128" height="128">
+
+# DeepAICode2API
+（简介两段）
+（8 个徽章）
+
+</div>
+```
+
+放在居中 `div` 里面而不是用 `<p align="center">`：这样标题 / 简介 / 徽章共享同一个
+居中容器，后续增删徽章不用重复写对齐标记。徽章保持 markdown 写法（`[![alt](img)](link)`），
+GFM 会把相邻行并成一段，按宽度自然换行。
+
+### 57.3 版权说明（必须写清）
+
+图标是 DeepAI Code 桌面端的**品牌资产**，不是本项目的原创物。因此：
+
+- README 的 License 段落显式声明「Logo 例外：版权归其所有者，不在 MIT 授权范围内」；
+- 文件清单里注明 `docs/assets/` 的用途与尺寸；
+- 只把它当「这是哪个上游客户端的网关」的标识，不暗示官方背书。
+
+### 57.4 验证
+
+```text
+python -c "from PIL import Image; print(Image.open('docs/assets/logo.png').size)"
+  → (512, 512) RGBA；ICO 7 个尺寸帧
+
+GitHub 渲染接口（POST /markdown, mode=gfm）：
+  <div align="center"> 保留、<img> 在 div 内、8 个徽章仍在、License 段落为普通引用块
+```

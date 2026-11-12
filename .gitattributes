@@ -17,6 +17,7 @@
 *.exe   binary
 *.har   binary
 *.png   binary
+*.ico   binary
 
 # 运行期数据 / 台账不做文本 diff（含密钥，仅本地存在）。
 *.jsonl -diff
