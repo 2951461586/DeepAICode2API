@@ -69,6 +69,23 @@ Go：`go-vet`、go LSP、tree-sitter、ast-grep、opengrep（Semgrep）、`fact-
 
 改配置后不需要重启：`rules` 与 denial 列表按文件解析，下一次派发即生效。
 
+### 状态栏的 `●1E !20W` 是什么
+
+那个徽章读的是**会话缓存**（本次会话里各文件的累计发现），不是「当前代码有 1 个
+错误」。编辑过的文件里，旧行号上的条目会一直挂在缓存里，直到重新扫一次。真实判定
+必须主动探一次：
+
+```text
+lens_diagnostics mode=full source=lsp scope=paths paths=[<改过的文件…>]
+```
+
+判据是 `Outcomes` 里的 `clean=N` 与 `findings=N`，而不是徽章数字。2026-11-12 实测：
+徽章 `●1E !20W`，对该次发布的 14 个文件做 `mode=full` → `1 warning`（
+`console-smoke.mjs` 里一处 `!!on`，已改 `Boolean(on)`），其余 clean；再探一轮 → `0`。
+剩下的是测试代码的**质量提示**（`time.Sleep` / `context.Background()` /
+`_ = Encode(...)` / `s, _ := newTestServer(...)`），工具把测试当 handler 误判，
+不值得为它们引入封装。
+
 ## 什么时候该把这些打开
 
 - 装上 `typos` / `vale` / `markdownlint` / `yamllint` / `shfmt` 之后：删掉

@@ -24,7 +24,8 @@ class ClassList {
   remove(...v) { v.forEach((x) => this.set.delete(x)); }
   contains(v) { return this.set.has(v); }
   toggle(v, on) {
-    const want = on === undefined ? !this.set.has(v) : !!on;
+    // Boolean() 而不是 !!：与仓内既有写法一致（no-extra-boolean-cast-js）。
+    const want = on === undefined ? !this.set.has(v) : Boolean(on);
     if (want) this.set.add(v); else this.set.delete(v);
   }
 }

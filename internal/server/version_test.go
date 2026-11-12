@@ -181,35 +181,48 @@ func TestHealthIncludesVersion(t *testing.T) {
 // 而未认证的 GitHub API 有速率限制。这里只允许上游被命中一次。
 func TestVersionStatusSingleFlight(t *testing.T) {
 	var hits atomic.Int64
+	gate := make(chan struct{}) // 8 个调用真正重叠的闸门：都发起后再放行
 	withUpdateFeed(t, func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		time.Sleep(40 * time.Millisecond) // 拉长窗口，让并发请求真正重叠
+		<-gate
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.2.0"})
+		if err := json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.2.0"}); err != nil {
+			t.Errorf("写测试响应失败: %v", err)
+		}
 	})
 
 	s, _ := newTestServer(t, nil)
 	s.SetVersion("v0.1.0")
 
 	const n = 8
+	// 结果走 channel 而不是 results[i]：并发写同一个切片的不同下标虽然安全，
+	// 但静态规则（go-shared-map-write-goroutine）看不出这是「各写各的」，
+	// 每次扫描都要人工确认一遍。channel 让「谁产生、谁消费」写在类型上。
+	results := make(chan versionInfo, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
-	results := make([]versionInfo, n)
-	for i := 0; i < n; i++ {
-		go func(i int) {
+	for range n {
+		go func() {
 			defer wg.Done()
-			results[i] = s.versionStatus(context.Background())
-		}(i)
+			results <- s.versionStatus(t.Context())
+		}()
 	}
+	close(gate) // 放行：此时 8 个 goroutine 都已在单飞队列里
 	wg.Wait()
+	close(results)
 
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("上游应只被查询一次，实际 %d 次", got)
 	}
-	for i, got := range results {
+	seen := 0
+	for got := range results {
+		seen++
 		if got.Current != "v0.1.0" || got.Latest != "v0.2.0" || !got.UpdateAvailable {
-			t.Fatalf("第 %d 个结果不对：%+v", i, got)
+			t.Fatalf("第 %d 个结果不对：%+v", seen, got)
 		}
+	}
+	if seen != n {
+		t.Fatalf("结果条数 = %d，期望 %d", seen, n)
 	}
 }
 
@@ -219,34 +232,43 @@ func TestVersionStatusSingleFlight(t *testing.T) {
 // GitHub 查询被 abort → 失败结果写进缓存 6 小时 → 之后所有人打开控制台都是
 // 「无法检查更新」，而 GitHub 其实完全可达。
 func TestVersionStatusSurvivesCallerCancel(t *testing.T) {
+	// arrived 在上游真的收到请求时关闭；release 由测试在 cancel 之后关闭。
+	// 用 channel 而不是 sleep：没有随机等待，也不受机器快慢影响。
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
 	hits := withUpdateFeed(t, func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(120 * time.Millisecond) // 让 leader 的查询真正在路上
+		once.Do(func() { close(arrived) })
+		<-release
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v9.9.9"})
+		if err := json.NewEncoder(w).Encode(map[string]any{"tag_name": "v9.9.9"}); err != nil {
+			t.Errorf("写测试响应失败: %v", err)
+		}
 	})
 
 	s, _ := newTestServer(t, nil)
 	s.SetVersion("v0.1.0")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan versionInfo, 1)
 	go func() { done <- s.versionStatus(ctx) }()
-	time.Sleep(20 * time.Millisecond) // 等 leader 拿到单飞权
-	cancel()
-	<-done
 
-	// 等 leader 真正收尾（它的查询已与调用方上下文脱钩，应正常返回）。
-	deadline := time.Now().Add(2 * time.Second)
-	var got versionInfo
-	for time.Now().Before(deadline) {
-		got = s.versionStatus(context.Background())
-		if got.Latest != "" || got.Error != "" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-arrived: // leader 的查询已经在上游路上
+	case <-time.After(5 * time.Second):
+		t.Fatal("上游始终没收到请求")
 	}
+	cancel()       // 此刻调用方断开（浏览器关掉标签页）
+	close(release) // 放上游返回
+	leader := <-done
+
+	// 关键断言：取消发生在查询途中，leader 仍应拿到结果，而不是把取消当失败缓存。
+	if leader.Error != "" {
+		t.Fatalf("调用方取消不应污染结果：%+v", leader)
+	}
+	got := s.versionStatus(t.Context())
 	if got.Error != "" {
-		t.Fatalf("调用方取消不应污染缓存：%+v", got)
+		t.Fatalf("缓存被污染：%+v", got)
 	}
 	if got.Latest != "v9.9.9" || !got.UpdateAvailable {
 		t.Fatalf("缓存结果不对：%+v", got)
