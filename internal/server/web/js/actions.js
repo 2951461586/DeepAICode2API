@@ -26,7 +26,12 @@ export function accountOp(action, extra){
 export function keyOp(kind, key){
   return api("/admin/api/keys?" + kind + "=" + encodeURIComponent(key), {method:"DELETE"})
     .then(function(){ toast("操作成功","ok"); return reload(); })
-    .catch(function(e){ toast("失败：" + e.message, "err"); });
+    .catch(function(e){
+      toast("失败：" + e.message, "err");
+      // 404 = 这把密钥已经不在了（另一个标签页删过 / 引用已失效）。重拉一次让列表
+      // 和真实状态对齐，而不是留一行怎么点都 404 的幽灵行。
+      if (e && e.status === 404) return reload();
+    });
 }
 
 // keySetGroup 是「改绑分组」：同样是变更 + 重拉，放在这里让 render 层不必

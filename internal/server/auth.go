@@ -138,6 +138,22 @@ func (s *Server) resolveKeyRef(ref string) string {
 	return ref
 }
 
+// keyExists 报告一把完整 Key 是否还在号池里。
+//
+// resolveKeyRef 找不到时会把入参原样返回，所以「解析结果非空」并不代表存在；
+// 删除 / 启停前要用本函数确认，否则删一个已被吊销的 Key 也会回成功。
+func (s *Server) keyExists(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, k := range s.Store.Keys() {
+		if k.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func extractKey(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); h != "" {
 		if v, ok := strings.CutPrefix(h, "Bearer "); ok {

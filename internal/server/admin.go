@@ -93,16 +93,36 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": k.Key})
 	case http.MethodDelete:
 		q := r.URL.Query()
-		if ref := q.Get("key"); ref != "" {
-			_ = s.Store.DeleteKey(s.resolveKeyRef(ref))
+		delRef := strings.TrimSpace(q.Get("key"))
+		togRef := strings.TrimSpace(q.Get("toggle"))
+		if delRef == "" && togRef == "" {
+			writeErr(w, http.StatusBadRequest, "缺少 key 或 toggle 参数", "invalid_request_error")
+			return
 		}
-		if ref := q.Get("toggle"); ref != "" {
-			_ = s.Store.ToggleKey(s.resolveKeyRef(ref))
+		// 先校验再变更：resolveKeyRef 找不到时会原样返回，所以存在性得自己查。
+		// 否则「删不存在的 Key」会回 200 {"ok":true} 还落一次盘，控制台看到成功、
+		// 列表却没变（典型场景：另一个标签页已经删过这把 Key）。
+		// 两个 ref 一起校验也是为此：不能「删成功了、切失败了」半途而废后回 404。
+		delKey, togKey := s.resolveKeyRef(delRef), s.resolveKeyRef(togRef)
+		if delRef != "" && !s.keyExists(delKey) {
+			writeErr(w, http.StatusNotFound, "密钥不存在（可能已被删除或吊销）", "not_found_error")
+			return
+		}
+		if togRef != "" && !s.keyExists(togKey) {
+			writeErr(w, http.StatusNotFound, "密钥不存在（可能已被删除或吊销）", "not_found_error")
+			return
+		}
+		deleted, toggled := false, false
+		if delRef != "" {
+			deleted = s.Store.DeleteKey(delKey)
+		}
+		if togRef != "" {
+			toggled = s.Store.ToggleKey(togKey)
 		}
 		if !s.persistOrFail(w) {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted, "toggled": toggled})
 	default:
 		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法", "invalid_request_error")
 	}

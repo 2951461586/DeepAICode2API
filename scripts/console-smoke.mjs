@@ -299,6 +299,27 @@ await checkAsync('变更操作收尾走注入的 reload', async () => {
   if (txt.includes('失败：')) throw new Error('收尾报错：' + txt);
 });
 
+// 密钥 404 的自愈：目标已经不在了（另一个标签页删过）时要重拉一次，
+// 否则列表会留一行怎么点都 404 的幽灵行。
+await checkAsync('密钥操作遇到 404 仍然重拉', async () => {
+  const actions = await load('actions.js');
+  let reloads = 0;
+  actions.setReload(() => { reloads++; });
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 404,
+    text: async () => JSON.stringify({ error: { message: '密钥不存在', type: 'not_found_error' } }),
+  });
+  try {
+    await actions.keyOp('toggle', 'sk-gone');
+  } finally {
+    globalThis.fetch = saved;
+  }
+  if (reloads !== 1) throw new Error(`404 后 reload ${reloads} 次（期望 1）`);
+  if (!String(el('#toast').textContent || '').includes('失败')) throw new Error('404 应仍然报错');
+});
+
 if (failures.length) {
   console.error(`\n${failures.length} 项失败：`);
   failures.forEach((f) => console.error('  - ' + f));

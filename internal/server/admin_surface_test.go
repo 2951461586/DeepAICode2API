@@ -286,3 +286,65 @@ func TestAdminModelsGetAndRefresh(t *testing.T) {
 		t.Fatalf("错误语义不对: %+v", e.Error)
 	}
 }
+
+// TestAdminKeysDeleteReportsMissing 守住删除 / 启停的目标必须真的存在。
+//
+// 以前 DELETE /admin/api/keys 把 Store 返回的 bool 丢掉：删一个已被吊销（或打错）
+// 的 Key 会回 200 {"ok":true} 还落一次盘。控制台看到「操作成功」，列表却没变——
+// 典型场景是两个标签页，其中一边已经删过。
+func TestAdminKeysDeleteReportsMissing(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	keys := s.Store.Keys()
+	if len(keys) == 0 {
+		t.Fatal("测试环境应有至少一把密钥")
+	}
+	live := keys[0].Key
+
+	// 两个参数都不带：说明调用方写错了，直接 400（别把「什么都没做」当成功）。
+	if rec := do(t, s, http.MethodDelete, "/admin/api/keys", "", ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("缺参数时 = %d，期望 400：%s", rec.Code, rec.Body.String())
+	}
+
+	before, beforeBytes := s.Store.SaveCounters()
+	for _, q := range []string{"key=sk-does-not-exist", "toggle=sk-does-not-exist"} {
+		rec := do(t, s, http.MethodDelete, "/admin/api/keys?"+q, "", "")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s = %d，期望 404：%s", q, rec.Code, rec.Body.String())
+		}
+		if body := rec.Body.String(); strings.Contains(body, `"ok":true`) {
+			t.Fatalf("%s 仍回了成功体：%s", q, body)
+		}
+	}
+	// 失败的删除不该落盘：否则每次「删不存在的 Key」都会触发一次全量写盘。
+	if saves, savedBytes := s.Store.SaveCounters(); saves != before || savedBytes != beforeBytes {
+		t.Fatalf("404 路径不应落盘：saves %d→%d，bytes %d→%d", before, saves, beforeBytes, savedBytes)
+	}
+	if got := len(s.Store.Keys()); got != len(keys) {
+		t.Fatalf("失败的删除改动了号池：%d → %d", len(keys), got)
+	}
+
+	// 真实目标的成功路径不变，并明确回报做了什么（脱敏引用同样可用）。
+	rec := do(t, s, http.MethodDelete, "/admin/api/keys?toggle="+mask(live), "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("toggle = %d：%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		OK      bool `json:"ok"`
+		Deleted bool `json:"deleted"`
+		Toggled bool `json:"toggled"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if !out.OK || out.Deleted || !out.Toggled {
+		t.Fatalf("toggle 的回报不对: %+v", out)
+	}
+	if rec := do(t, s, http.MethodDelete, "/admin/api/keys?key="+mask(live), "", ""); rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d：%s", rec.Code, rec.Body.String())
+	}
+	for _, k := range s.Store.Keys() {
+		if k.Key == live {
+			t.Fatal("删除后密钥仍在号池里")
+		}
+	}
+}
