@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/store"
 )
 
 // --- HTTP 响应与脱敏工具 ---
@@ -77,6 +78,17 @@ func statusOf(err error) int {
 	var he *deepai.HTTPError
 	if errors.As(err, &he) && he.Status >= 400 && he.Status < 600 {
 		return he.Status
+	}
+	// 这两个必须与 writeUpstreamErr 的实际响应一致，否则日志里的状态码会撒谎：
+	//   - 客户端断开：writeUpstreamErr 什么都不写（连接已经没了），日志记 499，
+	//     不计失败（见 store.Record）；
+	//   - 我们自己的超时：响应码是 504，日志却记 502，会让「上游 5xx」与
+	//     「请求超时」混在一起。
+	if errors.Is(err, context.Canceled) {
+		return store.StatusClientGone
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout
 	}
 	return http.StatusBadGateway
 }

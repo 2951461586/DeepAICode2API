@@ -78,14 +78,18 @@ type Stats struct {
 	TotalTokensOut int64 `json:"total_tokens_out"`
 	// TotalCachedTokens 是上游报告「命中前缀缓存」的 prompt token 总量，
 	// 用于算缓存命中率（cached / prompt）。
+	//
+	// 注意它是**累计值**：跟 DayTokensIn（当日）组合算比率是错的（会得出一个
+	// 既不等于累计也不等于当日的数）。控制台因此同时存一份 DayCachedTokens。
 	TotalCachedTokens int64   `json:"total_cached_tokens,omitempty"`
 	TotalCost         float64 `json:"total_cost"`
-	// Day / DayTokensIn / DayTokensOut 是「按本地日期」的当日用量。
+	// Day / DayTokensIn / DayTokensOut / DayCachedTokens 是「按本地日期」的当日用量。
 	//
 	// 跨天时由 Record 自动清零（不需要定时任务）；Date 用 YYYY-MM-DD。
-	Day          string `json:"day,omitempty"`
-	DayTokensIn  int64  `json:"day_tokens_in,omitempty"`
-	DayTokensOut int64  `json:"day_tokens_out,omitempty"`
+	Day             string `json:"day,omitempty"`
+	DayTokensIn     int64  `json:"day_tokens_in,omitempty"`
+	DayTokensOut    int64  `json:"day_tokens_out,omitempty"`
+	DayCachedTokens int64  `json:"day_cached_tokens,omitempty"`
 	// StartedAt 是统计开始时间（首次启动），ResetAt 是最近一次手动重置的时间。
 	//
 	// 两者分开：控制台需要能解释「统计数比日志少」——重置只清计数，

@@ -1,7 +1,12 @@
 ---
 services:
   deepaicode2api:
-    build: .
+    build:
+      context: .
+      # 打 tag 部署时传下去，控制台才会显示真实版本并提示升级：
+      #   VERSION=$(git describe --tags) docker compose up -d --build
+      args:
+        VERSION: ${VERSION:-docker}
     container_name: deepaicode2api
     ports:
       - "10087:10087"

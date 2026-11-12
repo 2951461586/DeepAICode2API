@@ -626,3 +626,58 @@ func TestStaleZeroQuotaIsSchedulable(t *testing.T) {
 		t.Fatalf("陈旧的 0 额度账号应可被调度，实际 %#v", got)
 	}
 }
+
+// TestRecordClientGoneIsNotFailure 守住 499 的计数语义。
+//
+// 客户端断开（关标签页 / SDK 取消）以前被记成 502 并计入 failed_requests：
+// 线上实测 4 条 502 里有 3 条是这种，失败率于是被抬高、还看不出上游到底稳不稳。
+// 现在 499 只进日志、不进失败数（也不进成功数——它两头都不是）。
+func TestRecordClientGoneIsNotFailure(t *testing.T) {
+	st := newStore(t)
+	st.Record(LogEntry{Status: 200}, 1)
+	st.Record(LogEntry{Status: StatusClientGone, Err: "context canceled"}, 0)
+	s := st.Stats()
+	if s.TotalRequests != 2 {
+		t.Fatalf("TotalRequests = %d，期望 2", s.TotalRequests)
+	}
+	if s.FailedRequests != 0 {
+		t.Fatalf("FailedRequests = %d，期望 0（499 不计失败）", s.FailedRequests)
+	}
+	// 日志里仍要能看到这一条，否则「客户端走了」会变成无声的黑洞。
+	if logs := st.QueryLogs(QueryFilter{Limit: 10}); len(logs) != 2 {
+		t.Fatalf("日志条数 = %d，期望 2", len(logs))
+	}
+}
+
+// TestStatsDayCachedTokens 守住「当日缓存命中率」的分子。
+//
+// 控制台的命中率原来用 total_cached_tokens / total_tokens_in（累计 / 累计），
+// 与「今日 Token 入」并排显示时像个今日指标，其实永远滞后。要有当日口径，
+// 就必须同时按天累计 cached，并在跨天时清零。
+func TestStatsDayCachedTokens(t *testing.T) {
+	st := newStore(t)
+	st.Record(LogEntry{Status: 200, TokensIn: 100, CachedTokens: 80}, 0)
+	st.Record(LogEntry{Status: 200, TokensIn: 100, CachedTokens: 0}, 0)
+	s := st.Stats()
+	if s.DayTokensIn != 200 || s.DayCachedTokens != 80 {
+		t.Fatalf("当日 token 统计错误: in=%d cached=%d", s.DayTokensIn, s.DayCachedTokens)
+	}
+	if s.TotalCachedTokens != 80 || s.TotalTokensIn != 200 {
+		t.Fatalf("累计 token 统计错误: in=%d cached=%d", s.TotalTokensIn, s.TotalCachedTokens)
+	}
+
+	// 模拟跨天：把日期键改成昨天，下一次 Record 应把当日计数（含 cached）清零。
+	st.mu.Lock()
+	st.st.Stats.Day = "2000-01-01"
+	st.st.Stats.DayTokensIn = 999
+	st.st.Stats.DayCachedTokens = 999
+	st.mu.Unlock()
+	st.Record(LogEntry{Status: 200, TokensIn: 10, CachedTokens: 7}, 0)
+	s = st.Stats()
+	if s.DayTokensIn != 10 || s.DayCachedTokens != 7 {
+		t.Fatalf("跨天未清零: in=%d cached=%d", s.DayTokensIn, s.DayCachedTokens)
+	}
+	if s.TotalCachedTokens != 87 {
+		t.Fatalf("累计 cached 不应被跨天清零: %d", s.TotalCachedTokens)
+	}
+}

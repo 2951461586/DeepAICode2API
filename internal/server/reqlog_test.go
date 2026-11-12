@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/store"
 )
 
 // TestReqLogDoneIsIdempotent 锁死「同一个请求只记一条日志」。
@@ -50,7 +51,12 @@ func TestStatusOfUsesUpstreamStatusCode(t *testing.T) {
 		{"上游 429", &deepai.HTTPError{Op: "聊天", Status: 429}, 429},
 		{"包装后的上游 403", wrap(&deepai.HTTPError{Op: "聊天", Status: 403}), 403},
 		{"普通错误回 502", errors.New("boom"), http.StatusBadGateway},
-		{"上下文取消回 502", context.Canceled, http.StatusBadGateway},
+		// 客户端断开 / 我们自己的超时都要跟 writeUpstreamErr 的实际响应对齐：
+		// 前者什么都不写（连接已经没了），后者写 504。以前一律记 502，会让
+		// 「上游 5xx」与「客户端走了」「我们超时了」在日志里混成一堆。
+		{"上下文取消记 499", context.Canceled, store.StatusClientGone},
+		{"包装后的上下文取消", wrap(context.Canceled), store.StatusClientGone},
+		{"上下文超时记 504", context.DeadlineExceeded, http.StatusGatewayTimeout},
 		{"异常状态码回 502", &deepai.HTTPError{Op: "x", Status: 0}, http.StatusBadGateway},
 	}
 	for _, c := range cases {

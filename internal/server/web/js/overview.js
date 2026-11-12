@@ -44,21 +44,41 @@ export function loadHealth() {
   }).catch(function () { setHealth("err", t("不可达")); });
 }
 
-// renderOverview 画 KPI + 模型目录表。
+// renderOverview 画 KPI + 模型目录表（两块各自成函数：合在一起会超过本仓的
+// 复杂度门槛 25，而它们之间本来就没有共享状态）。
 export function renderOverview(d) {
+  renderKpis(d);
+  renderModels(d);
+  translateDom($("#tab-overview"));
+}
+
+// hitRate 返回 0~1 的命中率；没有样本时返回 NaN（交给 fmtPercent 显示 —），
+// 避免把「今天还没有请求」画成 0%（看起来像缓存完全没生效）。
+function hitRate(cached, total) {
+  return total > 0 ? cached / total : NaN;
+}
+
+// renderKpis 画 KPI 卡片。
+//
+// 每项是 [标签, 值, 悬停说明?]：标题栏里只放一个数，口径（累计 / 今日）放
+// tooltip。缓存命中率以前算的是「累计缓存 / 累计入」，既看着像今天的、又永远
+// 不随当天变化；现在主值取今日，累计值退到 tooltip。
+function renderKpis(d) {
   var s = d.stats || {};
-  // overview 只给计数（不再下发全量账号）。
-  var ready = d.ready || 0;
-  var totalAccts = d.accounts || 0;
   var kpis = [
     ["总请求", fmtNum(s.total_requests)],
     ["失败请求", fmtNum(s.failed_requests)],
     ["输出字符", fmtCompact(s.total_chars_out)],
     ["总 Token 入 / 出", fmtCompact(s.total_tokens_in) + " / " + fmtCompact(s.total_tokens_out)],
     ["上游成本", fmtCost(s.total_cost)],
-    ["账号（就绪/总）", ready + " / " + totalAccts],
+    ["账号（就绪/总）", (d.ready || 0) + " / " + (d.accounts || 0)],
     ["今日 Token 入 / 出", fmtCompact(s.day_tokens_in) + " / " + fmtCompact(s.day_tokens_out)],
-    ["缓存命中率", fmtPercent(s.total_tokens_in > 0 ? s.total_cached_tokens / s.total_tokens_in : 0, s.total_tokens_in > 0)]
+    ["缓存命中率（今日）", fmtPercent(hitRate(s.day_cached_tokens, s.day_tokens_in), s.day_tokens_in > 0),
+      t("累计 {r} · 命中 {c} / 入 {i}", {
+        r: fmtPercent(hitRate(s.total_cached_tokens, s.total_tokens_in), s.total_tokens_in > 0),
+        c: fmtCompact(s.total_cached_tokens),
+        i: fmtCompact(s.total_tokens_in)
+      })]
   ];
   var box = $("#kpis");
   box.textContent = "";
@@ -66,46 +86,53 @@ export function renderOverview(d) {
     var c = mk("div", "kpi");
     c.appendChild(mk("div", "k", k[0]));
     c.appendChild(mk("div", "v", k[1]));
+    if (k[2]) c.title = k[2];
     box.appendChild(c);
   });
+}
 
+// modelSortGetters 是模型表的排序取值（键必须与表头 data-sort 一致）。
+var modelSortGetters = {
+  id: function (m) { return m.id || ""; },
+  name: function (m) { return m.name || m.id || ""; },
+  billing: function (m) { return m.premier ? 1 : 0; },
+  theos: function (m) { return Number(m.theosPerRequest || 0); },
+  theos2: function (m) { return perSecondText(m); },
+  context: function (m) { return Number(m.contextWindow || 0); },
+  max: function (m) { return Number(m.maxTokens || 0); },
+  api: function (m) { return m.api || "chat"; },
+  input: function (m) { return (m.input || []).join(",") + (m.reasoning ? ",r" : ""); }
+};
+
+// modelRow 画一行模型（字段是 camelCase：theosPerRequest / contextWindow / …）。
+function modelRow(m) {
+  var price = (m.theosPerRequest === undefined || m.theosPerRequest === null) ? "—" : m.theosPerRequest;
+  // free 由后端 Model.Free() 下发（单一口径）；旧响应没有这个字段时才回退本地判断。
+  var free = (m.free === undefined)
+    ? (!m.premier && (price === "—" || String(price) === "0"))
+    : Boolean(m.free);
+  var input = (m.input || []).join(" + ");
+  if (m.reasoning) input = input ? input + " · " + t("推理") : t("推理");
+  return row([
+    cell(m.id, "mono"),
+    cell(m.name || m.id),
+    cell(free ? "free" : "premier", free ? "muted" : ""),
+    cell(price, "mono"),
+    cell(perSecondText(m), "mono muted"),
+    cell(fmtNum(m.contextWindow), "mono"),
+    cell(fmtNum(m.maxTokens), "mono"),
+    cell(m.api || "chat", "mono muted"),
+    cell(input, "muted")
+  ]);
+}
+
+// renderModels 画模型目录（元信息 + 表格）。
+function renderModels(d) {
   $("#modelsMeta").textContent = t("更新于 {t} · 默认模型 {m}",
     { t: fmtTime(d.models_updated), m: d.default_model || "-" });
   var tb = $("#models");
   tb.textContent = "";
-  var models = sortCopy(d.models || [], sortState.models, {
-    id: function (m) { return m.id || ""; },
-    name: function (m) { return m.name || m.id || ""; },
-    billing: function (m) { return m.premier ? 1 : 0; },
-    theos: function (m) { return Number(m.theosPerRequest || 0); },
-    theos2: function (m) { return perSecondText(m); },
-    context: function (m) { return Number(m.contextWindow || 0); },
-    max: function (m) { return Number(m.maxTokens || 0); },
-    api: function (m) { return m.api || "chat"; },
-    input: function (m) { return (m.input || []).join(",") + (m.reasoning ? ",r" : ""); }
-  });
+  var models = sortCopy(d.models || [], sortState.models, modelSortGetters);
   if (!models.length) { tb.appendChild(emptyRow(9, "无")); return; }
-  models.forEach(function (m) {
-    // 后端字段是 camelCase（theosPerRequest / contextWindow / maxTokens / input），
-    // 之前按 Go 字段名（PascalCase）取，于是整列都是空的。
-    var price = (m.theosPerRequest === undefined || m.theosPerRequest === null) ? "—" : m.theosPerRequest;
-    // free 由后端 Model.Free() 下发（单一口径）；旧响应没有这个字段时才回退本地判断。
-    var free = (m.free === undefined)
-      ? (!m.premier && (price === "—" || String(price) === "0"))
-      : Boolean(m.free);
-    var input = (m.input || []).join(" + ");
-    if (m.reasoning) input = input ? input + " · " + t("推理") : t("推理");
-    tb.appendChild(row([
-      cell(m.id, "mono"),
-      cell(m.name || m.id),
-      cell(free ? "free" : "premier", free ? "muted" : ""),
-      cell(price, "mono"),
-      cell(perSecondText(m), "mono muted"),
-      cell(fmtNum(m.contextWindow), "mono"),
-      cell(fmtNum(m.maxTokens), "mono"),
-      cell(m.api || "chat", "mono muted"),
-      cell(input, "muted")
-    ]));
-  });
-  translateDom($("#tab-overview"));
+  models.forEach(function (m) { tb.appendChild(modelRow(m)); });
 }

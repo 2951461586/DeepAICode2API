@@ -59,7 +59,7 @@ bench:
 
 ## docker: 构建镜像
 docker:
-	docker build -t deepaicode2api:$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) -t deepaicode2api:$(VERSION) .
 
 ## clean: 清理构建产物（含发布包与覆盖率文件）
 clean:

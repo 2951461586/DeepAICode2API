@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -378,6 +380,12 @@ func (s *Store) MarkAccountResult(id string, ok bool, note string) {
 // 让账号在控制台上长期显示“不健康”（docs/changes.md §45）。
 func (s *Store) MarkAccountFailure(id string, err error) {
 	if err == nil {
+		return
+	}
+	// 上下文被取消 = 我们自己放弃了这个请求（客户端断开 / 上层收尾），
+	// 不是账号的问题。记上去只会让 failures 里掺进与上游无关的噪声，
+	// 而 failures 是控制台判断「这个号是不是坏了」的第一眼依据。
+	if errors.Is(err, context.Canceled) {
 		return
 	}
 	s.markAccountResult(id, false, err.Error(), deepai.Transient(err))

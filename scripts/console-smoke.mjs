@@ -268,6 +268,33 @@ check('renderOverview 带模型', () => {
 check('loadHealth', () => {
   overview.loadHealth();
 });
+// 缓存命中率的口径：主值取今日，累计退到 tooltip。
+// 2026-11-12 的线上现象：卡片显示 15.1%（累计 228.2M/1.51G），
+// 而当天实际是 94%（228.2M/242.4M）——同一张卡片里混了两个口径。
+check('缓存命中率用今日口径，累计进 tooltip', () => {
+  overview.renderOverview({
+    stats: { total_tokens_in: 1000, total_cached_tokens: 100, day_tokens_in: 200, day_cached_tokens: 150 },
+    models: [], keys: [],
+  });
+  const cards = el('#kpis').children.map((c) => ({
+    k: String((c.children[0] || {}).textContent || ''),
+    v: String((c.children[1] || {}).textContent || ''),
+    title: String(c.title || ''),
+  }));
+  const hit = cards.find((c) => c.k.includes('缓存命中率'));
+  if (!hit) throw new Error('没有缓存命中率卡片');
+  if (hit.v !== '75.0%') throw new Error('今日命中率 = ' + hit.v + '（期望 75.0%）');
+  if (!hit.title.includes('10.0%')) throw new Error('tooltip 缺累计命中率：' + hit.title);
+});
+// 499 = 客户端先走了：既不是成功也不是上游失败，日志里用 warn 色区分。
+check('日志 499 用 warn 色', () => {
+  logs.renderLogs([{
+    time: 1, endpoint: 'chat', model: 'm', status: 499, latency_ms: 5, err: 'context canceled',
+  }]);
+  const badge = el('#logs').children[0].children[4].children[0];
+  if (!String(badge.className || '').includes('badge')) throw new Error('状态列不是 badge');
+  if (!String(badge.className || '').includes('warn')) throw new Error('499 没用 warn 色：' + badge.className);
+});
 check('initOAuth / initSettingsForm 可重复装配', () => {
   oauth.initOAuth({ refresh() {} });
   settingsForm.initSettingsForm({ refresh() {} });

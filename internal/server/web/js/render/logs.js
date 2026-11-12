@@ -29,7 +29,11 @@ export function renderLogs(logs){
   }
   list.forEach(function(l){
     var st = cell("");
-    st.appendChild(pill(l.status, l.status >= 400 ? "err" : "ok"));
+    // 499 = 客户端先走了（后端 store.StatusClientGone）——既不是成功也不是上游
+    // 失败，用 warn 色区分，别把「用户关标签页」看成网关报错。
+    var statusCls = l.status >= 400 ? "err" : "ok";
+    if (l.status === 499) statusCls = "warn";
+    st.appendChild(pill(l.status, statusCls));
     var errCell = cell(l.err || "", "muted trunc");
     if (l.err) errCell.title = l.err;
     // 字符 / Token 用 K/M 压缩，精确值放 title。

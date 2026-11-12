@@ -28,9 +28,17 @@ func (s *Store) UpdateSettings(fn func(*Settings)) {
 // statsDayLayout 是「当日用量」的日期键格式（本地时区）。
 const statsDayLayout = "2006-01-02"
 
+// StatusClientGone 是「客户端已断开」的日志状态码（沿用 nginx 的 499 约定）。
+//
+// 值与 HTTP 规范无关（499 不是标准码）：它只出现在**我们自己的请求日志**里，
+// 表示「上游没出错，是调用方先走了」——客户端断开、关标签页、SDK 超时取消。
+// 之所以要单独区分：这类请求既不是成功也不是我们/上游的失败，算进失败率会把
+// 成功率画成一条假的下降线，而且会让「上游到底稳不稳」变得看不出来。
+const StatusClientGone = 499
+
 // rollStatsDay 在跨天时把当日计数清零并更新日期键。
 //
-// 放在 Record 的写锁内：它需要同时改 Day 与两个计数器，分开做会出现
+// 放在 Record 的写锁内：它需要同时改 Day 与三个计数器，分开做会出现
 // 「日期已翻页但计数还是昨天」的中间态。调用方必须持有 s.mu 写锁。
 func rollStatsDay(st *Stats, now time.Time) {
 	today := now.Format(statsDayLayout)
@@ -40,6 +48,7 @@ func rollStatsDay(st *Stats, now time.Time) {
 	st.Day = today
 	st.DayTokensIn = 0
 	st.DayTokensOut = 0
+	st.DayCachedTokens = 0
 }
 
 // Stats 返回统计快照。
@@ -54,6 +63,7 @@ func (s *Store) Stats() Stats {
 		st.Day = time.Now().Format(statsDayLayout)
 		st.DayTokensIn = 0
 		st.DayTokensOut = 0
+		st.DayCachedTokens = 0
 	}
 	return st
 }
@@ -73,7 +83,9 @@ func (s *Store) Logs(limit int) []LogEntry {
 func (s *Store) Record(e LogEntry, outChars int) {
 	s.mu.Lock()
 	s.st.Stats.TotalRequests++
-	if e.Status >= 400 || e.Err != "" {
+	// 499 是「客户端先走了」：既不计成功也不计失败，只留在日志里供排查。
+	// 否则一个关标签页的动作就会把线上失败率抬高（实测里 502 有 3/4 是这种）。
+	if (e.Status >= 400 || e.Err != "") && e.Status != StatusClientGone {
 		s.st.Stats.FailedRequests++
 	}
 	s.st.Stats.TotalCharsOut += int64(outChars)
@@ -84,6 +96,7 @@ func (s *Store) Record(e LogEntry, outChars int) {
 	rollStatsDay(&s.st.Stats, time.Now())
 	s.st.Stats.DayTokensIn += int64(e.TokensIn)
 	s.st.Stats.DayTokensOut += int64(e.TokensOut)
+	s.st.Stats.DayCachedTokens += int64(e.CachedTokens)
 	s.st.Stats.TotalCost += e.Cost
 	s.statsDirty = true
 	keep := s.st.Settings.LogKeep

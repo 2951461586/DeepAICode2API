@@ -13,6 +13,7 @@
 | --- | --- | --- |
 | v0.1.2 | 53、54 | 控制台日志页漏 import（`renderLogs`）+ 二次全扫 7 处遗留 |
 | v0.1.2 之后 | 55 | 密钥删除/启停的存在性语义 + 控制台 404 自愈（未发版） |
+| v0.1.2 之后 | 56 | 缓存命中率改今日口径、499 客户端断开、docker 构建注入 VERSION（未发版） |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -32,6 +33,7 @@
 - 53 日志页报「日志加载失败：renderLogs is not defined」：补回漏掉的 import + 导入契约测试
 - 54 二次全扫：英文空态漏翻、设置 0 被吞、概览连带失败、更新检查缓存污染、签到计数虚高
 - 55 密钥删除/启停的存在性语义：404 不再伪装成功 + 控制台 404 自愈（v0.1.2 之后）
+- 56 缓存命中率口径（今日 vs 累计）、客户端断开记 499 不计失败、docker 版本注入（v0.1.2 之后）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2845,3 +2847,88 @@ _ = s.Store.ToggleKey(s.resolveKeyRef(ref))
   被调用且仍报错。旧 `keyOp` 复跑：`404 后 reload 0 次（期望 1）`。
 
 **验证**：`sh scripts/lint.sh` exit 0；冒烟 19 条全放行；`go test -race ./...` 全绿。
+
+## 56. 线上部署暴露的三件事：缓存命中率口径、客户端断开被算成失败、docker 版本号
+
+**触发**：v0.1.2 发布后对线上实例（`deepai2api.liziai.cloud`）做了一次体检，
+三处「数字说不通 / 部署说不清」的地方都在本轮修掉。
+
+### 56.1 缓存命中率的两个口径被混在一张卡片里
+
+**现象**：控制台 KPI 显示缓存命中率 **15.1%**；而用当天的数字手算却是
+`228.2M / 242.4M ≈ 94%`。
+
+**根因**：卡片算的是 `total_cached_tokens / total_tokens_in`（**累计 / 累计**），
+却和「今日 Token 入 / 出」并排展示，读起来像今日指标；而且它永远不随当天变化。
+两个累计值本身没错（228,175,986 / 1,510,839,185 = 15.10%），错的是「拿累计分子
+配当日分母」这种混用——那会得出一个既不是累计也不是当日的数。
+
+**修复**：
+
+| 位置 | 改动 |
+| --- | --- |
+| `store.Stats` | 新增 `DayCachedTokens`（`day_cached_tokens`），与 `DayTokensIn` 同生命周期：`Record` 累加、`rollStatsDay` 与 `Stats()` 的读路径跨天清零 |
+| `overview.js` | KPI 改为「缓存命中率（今日）」，主值用当日；累计命中率与 `命中 / 入` 的绝对量放 tooltip |
+| `overview.js` | 顺手把 `renderOverview` 拆成 `renderKpis` + `renderModels`（cc 32 → 两个都在门槛 25 之内），排序取值与行渲染各自成函数 |
+
+### 56.2 客户端断开被记成 502 并计入失败率
+
+**现象**：线上最近 400 条日志里有 4 条 502，其中 3 条是
+`Post "…/chat/completions": context canceled`——那是调用方（浏览器 / SDK）
+自己走了，上游没出错。
+
+**根因**：`statusOf` 把除 `HTTPError` 之外的一律记成 502，而 `writeUpstreamErr`
+对 `context.Canceled` 是**什么都不写**（连接已经没了）、对 `DeadlineExceeded` 写
+**504**。日志状态码与实际响应因此不一致；`Store.Record` 又把「状态 ≥ 400」一律
+计入 `failed_requests`，失败率被这类请求抬高。另外 `MarkAccountFailure` 还会给
+账号 `failures++`（虽然被判 transient、状态不降级），让「这个号是不是坏了」的判断
+掺进与上游无关的噪声。
+
+**修复**：
+
+| 位置 | 改动 |
+| --- | --- |
+| `store` | 新增 `StatusClientGone = 499`（nginx 约定），注释说明它只出现在我们自己的日志里 |
+| `statusOf` | `context.Canceled` → 499；`context.DeadlineExceeded` → 504，与 `writeUpstreamErr` 的实际响应一致 |
+| `Store.Record` | 499 既不计成功也不计失败（只保留日志行） |
+| `Store.MarkAccountFailure` | `context.Canceled` 直接返回：我们主动放弃的请求不该算账号的错 |
+| `render/logs.js` | 499 的徽章用 `warn` 色，与真正的 4xx/5xx 区分 |
+
+### 56.3 Docker 版本号恒为 `docker`，控制台永远不提示升级
+
+**现象**：线上 `/health` 与顶栏都显示 `docker`；`/admin/api/version` 返回
+`latest=v0.1.2` 但 `update_available=false`。
+
+**根因**：`Dockerfile` 里写死 `-X main.version=docker`，而 `parseSemver("docker")`
+解析失败 → `versionNewer` 恒为 false。也就是说 docker 部署的用户永远收不到升级提示，
+而发布页上明明有新版。
+
+**修复**：`Dockerfile` 加 `ARG VERSION=docker`（默认值保持 `docker`，明确表示
+「不是按 tag 构建的」）；`docker-compose.yml` 透传 `VERSION` 构建参数；
+`make docker` 自动带上 `git describe` 的版本。部署方式：
+
+```bash
+VERSION=$(git describe --tags) docker compose up -d --build
+```
+
+### 56.4 回归防线
+
+- `TestStatsDayCachedTokens`：当日 cached 累加、跨天清零、累计值不受跨天影响。
+- `TestRecordClientGoneIsNotFailure`：499 不进 `FailedRequests`，但日志行保留。
+- `TestStatusOfUsesUpstreamStatusCode` 补 3 个用例：`context.Canceled` → 499、
+  包装后的取消仍是 499、`context.DeadlineExceeded` → 504（旧代码复跑：
+  `statusOf = 502，期望 499`）。
+- 冒烟新增「缓存命中率用今日口径，累计进 tooltip」（今日 75.0% + tooltip 含 10.0%）
+  与「日志 499 用 warn 色」。
+
+### 56.5 验证
+
+```text
+sh scripts/lint.sh                  exit 0（gofmt / vet / JS 语法 / 冒烟 / 测试）
+node scripts/console-smoke.mjs      21 条全放行（新增 2 条）
+go test -race ./...                全绿；internal/server 覆盖率维持 77%+
+```
+
+线上实测对照（修复前）：`total_cached_tokens=228,175,986`、
+`total_tokens_in=1,510,839,185` → 累计 15.10%（旧卡片显示的就是这个数）；
+`day_tokens_in=242,357,695` → 当日命中率由新的 `day_cached_tokens` 给出。
