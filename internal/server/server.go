@@ -183,8 +183,11 @@ func (s *Server) Handler() http.Handler {
 	// 口令校验入口：只回答“这个口令对不对”，不返回任何敏感信息。
 	mux.HandleFunc("/admin/api/auth", s.withAdminAuth(s.handleAdminAuth))
 
-	// 控制台静态资源：样式与 ES module 脚本（页面本身走 /）。
+	// 控制台静态资源：样式、标签页图标与 ES module 脚本（页面本身走 /）。
 	mux.HandleFunc("/style.css", s.handleConsoleAsset)
+	// 浏览器自动请求的固定路径：不给的话每次打开控制台都多一条 404。
+	mux.HandleFunc("/favicon.ico", s.handleConsoleAsset)
+	mux.HandleFunc("/apple-touch-icon.png", s.handleConsoleAsset)
 	mux.HandleFunc("/js/", s.handleConsoleAsset)
 	mux.HandleFunc("/", s.handleRoot)
 

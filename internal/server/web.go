@@ -14,7 +14,7 @@ import (
 // 控制台是一个「标记 + 样式 + 一组 ES module」的静态包，全部嵌进二进制：
 // 无外部依赖、无构建步骤、离线可用。
 //
-//go:embed web/index.html web/login.html web/style.css web/js/*.js web/js/render/*.js
+//go:embed web/index.html web/login.html web/style.css web/favicon.ico web/apple-touch-icon.png web/js/*.js web/js/render/*.js
 var consoleAssets embed.FS
 
 // consoleHTML 是控制台的页面标记（不含内联脚本与样式）。
@@ -82,6 +82,12 @@ func consoleAssetType(name string) string {
 		return "text/css; charset=utf-8"
 	case ".js":
 		return "text/javascript; charset=utf-8"
+	case ".ico":
+		// 官方类型是 image/vnd.microsoft.icon（RFC 7903），但 image/x-icon 是
+		// 实际世界里最常见的写法、所有浏览器都认，这里跟 nginx 的默认保持一致。
+		return "image/x-icon"
+	case ".png":
+		return "image/png"
 	default:
 		return "application/octet-stream"
 	}
@@ -158,7 +164,7 @@ func serveConsoleAsset(w http.ResponseWriter, r *http.Request, name string) {
 	_, _ = w.Write(raw)
 }
 
-// handleConsoleAsset 响应 /style.css 与 /js/<name>.js。
+// handleConsoleAsset 响应 /style.css、/favicon.ico、/apple-touch-icon.png 与 /js/<name>.js。
 //
 // 用白名单而不是拼路径：控制台只有这两个入口，把「允许的名字」写成显式规则，
 // 就不需要再讨论 embed FS 上的路径穿越。
@@ -168,6 +174,12 @@ func (s *Server) handleConsoleAsset(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case p == "style.css":
 		name = "web/style.css"
+	case p == "favicon.ico":
+		// 浏览器自动请求的固定路径；标签页/书签图标（多尺寸 ICO，见 docs/assets）
+		name = "web/favicon.ico"
+	case p == "apple-touch-icon.png":
+		// iOS 主屏图标只认 PNG（ICO 会被忽略），所以单独放一张 180×180
+		name = "web/apple-touch-icon.png"
 	case strings.HasPrefix(p, "js/render/"):
 		// render/ 下只允许一层扁平文件名
 		rest := strings.TrimPrefix(p, "js/render/")

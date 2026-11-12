@@ -134,7 +134,10 @@ func (m *metrics) observe(status int, d time.Duration) {
 // isStaticAsset 判断是否属于无需访问日志的静态资源。
 func isStaticAsset(path string) bool {
 	switch {
-	case path == "/style.css", path == "/ping":
+	// favicon / apple-touch-icon 也在这里：浏览器每次打开页面都会自动请求它们，
+	// 不进这个白名单就变成每条控制台访问都多两行日志。
+	case path == "/style.css", path == "/ping",
+		path == "/favicon.ico", path == "/apple-touch-icon.png":
 		return true
 	case strings.HasPrefix(path, "/js/"):
 		return true

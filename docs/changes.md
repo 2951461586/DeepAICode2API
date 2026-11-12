@@ -12,7 +12,7 @@
 | 版本 | 条目 | 一句话 |
 | --- | --- | --- |
 | v0.1.2 | 53、54 | 控制台日志页漏 import（`renderLogs`）+ 二次全扫 7 处遗留 |
-| v0.1.2 之后 | 55、56、57 | 密钥删除/启停的存在性语义与 404 自愈；缓存命中率改今日口径、499 客户端断开、docker 注入 VERSION；README 居中 + 项目 Logo |
+| v0.1.2 之后 | 55–58 | 密钥删除/启停的存在性语义与 404 自愈；缓存命中率改今日口径、499 客户端断开、docker 注入 VERSION；README 居中 + 项目 Logo + 控制台 favicon |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -34,6 +34,7 @@
 - 55 密钥删除/启停的存在性语义：404 不再伪装成功 + 控制台 404 自愈（v0.1.2 之后）
 - 56 缓存命中率口径（今日 vs 累计）、客户端断开记 499 不计失败、docker 版本注入（v0.1.2 之后）
 - 57 项目 Logo（复用 DeepAI Code 桌面端图标）+ README 顶部居中（v0.1.2 之后）
+- 58 控制台用上同一图标：/favicon.ico + apple-touch-icon（v0.1.2 之后）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -2999,3 +3000,55 @@ python -c "from PIL import Image; print(Image.open('docs/assets/logo.png').size)
 GitHub 渲染接口（POST /markdown, mode=gfm）：
   <div align="center"> 保留、<img> 在 div 内、8 个徽章仍在、License 段落为普通引用块
 ```
+
+## 58. 控制台用上同一个 Logo：/favicon.ico + apple-touch-icon（v0.1.2 之后，未发版）
+
+**需求**：§57 已经把 DeepAI Code 桌面端的图标放进 `docs/assets/` 当项目 Logo，
+控制台也应该用它（标签页 / 书签 / iOS 主屏），而不是继续让浏览器去猜默认路径、
+每开一次页面打一发 404。
+
+### 58.1 做了什么
+
+| 位置 | 改动 |
+| --- | --- |
+| `internal/server/web/favicon.ico` | `docs/assets/logo.ico` 的副本（26KB，16/24/32/48/64/128/256）——`go:embed` 只能读包内文件，所以必须有一份 |
+| `internal/server/web/apple-touch-icon.png` | 同源图缩到 180×180（8KB）；iOS 主屏图标只认 PNG，ICO 会被忽略 |
+| `web.go` | `go:embed` 加两条；`consoleAssetType` 补 `.ico → image/x-icon`、`.png → image/png` |
+| `web.go` `handleConsoleAsset` | 白名单加 `favicon.ico` / `apple-touch-icon.png`（仍是「允许的名字」列表，不拼路径） |
+| `server.go` | 注册 `/favicon.ico`、`/apple-touch-icon.png` 两条路由 |
+| `index.html` / `login.html` | `<link rel="icon" href="/favicon.ico" sizes="any">` + PNG 版 + `apple-touch-icon` |
+| `observability.go` | 两个图标加进 `isStaticAsset`：与 `/style.css`、`/js/*` 同等待遇，不写访问日志 |
+
+复用现有 `serveConsoleAsset`，所以图标自动获得与其它静态资源一致的响应头：
+`ETag` + `Cache-Control: no-cache`（可 304）、`X-Content-Type-Options: nosniff`、
+`Referrer-Policy: no-referrer`、同一条 CSP（`img-src 'self' data:` 已覆盖）。
+
+### 58.2 为什么 ICO 和 PNG 都要
+
+- **favicon.ico**：浏览器直接请求 `/favicon.ico` 这个固定路径；多尺寸 ICO 让
+  16px 的标签页与 256px 的书签/任务栏都清晰；
+- **apple-touch-icon.png**：iOS Safari 不认 ICO 作主屏图标，必须 PNG（180×180 是
+  iOS 推荐尺寸）。
+
+### 58.3 回归防线（`console_favicon_test.go`）
+
+| 断言 | 守住什么 |
+| --- | --- |
+| `TestConsoleFaviconServed` | 200 + 正确 Content-Type + **ISO 魔数**（`00 00 01 00` / PNG 签名）+ ETag + 304 + nosniff——防止「路径通了但内容是空文件」 |
+| `TestConsolePagesReferenceFavicon` | 两个页面都真的写了 `<link rel="icon">`（只 embed 不引用 = 浏览器继续猜默认路径） |
+| `TestConsoleFaviconMatchesDocsAsset` | `web/favicon.ico` 与 `docs/assets/logo.ico` **按字节比对**：换 Logo 时忘了同步，会出现「README 是新图、标签页还是旧图」 |
+| `TestStaticAssetsSkipAccessLog` | 图标不进访问日志（否则每条控制台访问多两行噪声、`/metrics` 的 2xx 也会虚高） |
+
+### 58.4 验证
+
+本地起了一份临时实例（`-port 10099 -no-import`）实测：
+
+```text
+/favicon.ico        -> 200 image/x-icon 26735B   魔数 00 00 01 00
+/apple-touch-icon.png -> 200 image/png 8204B
+/                   -> 200 text/html，<head> 里三条 <link rel="…icon…">
+带 If-None-Match     -> 304（ETag "ebe78f92c0121ac8…"）
+响应头              -> nosniff + no-referrer + 同一条 CSP
+```
+
+测试：`go test ./...` 全绿（556 用例 = 424 顶层 + 132 子用例）、冒烟 21 条不变。
