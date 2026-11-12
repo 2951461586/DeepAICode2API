@@ -12,6 +12,9 @@ const DEBUG = "http://127.0.0.1:9222";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function targets() {
+  // 本地 Chrome DevTools 协议只有明文 HTTP（127.0.0.1:9222，无凭据、不跨网），
+  // Semgrep 的 react-insecure-request 在这里是误报。
+  // pi-lens-ignore: typescript.react.security.react-insecure-request.react-insecure-request
   const r = await fetch(DEBUG + "/json/list");
   return r.json();
 }
@@ -53,7 +56,7 @@ async function shot(ws, name) {
 
 async function navigate(ws, url) {
   await send(ws, "Page.enable");
-  const bust = (url.indexOf("?") >= 0 ? "&" : "?") + "cb=" + Date.now();
+  const bust = (url.includes("?") ? "&" : "?") + "cb=" + Date.now();
   await send(ws, "Page.navigate", { url: url.replace("#", bust + "#") });
   await sleep(2500);
 }
@@ -113,7 +116,7 @@ const requests = [];
   else await evaluate(ws, `document.querySelector('#acctTable th[data-sort=theos]').click()`);
   await sleep(1200);
   const sorted = requests.filter((u) => u.includes("sort=theos"));
-  console.log("  sort request:", sorted.length ? sorted[sorted.length - 1].split("?")[1] : "(none)");
+  console.log("  sort request:", sorted.length ? sorted.at(-1).split("?")[1] : "(none)");
   if (!sorted.length) problems.push("点击表头没有发出带 sort=theos 的请求");
   const arrow = await evaluate(ws, `document.querySelector('#acctTable th[data-sort=theos]').className`);
   if (!String(arrow).includes("asc")) problems.push("表头排序指示未更新: " + arrow);
