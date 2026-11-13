@@ -21,13 +21,20 @@ import (
 //   - 401/403/429/5xx：记录账号失败并换号重试；
 //   - 409 session_busy：池里有空号就立刻换号，整池都满才按 Retry-After 等一次；
 //   - 槽位不够：短暂排队（admissionWait），超时才回 429。
-func (s *Server) openModel(ctx context.Context, path string, body []byte, affinity, group string) (*http.Response, *deepai.Account, error) {
+func (s *Server) openModel(ctx context.Context, path string, body []byte, affinity, group, apiKey string, stream bool) (*http.Response, *deepai.Account, error) {
 	// 只需要号池规模：AccountCounts 不解包快照，避免为了一次 len() 深拷贝全池。
 	acctTotal, _ := s.Store.AccountCounts()
 	if acctTotal == 0 {
 		return nil, nil, errors.New("没有可用账号，请先在控制台导入桌面端凭据或添加 API Key")
 	}
 	settings := s.Store.Settings()
+	// 预置桌面端形状：只对「已被上游按形状拒绝过」的调用方生效（shape.go），
+	// 且只补 system、不裁剪字段，因此不会改调用方显式给的采样参数。
+	if path == deepai.PathChat && settings.PresetDesktopShape && apiKey != "" && s.shapeNeeded(apiKey) {
+		if alt, inserted := deepai.EnsureSystemMessage(body, ""); inserted {
+			body = alt
+		}
+	}
 	maxTries := settings.MaxRetries
 	if maxTries <= 0 {
 		maxTries = 3
@@ -53,11 +60,13 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			if !time.Now().Before(deadline) {
 				break
 			}
+			waitStart := time.Now()
 			select {
 			case <-time.After(admissionPoll):
 			case <-ctx.Done():
 				return nil, used, ctx.Err()
 			}
+			s.metrics.observeAdmissionWait(time.Since(waitStart))
 			i--
 			continue
 		}
@@ -77,16 +86,17 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		// 推理，但「慢」是用户能感知的，所以超过阈值留一条日志（之前这笔等待
 		// 在任何日志里都看不到）。
 		if path == deepai.PathChat || path == deepai.PathResponses {
-			ciStart := time.Now()
-			client.EnsureCheckIn(ctx, acct)
-			if d := time.Since(ciStart); d >= checkInSlowWarn {
-				logx.Warn("签到阻塞了推理请求", "account", acctLabel(acct), "ms", d.Milliseconds())
+			outcome := client.EnsureCheckIn(ctx, acct)
+			s.metrics.observeCheckIn(outcome)
+			if outcome.Attempted && outcome.Waited >= checkInSlowWarn {
+				logx.Warn("签到阻塞了推理请求", "account", acctLabel(acct), "ms", outcome.Waited.Milliseconds(), "timed_out", outcome.TimedOut)
 			}
 		}
 		resp, err := client.OpenModel(ctx, acct, path, body, affinity)
 		if err != nil {
 			s.releaseAccount(acct.ID)
 			lastErr = err
+			s.metrics.observeUpstreamError(path, "transport", 0)
 			s.Store.MarkAccountFailure(acct.ID, err)
 			if ctx.Err() != nil {
 				break
@@ -96,7 +106,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 
 		if resp.StatusCode/100 == 2 {
 			s.Store.MarkAccountResult(acct.ID, true, "")
-			resp.Body = s.holdResponseBody(resp.Body, acct.ID)
+			resp.Body = s.holdResponseBody(resp.Body, acct.ID, stream)
 			return resp, acct, nil
 		}
 
@@ -113,12 +123,14 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		// 上游 0.3.19 对请求体做了形状校验（400 + "This request is not one
 		// DeepAI Code sends."）。用桌面端字段白名单 + 补 system 消息同号重试一次。
 		if httpErr.BodyRejected() && path == deepai.PathChat {
+			s.markShapeNeeded(apiKey)
 			if alt, ok := deepai.ChatBodyFallback(body, ""); ok {
+				s.metrics.addFallback()
 				log.Printf("[upstream] 请求体被拒，按桌面端形状重试：account=%s", acctLabel(acct))
 				if retry, err2 := client.OpenModel(ctx, acct, path, alt, affinity); err2 == nil {
 					if retry.StatusCode/100 == 2 {
 						s.Store.MarkAccountResult(acct.ID, true, "")
-						retry.Body = s.holdResponseBody(retry.Body, acct.ID)
+						retry.Body = s.holdResponseBody(retry.Body, acct.ID, stream)
 						return retry, acct, nil
 					}
 					payload2, _ := io.ReadAll(io.LimitReader(retry.Body, 4<<20))
@@ -133,38 +145,45 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			}
 		}
 		s.releaseAccount(acct.ID)
+		s.metrics.observeUpstreamError(path, httpErr.Code(), httpErr.Status)
 
+		switch classifyUpstreamError(httpErr) {
 		// 邮箱未验证：账号登录态无效，换号也救不了它。
 		// 标记后继续试下一个号（下次 /theos 成功会自动解封）；
 		// 不要把它当普通 403 反复重试。
-		if httpErr.EmailUnverified() {
+		case actBlockAndRetry:
 			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
 			lastErr = httpErr
 			continue
-		}
 		// 账号级策略拦截：记 blocked 后直接回传（下一次请求调度会跳过它）。
-		if httpErr.SocialLoginRequired() {
+		case actBlockAndReturn:
 			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
 			return nil, acct, httpErr
-		}
-		// 缺机器指纹：换号也没用（所有账号共用同一个探测结果）。
-		if httpErr.MachineRequired() {
+		// 缺机器指纹 / 请求本身的问题：换号没用，直接回传。
+		case actReturn:
 			return nil, acct, httpErr
-		}
+		// 形状被拒：上面已经补形状重试过一次（仍失败说明补了也不行）。
+		case actShapeFallback:
+			return nil, acct, httpErr
 		// 车道不对：先用免鉴权的 /models 探一次，命中新车道就换道重试；
 		// 仍在冷却期 / 探测失败时把 426 原样交给调用方（提示升级网关）。
-		if httpErr.LaneUnsupported() {
+		case actProbeLane:
 			before := s.CurrentLane()
 			if lane, lerr := s.RefreshLane(ctx); lerr == nil && lane != "" && lane != before {
 				lastErr = httpErr
 				continue
 			}
 			return nil, acct, httpErr
-		}
-
+		// 当日额度用完：标记到 refresh_at，换号；同一账号不再白撞 403。
+		case actQuotaExhausted:
+			until := httpErr.QuotaResetAt(quotaExhaustedFallback, time.Now())
+			s.Store.MarkQuotaExhausted(acct.ID, until)
+			logx.Warn("账号当日额度用完", "account", acctLabel(acct), "until", until.Format(time.RFC3339))
+			lastErr = httpErr
+			continue
 		// 容量拒绝：池里还有空槽就立刻换号（粘性由 X-Session-Affinity 保证，
 		// 不需要在同一个号上干等）；整池都满了才按 Retry-After 等一次。
-		if httpErr.CapacityWaiting() {
+		case actWaitCapacity:
 			lastErr = httpErr
 			if s.hasFreeAccount() {
 				continue
@@ -176,11 +195,6 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 				return nil, acct, ctx.Err()
 			}
 			continue
-		}
-
-		// 请求本身的问题：直接回传，不浪费其他账号。
-		if !httpErr.Retryable() {
-			return nil, acct, httpErr
 		}
 
 		lastErr = httpErr
@@ -206,15 +220,21 @@ const checkInSlowWarn = 2 * time.Second
 // 两条「返回 2xx」的路径（正常响应与请求体形状回退重试）必须完全一致：
 // 漏掉任何一层，上游发完首帧后挂住时就会把连接与账号槽位一起挂到客户端断开。
 // 历史上回退路径就漏了外层，这是回归测试要锁住的点。
-func (s *Server) holdResponseBody(body io.ReadCloser, acctID string) io.ReadCloser {
+func (s *Server) holdResponseBody(body io.ReadCloser, acctID string, stream bool) io.ReadCloser {
+	firstByte := upstreamIdleTimeout
+	if !stream {
+		// 非流式：首字节可能要等很久（长思考），之后才按帧间空闲判死。
+		firstByte = upstreamFirstByteTimeout
+	}
 	return newIdleTimeoutBody(
 		&releaseBody{ReadCloser: body, release: func() { s.releaseAccount(acctID) }},
 		upstreamIdleTimeout,
+		firstByte,
 	)
 }
 
 // callJSON 发起一次非流式上游请求并解析 JSON。
-func (s *Server) callJSON(ctx context.Context, path string, payload map[string]any, affinity, group string) (map[string]any, *deepai.Account, error) {
+func (s *Server) callJSON(ctx context.Context, path string, payload map[string]any, affinity, group, apiKey string) (map[string]any, *deepai.Account, error) {
 	ctx, cancel := context.WithTimeout(ctx, nonStreamBudget)
 	defer cancel()
 
@@ -222,7 +242,7 @@ func (s *Server) callJSON(ctx context.Context, path string, payload map[string]a
 	if err != nil {
 		return nil, nil, fmt.Errorf("请求序列化失败: %w", err)
 	}
-	resp, acct, err := s.openModel(ctx, path, body, affinity, group)
+	resp, acct, err := s.openModel(ctx, path, body, affinity, group, apiKey, false)
 	if err != nil {
 		return nil, acct, err
 	}

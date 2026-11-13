@@ -405,6 +405,8 @@ func (s *Store) markAccountResult(id string, ok bool, note string, transient boo
 			a.Status = "ok"
 			a.LastErr = ""
 			a.LastErrAt = 0
+			// 推理成功说明额度已恢复（或这条 403 是历史噪声）。
+			a.QuotaUntil = 0
 			// 注意：不在这里清 ProbeAfter —— 推理成功不等于 /theos 会成功。
 			// 签到限流的账号正是“能推理、不能签到”，清掉冷却会让后台守护
 			// 每分钟又去磕一次 403。探测成功后由 SetAccountAllowance 清零。
@@ -465,6 +467,36 @@ func (s *Store) BlockAccount(id, reason string) {
 			a.Failures = 1
 		}
 		return
+	}
+}
+
+// MarkQuotaExhausted 标记账号「当日额度用完」，until 之前调度跳过它。
+//
+// 与 BlockAccount 的区别：这是自愈状态（到点自动恢复），不需要人工处理，
+// 也不该让控制台把它显示成「被策略拦截」。
+func (s *Store) MarkQuotaExhausted(id string, until time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.st.Accounts {
+		if a.ID != id {
+			continue
+		}
+		a.QuotaUntil = until.Unix()
+		a.LastErr = "当日额度用完（" + until.Format(time.RFC3339) + " 恢复）"
+		a.LastErrAt = time.Now().Unix()
+		return
+	}
+}
+
+// ClearQuotaExhausted 清除额度用完标记（探测到余额恢复时调用）。
+func (s *Store) ClearQuotaExhausted(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.st.Accounts {
+		if a.ID == id {
+			a.QuotaUntil = 0
+			return
+		}
 	}
 }
 

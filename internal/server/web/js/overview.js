@@ -48,8 +48,65 @@ export function loadHealth() {
 // 复杂度门槛 25，而它们之间本来就没有共享状态）。
 export function renderOverview(d) {
   renderKpis(d);
+  renderRuntime(d);
   renderModels(d);
   translateDom($("#tab-overview"));
+}
+
+// fmtMs 把毫秒分位收敛成整数展示（0 表示还没样本）。
+function fmtMs(v) {
+  return v > 0 ? String(Math.round(v)) : "—";
+}
+
+// runtimeItem 画一张运行健康小卡。
+function runtimeItem(label, value, sub, cls) {
+  var box = mk("div", "runtime-item" + (cls ? " " + cls : ""));
+  box.appendChild(mk("div", "k", label));
+  box.appendChild(mk("div", "v", value));
+  if (sub) box.appendChild(mk("div", "s", sub));
+  return box;
+}
+
+// renderRuntime 画「运行健康」：延迟分位、签到、形状兜底与上游错误 Top。
+//
+// 数据来自 /admin/api/overview 的 latency / checkin / fallback_total /
+// upstream_errors（进程内直方图，重启清零）。缺字段时整卡退化为占位，
+// 不让旧后端版本把概览页打空。
+export function renderRuntime(d) {
+  var box = $("#runtimeBody");
+  if (!box) return;
+  box.textContent = "";
+  var lat = d.latency || {};
+  var ci = d.checkin || {};
+  var errs = d.upstream_errors || [];
+  var top = errs.length ? errs[0] : null;
+  var checkinCls = (ci.timeouts || 0) > 0 ? "warn" : "";
+  var errCls = top && top.status >= 500 ? "err" : "";
+
+  box.appendChild(runtimeItem(
+    t("请求延迟 P50 / P95"),
+    fmtMs(lat.p50_ms) + " / " + fmtMs(lat.p95_ms) + " ms",
+    t("P99 {v} ms", { v: fmtMs(lat.p99_ms) })));
+
+  box.appendChild(runtimeItem(
+    t("签到 P95"),
+    fmtMs(ci.p95_ms) + " ms",
+    t("尝试 {a} · 阻塞 {b} · 超时 {x}", {
+      a: fmtNum(ci.attempts), b: fmtNum(ci.blocked), x: fmtNum(ci.timeouts)
+    }), checkinCls));
+
+  box.appendChild(runtimeItem(
+    t("形状兜底"),
+    fmtNum(d.fallback_total || 0),
+    t("次「补 system」重试")));
+
+  box.appendChild(runtimeItem(
+    t("上游错误 Top"),
+    top ? top.code : t("无"),
+    top ? (top.path + " ×" + fmtNum(top.count)) : t("暂无样本"), errCls));
+
+  var meta = $("#runtimeMeta");
+  if (meta) meta.textContent = t("进程内指标，重启清零");
 }
 
 // hitRate 返回 0~1 的命中率；没有样本时返回 NaN（交给 fmtPercent 显示 —），

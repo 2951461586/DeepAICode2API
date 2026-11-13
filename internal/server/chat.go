@@ -62,7 +62,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel = context.WithTimeout(ctx, nonStreamBudget)
 		defer cancel()
 	}
-	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, group)
+	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, group, key, stream)
 	rl := s.newReqLog(key, acct, model.ID, "chat", stream, start, promptLen)
 	if err != nil {
 		rl.done(0, Usage{}, err)

@@ -10,7 +10,7 @@
 复用桌面端登录后写入的 API Key，无需另申请密钥；纯 Go 标准库实现，
 单文件约 10 MB，零外部依赖。
 
-[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-562%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
+[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-594%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#三接口清单) [![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://img.shields.io/badge/Ask%20DeepWiki-blue.svg?labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAPoAAAD6AG1e1JrAAACIUlEQVRYw+2XP2gUQRTGv7d3JhYWQawkIBaCVWzETos0gmAnVoKNTSoLK0E7EQQrC20sBVFBtLPQRgTBtBaKjYgIQUSxiJq7fT+LvCGPJZdNLt4dQj5Y3u7sznzfzLw/s9IO/icANiniCujEfWdsQgBLxAbsbraPZcmBfcAt4DNwKQsZNfEUsAB8YRV12LfA6ZHuedg7AO7ed/c+UBcbQhbiu+6wXIM6EnZWkszMJe2Ke0n6I2la0v51hFeSMLN6OwIK6jJwEBdUYb2MAxRSz6sY4geiahFgLe1Hwq6YWe3us8AN4FQQU4QM64SPY69Xyr43fADgNjAPXHb3peSsD4FDQ0VLEjAHvIhBPS6AHvA1bBO9JPAXcHFbIRtJ5yzwIQZ9CZwAusDJENIkLqsG8DpNyIZJwSUk9wLHgakcesC1JCCjiHm1kYDNOEjptCxpSVK/8f73OFLxPLAYM3oCzEX7MXf/lJbc/8kWpA4HgQdpYI9IWAbeh83whi84cHXL+58EPBoQhnmm94EzwE3gZ2p/Dhzdbhg+TaRr01x7ftb4/jBwFzjXrCvDpmLW9crVLNeR9CaapoGemb2TdCERW1tNaBNQ8jktwmozqwtpqRNtdWAjARYk39IS12ZWRX7vmJmA71nQZgi36gN7gCvAj5xc3P0jcH7kx7Ik5IC73wsh14GZsZySow5002l4Jr0b6+m4eSyvpAn8lEzsx2QHo8RfUrlN+uPq4ksAAAAASUVORK5CYII=)](https://deepwiki.com/2951461586/DeepAICode2API)
 
@@ -29,7 +29,7 @@
 | 账号接入 | 浏览器登录（Google / Apple / 邮箱密码）、桌面端凭据导入、手工 API Key；入池自动分配机器指纹与代理 |
 | 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 设置 |
 | 安全 | 密钥鉴权、管理口令、同源写保护、状态文件 AES-256-GCM 可选加密 |
-| 可回归 | 562 个用例（430 顶层 + 132 子用例）/ 13.3k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 10 个含测试的包（另 3 个无测试）+ 前端语法与冒烟（21 条） |
+| 可回归 | 594 个用例（450 顶层 + 144 子用例）/ 13.3k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 10 个含测试的包（另 3 个无测试）+ 前端语法与冒烟（21 条） |
 
 ```text
 ┌──────────────┐  /v1/chat/completions   ┌────────────────┐   Api-Key + Theos 头   ┌─────────────────────────────┐
@@ -220,7 +220,7 @@ export ANTHROPIC_MODEL=glm-5.3-flash
 | `/` | 内嵌单页控制台（无外部依赖） |
 | `/ping` | `pong` |
 | `/health` | 账号 / 模型 / 机器指纹摘要；`ready` / `degraded` / `blocked` 三个计数（口径见 §6.4 末段） |
-| `/metrics` | Prometheus 文本格式指标（与 `/admin/api/*` 同级鉴权）：请求量/状态码分类、耗时 sum+count、在途请求、号池分布、goroutine/堆 |
+| `/metrics` | Prometheus 文本格式指标（与 `/admin/api/*` 同级鉴权）：请求量/状态码分类、**分端点延迟直方图**、**签到耗时/阻塞/超时**、**上游错误码分布**、**形状兜底次数**、在途请求、号池分布、goroutine/堆 |
 | `/admin/api/version` | 当前版本 + 最新 release 比对（服务端代查 GitHub，缓存 6h；离线时只回当前版本，不影响控制台） |
 | `/admin/api/*` | 账号、密钥、日志、统计、设置、配额、登录 |
 
@@ -699,6 +699,15 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 - **数据面限流默认关闭**：控制台「运行参数」可设 `rate_limit_rps`（每密钥每秒请求数）、
   `rate_limit_burst`（桶容量）、`key_concurrency`（每密钥并发上限），填 0 即不限。
   限流按密钥隔离，触发时回 `429` + `Retry-After` + `rate_limit_error`；
+- **签到预算**（`checkin_block_ms`，默认 10000）：推理前同步签到最多等多久。
+  2026-11-13 线上实测签到阻塞 292 次、均值 4.8s、53 次顶到 10s，是首包延迟的
+  主要来源；下调到 2000 可显著改善延迟（代价：这次请求可能带着旧 nonce 发出，
+  下一轮继续补，不会失败）；
+- **预置桌面端形状**（`preset_desktop_shape`，默认关）：对已确认需要桌面端形状的
+  调用方（按 API Key 记忆 10 分钟），在首次发送前补 system 消息，省掉一次注定
+  失败的 400。关闭时仍走「透传 → 400 → 补形状重试」的学习路径；
+- **签到节奏**与桌面端一致（以回传完成时刻为基准，`seconds/2` 默认 300s）；
+  之前用「最新 nonce ≠ 已回传 nonce」判断，会退化成 30s 一次（见 `docs/changes.md` §60）；
 - **管理口令有防爆破退避**：同一来源连续失败 5 次后进入指数退避（1s 起，上限 30s），
   退避期内即使口令正确也回 `429`；成功一次即清零。若把自己锁在外面，等退避到期
   或重启进程（退避表在内存里）即可；

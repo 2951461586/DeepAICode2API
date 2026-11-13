@@ -106,3 +106,20 @@ func TestAccountDegraded(t *testing.T) {
 
 // defaultStale 是 ErrorStaleAfter 的别名，单独取出来避免表里直接依赖常量名。
 const defaultStale = ErrorStaleAfter
+
+// TestAccountReadyHonorsQuotaUntil 固化「当日额度用完」的调度跳过语义：
+// 到点前不可调度，到点自动恢复（不需要人工处理）。
+func TestAccountReadyHonorsQuotaUntil(t *testing.T) {
+	now := time.Now()
+	a := &Account{Enabled: true, Status: "ok"}
+	if !AccountReady(a, now) {
+		t.Fatal("无额度标记时应就绪")
+	}
+	a.QuotaUntil = now.Add(time.Hour).Unix()
+	if AccountReady(a, now) {
+		t.Fatal("额度用完未到期时不应就绪")
+	}
+	if !AccountReady(a, now.Add(2*time.Hour)) {
+		t.Fatal("过了恢复时间应自动就绪")
+	}
+}

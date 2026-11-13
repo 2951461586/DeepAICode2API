@@ -14,18 +14,20 @@ import (
 // sanitizedSettings 返回可下发给前端的设置（管理密码不外泄）。
 func sanitizedSettings(st store.Settings) map[string]any {
 	return map[string]any{
-		"model_aliases":       st.ModelAliases,
-		"request_timeout_sec": st.RequestTimeout,
-		"max_retries":         st.MaxRetries,
-		"log_keep":            st.LogKeep,
-		"cors_origin":         st.CORSOrigin,
-		"fallback_model":      st.FallbackModel,
-		"strict_model":        st.StrictModel,
-		"lane":                st.Lane,
-		"rate_limit_rps":      st.RateLimitRPS,
-		"rate_limit_burst":    st.RateLimitBurst,
-		"key_concurrency":     st.KeyConcurrency,
-		"admin_password_set":  st.AdminPassword != "",
+		"model_aliases":        st.ModelAliases,
+		"request_timeout_sec":  st.RequestTimeout,
+		"max_retries":          st.MaxRetries,
+		"log_keep":             st.LogKeep,
+		"cors_origin":          st.CORSOrigin,
+		"fallback_model":       st.FallbackModel,
+		"strict_model":         st.StrictModel,
+		"lane":                 st.Lane,
+		"rate_limit_rps":       st.RateLimitRPS,
+		"rate_limit_burst":     st.RateLimitBurst,
+		"key_concurrency":      st.KeyConcurrency,
+		"checkin_block_ms":     st.CheckinBlockMS,
+		"preset_desktop_shape": st.PresetDesktopShape,
+		"admin_password_set":   st.AdminPassword != "",
 	}
 }
 
@@ -167,17 +169,19 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 // 全部字段用指针：nil 表示“本次不改”，与“显式设成 0 / 空串”区分开。
 // 这一点对限流参数尤其重要：0 是“关闭限流”的合法值。
 type settingsPatch struct {
-	ModelAliases   map[string]string `json:"model_aliases"`
-	RequestTimeout *int              `json:"request_timeout_sec"`
-	MaxRetries     *int              `json:"max_retries"`
-	LogKeep        *int              `json:"log_keep"`
-	CORSOrigin     *string           `json:"cors_origin"`
-	AdminPassword  *string           `json:"admin_password"`
-	FallbackModel  *string           `json:"fallback_model"`
-	StrictModel    *bool             `json:"strict_model"`
-	RateLimitRPS   *float64          `json:"rate_limit_rps"`
-	RateLimitBurst *int              `json:"rate_limit_burst"`
-	KeyConcurrency *int              `json:"key_concurrency"`
+	ModelAliases       map[string]string `json:"model_aliases"`
+	RequestTimeout     *int              `json:"request_timeout_sec"`
+	MaxRetries         *int              `json:"max_retries"`
+	LogKeep            *int              `json:"log_keep"`
+	CORSOrigin         *string           `json:"cors_origin"`
+	AdminPassword      *string           `json:"admin_password"`
+	FallbackModel      *string           `json:"fallback_model"`
+	StrictModel        *bool             `json:"strict_model"`
+	RateLimitRPS       *float64          `json:"rate_limit_rps"`
+	RateLimitBurst     *int              `json:"rate_limit_burst"`
+	KeyConcurrency     *int              `json:"key_concurrency"`
+	CheckinBlockMS     *int              `json:"checkin_block_ms"`
+	PresetDesktopShape *bool             `json:"preset_desktop_shape"`
 }
 
 // apply 把增量合入设置（调用方持写锁）。
@@ -216,6 +220,13 @@ func (p settingsPatch) apply(st *store.Settings) {
 	if p.KeyConcurrency != nil && *p.KeyConcurrency >= 0 {
 		st.KeyConcurrency = *p.KeyConcurrency
 	}
+	// 签到预算允许显式设成 0（= 默认值），所以用 nil 判断而不是 > 0。
+	if p.CheckinBlockMS != nil && *p.CheckinBlockMS >= 0 {
+		st.CheckinBlockMS = *p.CheckinBlockMS
+	}
+	if p.PresetDesktopShape != nil {
+		st.PresetDesktopShape = *p.PresetDesktopShape
+	}
 }
 
 func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +243,8 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.persistOrFail(w) {
 		return
 	}
+	// 预算类设置要让已缓存的客户端立刻生效，不能等重启。
+	s.applyRuntimeSettings()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": sanitizedSettings(s.Store.Settings())})
 }
 

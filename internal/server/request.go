@@ -114,6 +114,9 @@ func (s *Server) clientFor(acct *deepai.Account) *deepai.Client {
 		return c
 	}
 	c := deepai.NewClientWithProxy(acct.Proxy)
+	if budget := time.Duration(s.Store.Settings().CheckinBlockMS) * time.Millisecond; budget > 0 {
+		c.SetCheckInBudget(budget)
+	}
 	s.proxyClients[acct.Proxy] = c
 	return c
 }

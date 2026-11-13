@@ -128,6 +128,27 @@ func (e *HTTPError) BodyRejected() bool {
 	return strings.Contains(body, CodeNotDeepAICodeMsg) || strings.Contains(body, CodeNotAcceptedMsg)
 }
 
+// QuotaExhausted 报告账号当日额度是否用完（付费模型 / 余额为负）。
+func (e *HTTPError) QuotaExhausted() bool { return e.Code() == CodeTheosExhausted }
+
+// QuotaResetAt 解析额度类错误里的 refresh_at（RFC3339）。
+//
+// body 形如 {"error":{"code":"theos_exhausted","refresh_at":"2026-11-14T00:05:52+00:00"}}；
+// 解析不到时用 fallback（调用方通常传 6h，与「Try again tomorrow」的节奏一致）。
+func (e *HTTPError) QuotaResetAt(fallback time.Duration, now time.Time) time.Time {
+	var payload struct {
+		Error struct {
+			RefreshAt string `json:"refresh_at"`
+		} `json:"error"`
+	}
+	if len(e.Body) > 0 && json.Unmarshal(e.Body, &payload) == nil && payload.Error.RefreshAt != "" {
+		if ts, err := time.Parse(time.RFC3339, payload.Error.RefreshAt); err == nil && ts.After(now) {
+			return ts
+		}
+	}
+	return now.Add(fallback)
+}
+
 // CheckInRefused 报告签到是否被上游按「当天重启次数」限流。
 //
 // 它与账号不可用不同：推理照常 200，只是会落在替身模型分支
@@ -249,6 +270,12 @@ type Client struct {
 	// “我不是客户端”。注册链路需要它们（和网页注册时保持一致），
 	// 因此只有 NewClientWithFingerprint 打开它。
 	BrowserFingerprint bool
+
+	// CheckInBudget 是推理前同步签到的等待预算（0 = 默认 10s）。
+	//
+	// 只看不改语义：超过预算就带着已有 nonce 放行推理，下一轮再补。
+	// 控制台的「签到阻塞预算」通过 SetCheckInBudget 写它。
+	CheckInBudget time.Duration
 
 	// checkIns 缓存每个 API Key 的签到挑战与心跳时间。
 	checkIns *checkInStore

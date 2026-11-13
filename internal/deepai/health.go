@@ -108,6 +108,10 @@ func AccountReady(a *Account, now time.Time) bool {
 	if a == nil || !a.Enabled || a.Status == StatusBlocked {
 		return false
 	}
+	// 当日额度用完：到 QuotaUntil 之前不参与调度（403 theos_exhausted）。
+	if a.QuotaUntil > 0 && now.Unix() < a.QuotaUntil {
+		return false
+	}
 	if a.Status != StatusError {
 		return true
 	}

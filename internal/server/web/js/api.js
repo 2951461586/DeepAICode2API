@@ -65,6 +65,9 @@ export function api(path, opts) {
   var secret = pw();
   if (secret) h["X-Admin-Password"] = secret;
 
+  // attempt 是重试次数：GET 是幂等的，网络错误 / 5xx 自动重试一次
+  // （300ms 退避）。POST 不重试：创建密钥、清空日志这类操作重放会出问题。
+  var attempt = 0;
   var ctrl = typeof AbortController === "function" ? new AbortController() : null;
   var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, apiTimeout(method)) : null;
 
@@ -109,6 +112,37 @@ export function api(path, opts) {
     throw e;
   }).finally(function () {
     if (timer) clearTimeout(timer);
+  }).catch(function (e) {
+    // GET 的一次性重试：只针对「网络错误 / 5xx」这类瞬时失败。
+    // 401 已经在上面的分支里清口令并跳登录页，不会走到这里重试。
+    var transient = !e || e.status === 0 || e.status >= 500;
+    if (method === "GET" && attempt === 0 && transient) {
+      attempt = 1;
+      return new Promise(function (resolve) { setTimeout(resolve, 300); })
+        .then(function () {
+          // 只重置超时定时器，不重建 AbortController：一次逻辑请求一个中止点。
+          if (ctrl) { clearTimeout(timer); timer = setTimeout(function () { ctrl.abort(); }, apiTimeout(method)); }
+          return fetch(path, {
+            method: method,
+            headers: h,
+            signal: ctrl ? ctrl.signal : undefined
+          }).then(function (r2) {
+            return r2.text().then(function (txt2) {
+              var j2 = null;
+              try { j2 = JSON.parse(txt2); } catch { /* 原文兜底 */ }
+              if (!r2.ok) {
+                var err2 = new Error((j2 && j2.error && j2.error.message) || txt2 || ("HTTP " + r2.status));
+                err2.status = r2.status;
+                err2.detail = (j2 && j2.error && j2.error.message) || txt2;
+                err2.type = (j2 && j2.error && j2.error.type) || "";
+                throw err2;
+              }
+              return j2;
+            });
+          }).finally(function () { if (timer) clearTimeout(timer); });
+        });
+    }
+    throw e;
   });
 
   if (method === "GET") {

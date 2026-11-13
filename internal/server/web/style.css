@@ -360,3 +360,36 @@
 .ver:hover{color:var(--fg);border-color:var(--faint)}
 .ver.update{color:var(--ok);border-color:var(--ok)}
 a.ver{text-decoration:none}
+
+/* ---------- 对话框（替代 window.confirm / prompt） ---------- */
+.dialog{
+  border:0;padding:0;background:transparent;color:var(--fg);
+  max-width:min(440px,calc(100vw - 32px));width:100%;
+}
+.dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
+.dialog-card{
+  margin:0;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r-lg);box-shadow:var(--shadow);padding:18px;
+  display:flex;flex-direction:column;gap:10px;
+}
+.dialog-title{margin:0;font-size:15px;font-weight:600}
+.dialog-message{margin:0;color:var(--dim);font-size:13px;white-space:pre-wrap}
+.dialog-field{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--dim)}
+.dialog-input{
+  width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-sm);
+  background:var(--card2);color:var(--fg);font:13px/1.4 ui-monospace,monospace;
+}
+.dialog-input:focus{outline:2px solid var(--faint);outline-offset:1px}
+.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+
+/* ---------- 运行健康卡（概览页） ---------- */
+.runtime-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.runtime-item{
+  border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;
+  background:var(--card2);
+}
+.runtime-item .k{font-size:11.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.runtime-item .v{font-size:18px;font-weight:600;margin-top:4px;font-variant-numeric:tabular-nums}
+.runtime-item .s{font-size:11.5px;color:var(--dim);margin-top:2px}
+.runtime-item.warn .v{color:var(--warn)}
+.runtime-item.err .v{color:var(--err)}

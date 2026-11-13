@@ -29,7 +29,10 @@ export function initSettingsForm(opts) {
       // 限流：0 / 空都表示关闭（后端按“显式 0”处理，不会回落到默认值）。
       rate_limit_rps: parseFloat($("#sRps").value) || 0,
       rate_limit_burst: parseInt($("#sBurst").value, 10) || 0,
-      key_concurrency: parseInt($("#sConcurrency").value, 10) || 0
+      key_concurrency: parseInt($("#sConcurrency").value, 10) || 0,
+      // 0 = 用后端默认（10s），是合法值。
+      checkin_block_ms: parseInt($("#sCheckinBlock").value, 10) || 0,
+      preset_desktop_shape: $("#sPresetShape").checked
     };
     var np = $("#sPw").value;
     if (np !== "") body.admin_password = np;

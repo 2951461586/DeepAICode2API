@@ -37,45 +37,68 @@ func hasCJK(s string) bool {
 	return false
 }
 
-// i18nDictBlock 截出 `var I18N_EN = { ... }` 的完整文本。
+// i18nDictBlocks 截出全部 `export const DICT = { ... }` 的完整文本。
 //
-// 用**字符串感知的花括号配对**定位结尾，而不是「行首缩进的 `};`」：
-// 字典已经搬到独立 module（js/i18n.js），缩进会随文件变；按缩进匹配锚点
-// 会直接 panic（曾发生过）。字面量里的 `{n}` 与 JSON 示例也不能干扰配对。
-func i18nDictBlock(t *testing.T, src string) string {
+// 字典已按用途拆到 js/i18n/dict-*.js（shell / pages），所以会有多个块；
+// 仍然用**字符串感知的花括号配对**定位结尾（字面量里的 `{n}` 与 JSON 示例
+// 不能干扰配对）。
+func i18nDictBlocks(t *testing.T, src string) []string {
 	t.Helper()
-	start := strings.Index(src, "var I18N_EN = {")
-	if start < 0 {
-		t.Fatal("找不到 I18N_EN 字典")
-	}
-	depth := 0
-	inStr := false
-	for i := start; i < len(src); i++ {
-		c := src[i]
-		if inStr {
-			if c == '\\' {
-				i++ // 跳过被转义的字符
+	const marker = "_DICT = {"
+	var out []string
+	offset := 0
+	for {
+		rel := strings.Index(src[offset:], marker)
+		if rel < 0 {
+			break
+		}
+		start := offset + rel
+		depth := 0
+		inStr := false
+		closed := false
+		for i := start; i < len(src); i++ {
+			c := src[i]
+			if inStr {
+				if c == '\\' {
+					i++
+					continue
+				}
+				if c == '"' {
+					inStr = false
+				}
 				continue
 			}
-			if c == '"' {
-				inStr = false
+			switch c {
+			case '"':
+				inStr = true
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					out = append(out, src[start:i+1])
+					offset = i + 1
+					closed = true
+				}
 			}
-			continue
+			if closed {
+				break
+			}
 		}
-		switch c {
-		case '"':
-			inStr = true
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return src[start : i+1]
-			}
+		if !closed {
+			t.Fatal("DICT 字典括号未闭合")
 		}
 	}
-	t.Fatal("I18N_EN 字典括号未闭合")
-	return ""
+	if len(out) == 0 {
+		t.Fatal("找不到 DICT 字典块")
+	}
+	return out
+}
+
+// i18nDictBlock 返回全部字典块的拼接（供词条解析 / 重复键检查使用）。
+func i18nDictBlock(t *testing.T, src string) string {
+	t.Helper()
+	return strings.Join(i18nDictBlocks(t, src), "\n")
 }
 
 // i18nDictionary 解析脚本里的 I18N_EN，返回「中文原文 → 英文」。
@@ -190,8 +213,11 @@ func TestConsoleI18nNoDeadEntries(t *testing.T) {
 	// 挖掉字典：否则每个键都能在字典声明处匹配到自己。
 	// 同时去掉注释：注释里顺带提到某个词条（例如“阶段 A 的搬家”）不算文案在用 ——
 	// 第一版没去注释，把一个真死词条当成“还在用”放过了。
-	rest := stripJSComments(strings.Replace(script, i18nDictBlock(t, script), "", 1)) +
-		"\n" + stripHTMLComments(consoleMarkup())
+	rest := script
+	for _, block := range i18nDictBlocks(t, script) {
+		rest = strings.Replace(rest, block, "", 1)
+	}
+	rest = stripJSComments(rest) + "\n" + stripHTMLComments(consoleMarkup())
 
 	var dead []string
 	for key := range dict {

@@ -6,6 +6,7 @@ import { fmtTime, theosText } from '../format.js';
 import { ui } from '../state.js';
 import { accountOp, checkin } from '../actions.js';
 import { toast } from '../ui.js';
+import { confirmDialog, promptDialog } from '../dialog.js';
 
 export function rowMenu(a){
   var m = menuToggle("操作");
@@ -24,39 +25,41 @@ export function rowMenu(a){
       var msg = a.proxy
         ? t("该账号已绑定代理（{p}），从代理池重新分配？", {p: a.proxy})
         : t("从代理池为 {name} 分配一个出口？", {name: a.name || a.id});
-      if (!confirm(msg)) return;
-      accountOp("assign-proxy", {id: a.id, reassign: !!a.proxy});
+      confirmDialog({title: t("确认操作"), message: msg}).then(function(ok){
+        if (ok) accountOp("assign-proxy", {id: a.id, reassign: !!a.proxy});
+      });
     }});
     if (a.proxy) {
       items.push({ label: "清除代理", fn: function(){
-        if (!confirm(t("清除 {name} 的代理（回到直连）？", {name: a.name || a.id}))) return;
-        accountOp("assign-proxy", {id: a.id, clear: true});
+        confirmDialog({title: t("确认操作"), message: t("清除 {name} 的代理（回到直连）？", {name: a.name || a.id})})
+          .then(function(ok){ if (ok) accountOp("assign-proxy", {id: a.id, clear: true}); });
       }});
     }
     if (!a.has_machine) {
       items.push({ label: "分配机器指纹", fn: function(){
-        if (!confirm(t("为 {name} 生成独立机器指纹？（只补空值，不覆盖已有指纹）", {name: a.name || a.id}))) return;
-        accountOp("assign-machine", {id: a.id});
+        confirmDialog({title: t("确认操作"), message: t("为 {name} 生成独立机器指纹？（只补空值，不覆盖已有指纹）", {name: a.name || a.id})})
+          .then(function(ok){ if (ok) accountOp("assign-machine", {id: a.id}); });
       }});
     }
     items.push({ label: "改分组", fn: function(){
-      var g = prompt(t("新分组名"), a.group || "default");
-      if (g === null) return;
-      g = String(g).trim();
-      if (!g) { toast(t("分组不能为空"), "err"); return; }
-      accountOp("set-group", {id: a.id, group: g});
+      promptDialog({title: t("改分组"), label: t("新分组名"), value: a.group || "default", okText: t("保存")})
+        .then(function(g){
+          if (g === null) return;
+          g = String(g).trim();
+          if (!g) { toast(t("分组不能为空"), "err"); return; }
+          accountOp("set-group", {id: a.id, group: g});
+        });
     }});
     if (!a.email_verified) {
       items.push({ label: "标记已验证", fn: function(){
-        if (!confirm(t("把 {name} 标记为邮箱已验证？", {name: a.name || a.id}))) return;
-        accountOp("mark-verified", {id: a.id, email: a.email});
+        confirmDialog({title: t("确认操作"), message: t("把 {name} 标记为邮箱已验证？", {name: a.name || a.id})})
+          .then(function(ok){ if (ok) accountOp("mark-verified", {id: a.id, email: a.email}); });
       }});
     }
     items.push({ sep: true });
     items.push({ label: "删除", danger: true, fn: function(){
-      if (confirm(t("确定删除账号 {name}？", {name: a.name || a.email || a.id}))) {
-        accountOp("remove", {id:a.id});
-      }
+      confirmDialog({title: t("删除账号"), message: t("确定删除账号 {name}？", {name: a.name || a.email || a.id}), danger: true})
+        .then(function(ok){ if (ok) accountOp("remove", {id: a.id}); });
     }});
     openMenu(m, items);
   });

@@ -47,6 +47,20 @@ type Settings struct {
 	RateLimitBurst int     `json:"rate_limit_burst,omitempty"`
 	// KeyConcurrency 是每把密钥的并发在途请求上限（0 = 不限）。
 	KeyConcurrency int `json:"key_concurrency,omitempty"`
+
+	// CheckinBlockMS 是推理前同步签到的等待预算（毫秒，0 = 默认 10000）。
+	//
+	// 2026-11-13 线上实测签到阻塞推理 292 次、均值 4.8s：调小它可以把首包
+	// 延迟压下来，代价是这次请求可能带着旧 nonce 发出（上一轮已回传过，
+	// 下一轮继续补），不会让推理失败。
+	CheckinBlockMS int `json:"checkin_block_ms,omitempty"`
+
+	// PresetDesktopShape 让网关对「缺 system 消息」的聊天请求预置桌面端形状，
+	// 不再先吃一次 400 再重试。
+	//
+	// 只对已经确认过需要该形状的调用方生效（按 API Key 记忆 10 分钟），
+	// 首次仍走「透传 → 400 → 补形状重试」的学习路径。
+	PresetDesktopShape bool `json:"preset_desktop_shape,omitempty"`
 }
 
 // LogEntry 是一条请求日志（只记元信息，不落对话内容）。

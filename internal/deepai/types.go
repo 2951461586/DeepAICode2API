@@ -89,6 +89,14 @@ const (
 	// CodeCheckInRefused 是签到被限流：账号本身没坏，推理仍可用，
 	// 但当天不能再签到 —— 会一直落在替身模型分支直到明天。
 	CodeCheckInRefused = "check_in_refused"
+	// CodeTheosExhausted 是「账号当日额度用完」：付费模型扣完 / 余额为负时
+	// 上游回 403，body 带 refresh_at（下一次发放时间）。
+	//
+	// 2026-11-13 实测（v0.1.3 时代）：balance=-7.58 时打 minimax-m3 得到
+	// {"error":{"code":"theos_exhausted","refresh_at":"…"}}。
+	//
+	// 它是账号级、当天自愈的终态：换号有意义，同一个号重试没有意义。
+	CodeTheosExhausted = "theos_exhausted"
 	// CodeNotDeepAICodeMsg 是上游拒绝“请求体不是桌面端形状”时的旧文案。
 	CodeNotDeepAICodeMsg = "not one deepai code sends"
 	// CodeNotAcceptedMsg 是同一个门槛的新文案（2026-11-13 实测）：
@@ -314,6 +322,13 @@ type Account struct {
 
 	// Theos 是最近一次 /theos 探测结果（只做展示，不做调度）。
 	Theos *Allowance `json:"theos,omitempty"`
+
+	// QuotaUntil 是「当日额度用完」的恢复时间（Unix 秒，0 = 无此状态）。
+	//
+	// 来源：推理返回 403 theos_exhausted（付费模型 / 余额为负）。它与
+	// Blocked 不同：不需要人工处理，过了这个时间自动回到可用；在此之前
+	// 调度会跳过它，避免每个请求都白撞一次 403。
+	QuotaUntil int64 `json:"quota_until,omitempty"`
 }
 
 // Clone 返回账号的深拷贝（含 Theos 指针）。

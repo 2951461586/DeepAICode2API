@@ -59,6 +59,18 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	settings := s.Store.Settings()
 	total, ready := s.Store.AccountCounts()
+	snap := s.metrics.snapshot()
+	byEndpoint := make(map[string]map[string]float64, len(snap.ByEndpoint))
+	for ep, hist := range snap.ByEndpoint {
+		byEndpoint[ep] = latencySummary(hist)
+	}
+	checkinStats := map[string]any{
+		"attempts": snap.CheckInStats["attempts"],
+		"blocked":  snap.CheckInStats["blocked"],
+		"timeouts": snap.CheckInStats["timeouts"],
+		"p50_ms":   quantileMs(snap.CheckIn, 0.50),
+		"p95_ms":   quantileMs(snap.CheckIn, 0.95),
+	}
 	writeJSONCached(w, r, http.StatusOK, map[string]any{
 		"accounts":       total,
 		"ready":          ready,
@@ -70,6 +82,12 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 		"settings":       sanitizedSettings(settings),
 		"stats":          s.Store.Stats(),
 		"upstream":       s.Up.Origin,
+		// 运行健康：延迟分位、签到、兜底与上游错误码（metrics.go）。
+		"latency":             latencySummary(snap.Latency),
+		"latency_by_endpoint": byEndpoint,
+		"checkin":             checkinStats,
+		"fallback_total":      snap.Fallback,
+		"upstream_errors":     snap.UpstreamErrs,
 	})
 }
 

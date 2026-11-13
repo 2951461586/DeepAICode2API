@@ -197,7 +197,7 @@ func TestConsoleFeatures(t *testing.T) {
 
 	for name, needle := range map[string]string{
 		"语言按钮":      `id="lang"`,
-		"英文字典":      `var I18N_EN = {`,
+		"英文字典":      `_DICT = {`,
 		"翻译入口":      `function translateDom(`,
 		"语言应用":      `function applyLang(`,
 		"语言深链接":     `[?&]lang=(en|zh)`,

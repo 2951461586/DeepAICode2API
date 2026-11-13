@@ -61,6 +61,11 @@ func (s *Scheduler) PickFiltered(accounts []*deepai.Account, group string, skip 
 		if a.Status == deepai.StatusBlocked {
 			return false
 		}
+		// 当日额度用完（theos_exhausted）：到点前不参与调度，避免每个请求
+		// 都白撞一次 403。过了 QuotaUntil 自动恢复，无需人工处理。
+		if a.QuotaUntil > 0 && time.Now().Unix() < a.QuotaUntil {
+			return false
+		}
 		if group != "" && !strings.EqualFold(a.GroupName(), group) {
 			return false
 		}
@@ -76,8 +81,12 @@ func (s *Scheduler) PickFiltered(accounts []*deepai.Account, group string, skip 
 // 忽略 PickFiltered 的 skip。调用方用它区分「全忙」与「池里没号」。
 func (s *Scheduler) HasEligible(accounts []*deepai.Account, group string) bool {
 	group = strings.TrimSpace(group)
+	now := time.Now().Unix()
 	for _, a := range accounts {
 		if a == nil || !a.Enabled || a.Status == deepai.StatusBlocked {
+			continue
+		}
+		if a.QuotaUntil > 0 && now < a.QuotaUntil {
 			continue
 		}
 		if group == "" || strings.EqualFold(a.GroupName(), group) {

@@ -13,6 +13,8 @@ export const $ = (s) => document.querySelector(s);
 // ReferenceError —— 拆分前它在单文件 IIFE 的闭包里，拆到 dom.js 时
 // 忘了带上声明，结果点「操作」整个菜单都出不来（先调的 closeMenu 就炸了）。
 let menuEl = null;
+// menuAnchor 是打开菜单的按钮：关闭时要把 aria-expanded 复位。
+let menuAnchor = null;
 
 export function menuToggle(title){
   var m = mk("button", "menu-toggle", "⋯");
@@ -24,16 +26,24 @@ export function menuToggle(title){
 export function closeMenu(){
   if (menuEl && menuEl.parentNode) menuEl.parentNode.removeChild(menuEl);
   menuEl = null;
+  if (menuAnchor && menuAnchor.setAttribute) {
+    menuAnchor.setAttribute("aria-expanded", "false");
+    menuAnchor = null;
+  }
 }
 
 export function openMenu(anchor, items){
   closeMenu();
   var m = mk("div", "menu");
+  m.setAttribute("role", "menu");
+  var buttons = [];
   items.forEach(function(it){
     if (it.sep){ m.appendChild(mk("div", "menu-sep")); return; }
     var b = mk("button", "menu-item" + (it.danger ? " danger" : ""), tr(it.label));
     b.type = "button";
+    b.setAttribute("role", "menuitem");
     b.addEventListener("click", function(ev){ ev.stopPropagation(); closeMenu(); it.fn(); });
+    buttons.push(b);
     m.appendChild(b);
   });
   document.body.appendChild(m);
@@ -45,6 +55,23 @@ export function openMenu(anchor, items){
   m.style.left = left + "px";
   m.style.top = top + "px";
   menuEl = m;
+  menuAnchor = anchor;
+  if (anchor && anchor.setAttribute) {
+    anchor.setAttribute("aria-haspopup", "menu");
+    anchor.setAttribute("aria-expanded", "true");
+  }
+  // 键盘导航：↑↓ / Home / End 移动，Esc 关闭（全局已绑定），Enter 原生触发。
+  m.addEventListener("keydown", function(ev){
+    if (!buttons.length) return;
+    var i = buttons.indexOf(document.activeElement);
+    if (ev.key === "ArrowDown") { ev.preventDefault(); buttons[(i + 1 + buttons.length) % buttons.length].focus(); }
+    else if (ev.key === "ArrowUp") { ev.preventDefault(); buttons[(i - 1 + buttons.length) % buttons.length].focus(); }
+    else if (ev.key === "Home") { ev.preventDefault(); buttons[0].focus(); }
+    else if (ev.key === "End") { ev.preventDefault(); buttons[buttons.length - 1].focus(); }
+    else if (ev.key === "Tab") { closeMenu(); }
+  });
+  // 打开即把焦点放进菜单：纯键盘用户不需要先 Tab 一圈才进来。
+  if (buttons.length) buttons[0].focus();
 }
 
 export function mk(tag, cls, text){

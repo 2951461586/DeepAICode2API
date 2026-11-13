@@ -91,6 +91,14 @@
           </div>
         </div>
         <div class="cards" id="kpis"></div>
+        <div class="panel" id="runtimePanel">
+          <div class="panel-head">
+            <h2>运行健康</h2>
+            <div class="actions"><span id="runtimeMeta" class="muted mono"></span></div>
+          </div>
+          <div class="runtime-grid" id="runtimeBody"></div>
+          <div class="hint">指标来自进程内直方图（重启清零）：延迟按端点分档、签到阻塞、形状兜底与上游错误码 Top 3。</div>
+        </div>
         <div class="panel">
           <div class="panel-head">
             <h2>模型目录</h2>
@@ -226,6 +234,7 @@
           </div>
           <div class="actions">
             <select id="logLimit"><option value="50">最近 50</option><option value="200">最近 200</option><option value="0">全部</option></select>
+            <button class="btn" id="logLive" aria-pressed="false" title="每 5 秒自动刷新（仅本标签页可见时）">实时</button>
             <button class="btn" id="reloadLogs">刷新</button>
             <button class="btn danger" id="clearLogs">清空</button>
           </div>
@@ -285,6 +294,13 @@
             <div><label>每密钥每秒请求数（0=不限）</label><input id="sRps" type="number" min="0" step="0.1"></div>
             <div><label>限流桶容量（0=按 RPS 自动）</label><input id="sBurst" type="number" min="0"></div>
             <div><label>每密钥并发上限（0=不限）</label><input id="sConcurrency" type="number" min="0"></div>
+            <div><label>签到预算（毫秒，0=默认 10 秒）</label><input id="sCheckinBlock" type="number" min="0" step="100"></div>
+            <div>
+              <label>预置桌面端形状</label>
+              <label class="check-label">
+                <input type="checkbox" id="sPresetShape" class="w-auto"> 对确认需要形状的调用方预置 system，省掉一次注定失败的 400
+              </label>
+            </div>
           </div>
           <label>模型别名（JSON，如 <code>{"claude-sonnet-4":"glm-5.3-flash"}</code>）</label>
           <textarea id="sAliases" spellcheck="false"></textarea>

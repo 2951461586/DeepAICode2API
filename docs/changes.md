@@ -14,6 +14,7 @@
 | v0.1.2 | 53、54 | 控制台日志页漏 import（`renderLogs`）+ 二次全扫 7 处遗留 |
 | v0.1.2 之后 | 55–58 | 密钥删除/启停的存在性语义与 404 自愈；缓存命中率改今日口径、499 客户端断开、docker 注入 VERSION；README 居中 + 项目 Logo + 控制台 favicon |
 | v0.1.3 | 59 | 客户端 0.3.36 同步：车道 4 → 5（唯一协议面变更）+ 协议面全量复扫 |
+| v0.1.4 | 60 | 线上数据驱动的 P0/P1：首字节预算、签到节奏、扩展指标、形状预置、错误策略表 + 前端 P1-P3 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -37,6 +38,7 @@
 - 57 项目 Logo（复用 DeepAI Code 桌面端图标）+ README 顶部居中（v0.1.2 之后）
 - 58 控制台用上同一图标：/favicon.ico + apple-touch-icon（v0.1.2 之后）
 - 59 客户端 0.3.36 同步：车道 4 → 5、`/models` 带 Key、UA 分流复测失效（v0.1.3）
+- 60 线上运行数据落地：非流式首字节预算、签到节奏修复、扩展指标、形状预置、错误策略表；前端对话框/实时日志/运行健康卡/i18n 拆分（v0.1.4）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -3155,3 +3157,128 @@ chat    lane 4/5   -> 200（同一请求体，UA=node/curl/Chrome 三种都一�
 于是 v0.1.3 的 Release 一度带着上一版资产。已删掉旧资产、按 v0.1.3 重新生成
 `checksums.txt`，并改脚本：构建前先清掉 `dist/deepaicode2api_*`（只清本项目产物，
 不动 `dist/` 里其它文件），避免下次重演。
+
+## 60. 线上运行数据落地：首字节预算、签到节奏、扩展指标、形状预置、错误策略表（v0.1.4）
+
+**触发**：v0.1.3（0.3.36 车道 5）上线后跑了 82 分钟，容器日志给出四组可用数据：
+
+```text
+/health        16/16 账号就绪，0 blocked / 0 degraded，21 个模型
+1500 请求      1492×200（99.5%），2×502（/v1/responses，125.7s / 131.1s）
+签到           292 次「签到阻塞了推理请求」，均值 4.8s，53 次顶到 10s 超时
+形状兜底       99 次「请求体被拒，按桌面端形状重试」
+```
+
+每一条都对应一个确定的设计问题；本轮把它们连同前端体验一起落地。
+
+### 60.1 P0-1 非流式长响应被 120s 空闲超时误杀
+
+**根因**：`holdResponseBody` 对所有响应体都套 `idleTimeoutBody`，计时器在 wrap 时
+立即启动。流式请求用它防「发完首帧挂住」是对的；非流式请求在首字节到达前本来
+就可能想很久（`request_timeout` 默认 600s），于是 120s 一到就被主动关闭，读成
+`errUpstreamIdle` → 502。线上两次 502 的 125.7s / 131.1s 正好是 120s + 尾部开销。
+
+**改法**：
+
+| 文件 | 改动 |
+| --- | --- |
+| `internal/server/idle.go` | `newIdleTimeoutBody(rc, idle, first)`：首字节预算与帧间预算分开，拿到首字节后切回 idle；新增 `upstreamFirstByteTimeout = 300s` |
+| `internal/server/upstream.go` | `openModel(..., stream bool)` + `holdResponseBody(body, acct, stream)`：流式 120s / 非流式首字节 300s |
+| 各 handler | 按真实 `stream` 标志传参（chat / responses / anthropic / callJSON） |
+| `idle_test.go` | 4 条：慢首字节放行、帧间静默判死、首字节超预算判死、流式/非流式预算不同 |
+
+### 60.2 P0-2 签到节奏退化成 30s 一次
+
+**根因**：`EnsureCheckIn` 用「最新 nonce != 已回传 nonce」判断是否要补签。上游每次
+`/theos` 都下发**新** nonce，于是每次回传完成后条件又成立，桌面端的 `seconds/2`
+（默认 300s）节奏被完全绕过，实际由 `checkInMinInterval`（30s）兜底 —— 线上
+平均 17 秒一次「签到阻塞」正是这个节奏。
+
+**改法**：
+
+- `checkInState` 增加 `ackedAt`（回传完成时刻），`markAcked` 记录它；
+  `EnsureCheckIn` 改为「`ackedAt` 距今 < seconds/2 就跳过」；
+- `EnsureCheckIn` 返回 `CheckInOutcome{Attempted, Waited, TimedOut, Err}`，
+  调用方据此记指标 / 告警（不再用 `time.Since` 裹一层）；
+- 新增 `Client.CheckInBudget` + `SetCheckInBudget`，设置项 `checkin_block_ms`
+  （默认 10000 = 行为不变；建议线上先观察，再按需下调到 2000）；
+- `applyRuntimeSettings` 在启动与设置保存后同步 `s.Up` 与所有代理客户端；
+- 测试：半衰期节奏（模拟时间）、预算超时、负数归零、既有签到测试全部保留。
+
+### 60.3 P0-3 扩展指标：能回答「哪里慢 / 为什么慢」
+
+`/metrics` 原来只有全局状态码计数与耗时 sum/count；上面两个 P0 都是靠翻 WARN
+日志才发现的。新增（`internal/server/metrics.go`，零依赖定桶直方图）：
+
+| 指标 | 类型 | 用途 |
+| --- | --- | --- |
+| `gateway_request_duration_seconds{endpoint}` | histogram | 按 chat / responses / messages / other 看延迟 |
+| `gateway_checkin_seconds` + `gateway_checkin_total{result}` | histogram / counter | 签到耗时、慢阻塞、超预算次数 |
+| `gateway_admission_wait_seconds` | histogram | 账号全忙排队等待 |
+| `gateway_upstream_errors_total{path,code,status}` | counter | 上游错误码分布（Top 8 进概览） |
+| `gateway_fallback_total{reason="body_shape"}` | counter | 形状兜底次数 |
+
+`/admin/api/overview` 同时下发 `latency`（p50/p95/p99 + 按端点）、`checkin`、
+`upstream_errors`、`fallback_total`，控制台概览页新增「运行健康」卡。
+
+> 注意：`/admin/*` 只记状态码与总耗时，不进分端点直方图 —— 否则 overview 的响应体
+> 会因「上一次 overview 的耗时」而每次变化，ETag 永远命中不了（`TestOverviewETag`
+> 就是这么暴露的）。
+
+### 60.4 P1-4 形状预置：省掉注定失败的 400
+
+线上 99 次兜底重试 = 99 次多余上游调用。新增：
+
+- `deepai.EnsureSystemMessage`：**只**在缺 system / developer 时补默认提示词，
+  不裁剪其它字段（与 `ChatBodyFallback` 的全量收敛区分）；
+- `internal/server/shape.go`：按 API Key 的 sha256 前缀记忆「需要桌面端形状」
+  10 分钟（上限 1024 条，过期清理）；
+- `openModel` 在首次发送前按需预置（仅 `preset_desktop_shape` 开启时），
+  被 400 拒绝时写入记忆；命中后第二次请求只打一次上游；
+- 设置项 `preset_desktop_shape`（默认关：这是采样语义变更，要显式选择）；
+- 测试：TTL/上限、预置后少一次调用、开关默认关闭。
+
+### 60.5 P1-5 错误策略表 + 当日额度用完
+
+- 新增 `internal/server/upstream_policy.go`：`classifyUpstreamError` 把
+  `(status, code)` 映射成 `actRetryOther / actReturn / actBlockAndRetry /
+  actBlockAndReturn / actProbeLane / actWaitCapacity / actQuotaExhausted /
+  actShapeFallback`，`openModel` 只负责执行动作；表驱动测试覆盖 11 种输入。
+- `deepai` 新增 `theos_exhausted` 识别与 `QuotaResetAt`（解析 `refresh_at`，
+  失败回落 6h）；
+- `Account.QuotaUntil` + `AccountReady` + `pool` 调度过滤：额度用完的账号在恢复
+  时间前不参与轮询（否则每个请求都白撞 403），到点自动恢复；推理成功或探测到
+  余额恢复时清零。
+
+### 60.6 前端 P1-P3
+
+| 项 | 落点 |
+| --- | --- |
+| 原生对话框替代 `confirm/prompt` | 新增 `js/dialog.js`（`<dialog>` + 焦点管理 + ESC + 危险色），accounts / events 共 10 处调用改为 Promise 风格；新增样式与词条 |
+| 日志「实时」开关 | 日志页新增按钮（`aria-pressed`），5s 轮询但只在**标签页可见且停在日志页**时取数 |
+| GET 一次重试 | `api.js`：网络错误 / 5xx 退避 300ms 重试一次（POST 不重试，避免重复写） |
+| 运行健康卡 | 概览页新增「运行健康」：延迟 P50/P95、签到 P95、形状兜底、上游错误 Top |
+| 键盘与无障碍 | 行内菜单 ↑↓/Home/End/Esc、`role=menu/menuitem`、`aria-expanded`；toast 原本已带 `aria-live` |
+| i18n 拆分 | 字典拆到 `js/i18n/{dict-shell,dict-pages}.js`，运行时在 `core.js`，`i18n.js` 保留薄转出；覆盖率/重复键/死词条三条棘轮改为扫描多字典块 |
+| 设置页 | 新增「签到预算」「预置桌面端形状」两项及回填 |
+
+### 60.7 验证
+
+```text
+gofmt / go vet           无输出
+sh scripts/lint.sh       前端语法 + 21 条冒烟 + 全部 Go 测试通过
+go test ./...            ok（594 用例 = 450 顶层 + 144 子用例）
+```
+
+新增测试：idle 4 条、签到节奏/预算 3 条、指标 4 条、形状预置 3 条、策略表 2 条、
+`theos_exhausted` 2 条、pool 额度过滤 1 条、`EnsureSystemMessage` 1 条，另同步
+修了 ETag 与 i18n 字典解析的契约测试。
+
+### 60.8 上线建议
+
+1. 先只升代码（`checkin_block_ms=0`、`preset_desktop_shape=false`）：应看到
+   签到阻塞次数下降约 10×、非流式 502 归零；
+2. 观察 24h 的 `gateway_checkin_*` 与 `gateway_request_duration_seconds`，
+   再把签到预算调到 2000ms；
+3. 打开「预置桌面端形状」前先看 `gateway_fallback_total` 的增长曲线，
+   确认调用方确实缺 system（否则预置不会触发，只是多一层判断）。

@@ -141,3 +141,32 @@ func TestPickSkipsBlocked(t *testing.T) {
 		t.Fatalf("只剩被拦截账号时应返回 nil，实际 %v", got)
 	}
 }
+
+// TestPickSkipsQuotaExhausted 固化「当日额度用完」的调度跳过：
+// QuotaUntil 之前不可选（否则每个请求都白撞 403），到点自动恢复。
+func TestPickSkipsQuotaExhausted(t *testing.T) {
+	now := time.Now().Unix()
+	accts := []*deepai.Account{
+		{ID: "a", Enabled: true, Status: "ok", QuotaUntil: now + 3600},
+		{ID: "b", Enabled: true, Status: "ok"},
+	}
+	s := New()
+	for i := 0; i < 3; i++ {
+		got := s.Pick(accts, "")
+		if got == nil || got.ID != "b" {
+			t.Fatalf("应只选中未耗尽额度的账号，实际 %+v", got)
+		}
+	}
+
+	// 过期后恢复可选。
+	accts[0].QuotaUntil = now - 1
+	seen := map[string]bool{}
+	for i := 0; i < 8; i++ {
+		if got := s.Pick(accts, ""); got != nil {
+			seen[got.ID] = true
+		}
+	}
+	if !seen["a"] || !seen["b"] {
+		t.Fatalf("额度恢复后两个账号都应参与轮询，实际 %v", seen)
+	}
+}

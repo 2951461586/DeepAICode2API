@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -21,7 +22,12 @@ var processStartedAt = time.Now()
 // 请求都去撞一次 403。
 const checkInMinInterval = 30 * time.Second
 
-// checkInAttemptTimeout 是补签到的超时预算：签到只是上下文，失败不影响推理。
+// checkInAttemptTimeout 是补签到的**默认**超时预算：签到只是上下文，失败不影响推理。
+//
+// 线上实测（2026-11-13，v0.1.3，82 分钟）签到阻塞推理 292 次、均值 4.8s、
+// 53 次顶到 10s，是首包延迟的主要来源。预算可以通过
+// Client.SetCheckInBudget（控制台「签到阻塞预算」）下调；默认值保持不变，
+// 避免升级即改变行为。
 const checkInAttemptTimeout = 10 * time.Second
 
 // CheckInRefusedLock 是命中 check_in_refused 后的静默锁时长。
@@ -51,13 +57,19 @@ type checkInState struct {
 	attemptAt time.Time // 最近一次主动签到的时间
 	lastRelay time.Time // 最近一次推理转发时间（心跳 pi 字段）
 
-	// ackedNonce 是已经回传给上游的 nonce。
+	// ackedNonce 是已经回传给上游的 nonce（诊断 / 测试用）。
 	//
 	// 「拿到 nonce」和「把 nonce 回传」是两件事：实测只有后者才算签到完成，
 	// 未完成的客户端会被上游换到替身模型分支（docs/recon.md §5.1）。
-	// 没有这个字段时，EnsureCheckIn 会在 seconds/2 内直接返回，导致冷启动后
-	// 前 300s 的推理都还没签到。
 	ackedNonce string
+
+	// ackedAt 是最近一次回传完成的时刻，签到节奏以它为准。
+	//
+	// 2026-11-13 线上事故：旧实现用「最新 nonce != 已回传 nonce」判断是否需要
+	// 补签，而上游每次 /theos 都会下发**新** nonce，于是每回传一次条件又成立，
+	// 桌面端的 seconds/2（默认 300s）节奏被完全绕过，实际退化成
+	// checkInMinInterval（30s）一次，线上因此多出 292 次同步阻塞。
+	ackedAt time.Time
 
 	// refusedUntil 是 check_in_refused 的静默锁（零值 = 未锁）。
 	//
@@ -130,7 +142,7 @@ func (c *Client) CheckIn(acct *Account) *CheckIn {
 	return &cp
 }
 
-// markAcked 记录已回传的 nonce（只有 /theos 真正带上了它才调用）。
+// markAcked 记录已回传的 nonce 与回传时刻（只有 /theos 真正带上了它才调用）。
 func (c *Client) markAcked(acct *Account, nonce string) {
 	if nonce == "" {
 		return
@@ -138,6 +150,7 @@ func (c *Client) markAcked(acct *Account, nonce string) {
 	st := c.stateFor(acct)
 	c.checkIns.mu.Lock()
 	st.ackedNonce = nonce
+	st.ackedAt = time.Now()
 	c.checkIns.mu.Unlock()
 }
 
@@ -196,41 +209,80 @@ func (c *Client) applyCheckInHeaders(req *http.Request, acct *Account) {
 	req.Header.Set(HeaderBeacon, fmt.Sprintf("v=%s;up=%d;pi=%d", AppVersion, UptimeSeconds(), pi))
 }
 
+// CheckInOutcome 是一次 EnsureCheckIn 的结果，供调用方记指标 / 日志。
+type CheckInOutcome struct {
+	// Attempted 报告这次是否真的打了 /theos。
+	Attempted bool
+	// Waited 是同步等待耗时（Attempted 为 false 时为 0）。
+	Waited time.Duration
+	// TimedOut 报告这次等待是否被预算截断（上游没在预算内给出响应）。
+	TimedOut bool
+	// Err 是 /theos 的原始错误（403 签退、超时等；调用方不应据此拒绝推理）。
+	Err error
+}
+
 // EnsureCheckIn 在推理前补一次签到（对应桌面端的 ensureCheckedIn）。
 //
-// 语义与桌面端一致：只在“已有挑战且已过半衰期”时补签；网关额外允许
-// 在没有挑战时补一次（相当于账号状态刷新），并用 attemptAt 限制频率。
-// 任何失败都不阻塞推理：签到是附带的条件，不是准入。
-func (c *Client) EnsureCheckIn(ctx context.Context, acct *Account) {
+// 节奏与桌面端一致：以「上次回传完成」的时刻为基准，seconds/2（默认 300s）
+// 内不再打扰上游；从未回传过（冷启动 / 新号）则立即补一次，并用
+// attemptAt 限制最小间隔。任何失败都不阻塞推理：签到是附带条件，不是准入。
+func (c *Client) EnsureCheckIn(ctx context.Context, acct *Account) CheckInOutcome {
+	var out CheckInOutcome
 	if acct == nil {
-		return
+		return out
 	}
 	st := c.stateFor(acct)
 	c.checkIns.mu.Lock()
-	ci, noteAt, attemptAt, acked := st.checkIn, st.noteAt, st.attemptAt, st.ackedNonce
+	ci, attemptAt, ackedAt := st.checkIn, st.attemptAt, st.ackedAt
+	refusedUntil := st.refusedUntil
 	c.checkIns.mu.Unlock()
 
 	now := time.Now()
 	// 被 check_in_refused 锁住的账号当天不再签到：推理仍可走替身分支，
 	// 继续打 /theos 只会浪费时间与风控预算（见 CheckInRefusedLock）。
-	if !st.refusedUntil.IsZero() && now.Before(st.refusedUntil) {
-		return
+	if !refusedUntil.IsZero() && now.Before(refusedUntil) {
+		return out
 	}
-	// 有挑战但没回传过 → 先补一次（这是上游判定“真实客户端”的依据）。
-	// 否则才退回半衰期节奏（seconds/2，默认 300s）。
-	needAck := ci != nil && ci.Valid() && ci.Nonce != acked
-	if ci != nil && ci.Valid() && !needAck && now.Sub(noteAt) < time.Duration(ci.Seconds)*time.Second/2 {
-		return
+	// 已经回传过：按桌面端的半衰期节奏（seconds/2）节流。
+	if ci != nil && ci.Valid() && !ackedAt.IsZero() {
+		ttl := time.Duration(ci.Seconds) * time.Second
+		if now.Sub(ackedAt) < ttl/2 {
+			return out
+		}
 	}
+	// 最小间隔兜底：半衰期很长（例如 seconds=600）时也不会被连续触发。
 	if !attemptAt.IsZero() && now.Sub(attemptAt) < checkInMinInterval {
-		return
+		return out
 	}
 	c.checkIns.mu.Lock()
 	st.attemptAt = now
 	c.checkIns.mu.Unlock()
 
-	cctx, cancel := context.WithTimeout(ctx, checkInAttemptTimeout)
+	out.Attempted = true
+	start := time.Now()
+	cctx, cancel := context.WithTimeout(ctx, c.checkInBudget())
 	defer cancel()
 	// 结果（包括 403）都不影响推理；挑战在 captureCheckIn 里已经吃到。
-	_, _ = c.Theos(cctx, acct)
+	_, out.Err = c.Theos(cctx, acct)
+	out.Waited = time.Since(start)
+	out.TimedOut = errors.Is(out.Err, context.DeadlineExceeded)
+	return out
+}
+
+// checkInBudget 返回同步签到的等待预算。
+func (c *Client) checkInBudget() time.Duration {
+	if c.CheckInBudget > 0 {
+		return c.CheckInBudget
+	}
+	return checkInAttemptTimeout
+}
+
+// SetCheckInBudget 设置推理前同步签到的等待预算（<=0 表示用默认值 10s）。
+//
+// 调小不会让签到失败：超过预算就带着旧 nonce 先放行推理，下一轮请求继续补。
+func (c *Client) SetCheckInBudget(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	c.CheckInBudget = d
 }

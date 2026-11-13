@@ -14,7 +14,7 @@ import (
 // 控制台是一个「标记 + 样式 + 一组 ES module」的静态包，全部嵌进二进制：
 // 无外部依赖、无构建步骤、离线可用。
 //
-//go:embed web/index.html web/login.html web/style.css web/favicon.ico web/apple-touch-icon.png web/js/*.js web/js/render/*.js
+//go:embed web/index.html web/login.html web/style.css web/favicon.ico web/apple-touch-icon.png web/js/*.js web/js/render/*.js web/js/i18n/*.js
 var consoleAssets embed.FS
 
 // consoleHTML 是控制台的页面标记（不含内联脚本与样式）。
@@ -46,7 +46,7 @@ func consoleJS() string {
 // （login.js 的 #loginPw 在 login.html 里，不在 index.html 里）。
 func consoleScriptNames() []string {
 	var names []string
-	for _, dir := range []string{"web/js", "web/js/render"} {
+	for _, dir := range []string{"web/js", "web/js/render", "web/js/i18n"} {
 		entries, err := consoleAssets.ReadDir(dir)
 		if err != nil {
 			continue
@@ -188,6 +188,14 @@ func (s *Server) handleConsoleAsset(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		name = "web/js/render/" + rest
+	case strings.HasPrefix(p, "js/i18n/"):
+		// i18n/ 与 render/ 同规则：只允许一层扁平文件名
+		rest := strings.TrimPrefix(p, "js/i18n/")
+		if rest == "" || strings.ContainsAny(rest, "/\\") || strings.Contains(rest, "..") {
+			http.NotFound(w, r)
+			return
+		}
+		name = "web/js/i18n/" + rest
 	case strings.HasPrefix(p, "js/"):
 		rest := strings.TrimPrefix(p, "js/")
 		// 只允许扁平文件名：不能有子目录、反斜杠或 ..

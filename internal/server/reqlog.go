@@ -86,3 +86,9 @@ func (l reqLog) doneStatus(status int, outLen int, usage Usage, err error) {
 	}
 	l.s.Store.Record(e, outLen)
 }
+
+// apiKey 返回本次请求的调用密钥。
+//
+// 只供形状记忆 / 指标这类进程内逻辑使用；日志与统计落盘走 key 的脱敏视图，
+// 不要把完整密钥写进日志。
+func (l reqLog) apiKey() string { return l.key }

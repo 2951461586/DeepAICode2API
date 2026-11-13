@@ -8,9 +8,10 @@
 
 import { $, closeMenu } from './dom.js';
 import { ui } from './state.js';
-import { translateDom, applyLang, setLang, getLang } from './i18n.js';
+import { t, translateDom, applyLang, setLang, getLang } from './i18n.js';
 import { sortState, markSort, toggleSort } from './table.js';
 import { toast } from './ui.js';
+import { confirmDialog } from './dialog.js';
 import { api, clearPw } from './api.js';
 import { accountOp, checkin } from './actions.js';
 import { renderOverview } from './overview.js';
@@ -105,15 +106,45 @@ function initTopBar(ctx) {
     }).catch(function (e) { toast("创建失败：" + e.message, "err"); });
   };
   $("#reloadLogs").onclick = refreshLogs;
+
+  // 日志「实时」开关：5s 轮询，但只在标签页可见且停在日志页时取数。
+  // 定时器与 UI 状态都放在本模块，切走/隐藏不会累积多个 interval。
+  var liveTimer = null;
+  function setLive(on) {
+    if (on && !liveTimer) {
+      liveTimer = setInterval(function () {
+        if (document.visibilityState !== "visible") return;
+        if (!$("#tab-logs").classList.contains("on")) return;
+        refreshLogs();
+      }, 5000);
+    } else if (!on && liveTimer) {
+      clearInterval(liveTimer);
+      liveTimer = null;
+    }
+    var b = $("#logLive");
+    if (b) {
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.classList.toggle("on", !!on);
+    }
+  }
+  $("#logLive").onclick = function () {
+    var on = $("#logLive").getAttribute("aria-pressed") !== "true";
+    setLive(on);
+    if (on) refreshLogs();
+  };
   $("#clearLogs").onclick = function () {
-    if (!confirm("确定清空全部日志？")) return;
-    api("/admin/api/logs", { method: "DELETE" }).then(function () { toast("已清空", "ok"); return refreshLogs(); })
-      .catch(function (e) { toast("失败：" + e.message, "err"); });
+    confirmDialog({title: t("清空"), message: t("确定清空全部日志？"), danger: true}).then(function (ok) {
+      if (!ok) return;
+      api("/admin/api/logs", { method: "DELETE" }).then(function () { toast("已清空", "ok"); return refreshLogs(); })
+        .catch(function (e) { toast("失败：" + e.message, "err"); });
+    });
   };
   $("#clearStats").onclick = function () {
-    if (!confirm("确定重置统计？")) return;
-    api("/admin/api/stats", { method: "DELETE" }).then(function () { toast("已重置", "ok"); return refresh(); })
-      .catch(function (e) { toast("失败：" + e.message, "err"); });
+    confirmDialog({title: t("重置统计"), message: t("确定重置统计？"), danger: true}).then(function (ok) {
+      if (!ok) return;
+      api("/admin/api/stats", { method: "DELETE" }).then(function () { toast("已重置", "ok"); return refresh(); })
+        .catch(function (e) { toast("失败：" + e.message, "err"); });
+    });
   };
   $("#logLimit").onchange = refreshLogs;
 

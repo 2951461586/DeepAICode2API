@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -110,12 +111,29 @@ type metrics struct {
 	durSumNS atomic.Int64
 	durCount atomic.Int64
 	inflight atomic.Int64
+
+	// 扩展指标（见 metrics.go）：签到 / 上游错误 / 兜底 / 分端点延迟。
+	checkinAttempts atomic.Int64
+	checkinBlocked  atomic.Int64
+	checkinTimeouts atomic.Int64
+	fallbackTotal   atomic.Int64
+	extra           *extraMetrics
 }
 
-func newMetrics() *metrics { return &metrics{} }
+func newMetrics() *metrics { return &metrics{extra: newExtraMetrics()} }
 
-// observe 记录一次请求。
-func (m *metrics) observe(status int, d time.Duration) {
+// observe 记录一次请求（status + 耗时 + 端点分布）。
+func (m *metrics) observe(endpoint string, status int, d time.Duration) {
+	m.observeBasic(status, d)
+	m.observeDuration(endpoint, d.Seconds())
+}
+
+// observeBasic 只记状态码与总耗时，不进分端点 / 分位直方图。
+//
+// /admin/* 用它：控制台自己的请求如果也进延迟直方图，/admin/api/overview
+// 的响应体就会因为「上一次 overview 的耗时」而每次变化，ETag 永远命中不了
+// （TestOverviewETag 就是这么暴露的）。管理接口不是延迟 SLI。
+func (m *metrics) observeBasic(status int, d time.Duration) {
 	m.requests.Add(1)
 	switch {
 	case status >= 500:
@@ -167,7 +185,11 @@ func (s *Server) withObservability(next http.Handler) http.Handler {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		m.observe(status, d)
+		if strings.HasPrefix(r.URL.Path, "/admin/") {
+			m.observeBasic(status, d)
+		} else {
+			m.observe(endpointLabel(r.URL.Path), status, d)
+		}
 
 		if !isStaticAsset(r.URL.Path) {
 			logx.Info("access",
@@ -273,6 +295,37 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	runtime.ReadMemStats(&ms)
 	gauge("go_memstats_heap_alloc_bytes", "堆上已分配字节数",
 		[2]string{"go_memstats_heap_alloc_bytes", itoa64(int64(ms.HeapAlloc))})
+
+	// 扩展指标（metrics.go）：分端点延迟、签到、兜底、上游错误码。
+	snap := m.snapshot()
+	endpoints := make([]string, 0, len(snap.ByEndpoint))
+	for k := range snap.ByEndpoint {
+		endpoints = append(endpoints, k)
+	}
+	sort.Strings(endpoints)
+	for _, ep := range endpoints {
+		appendHistogram(&b, "gateway_request_duration_seconds",
+			"HTTP 请求耗时（按端点）", "endpoint", ep, snap.ByEndpoint[ep])
+	}
+	appendHistogram(&b, "gateway_checkin_seconds", "推理前同步签到的等待耗时", "", "", snap.CheckIn)
+	appendHistogram(&b, "gateway_admission_wait_seconds", "账号全忙时的排队等待耗时", "", "", snap.Admission)
+
+	counter("gateway_checkin_total", "推理前的签到尝试（attempt / 慢阻塞 / 超预算）",
+		[2]string{`gateway_checkin_total{result="attempt"}`, itoa64(m.checkinAttempts.Load())},
+		[2]string{`gateway_checkin_total{result="blocked"}`, itoa64(m.checkinBlocked.Load())},
+		[2]string{`gateway_checkin_total{result="timeout"}`, itoa64(m.checkinTimeouts.Load())},
+	)
+	counter("gateway_fallback_total", "请求体形状被拒后按桌面端形状重试的次数",
+		[2]string{`gateway_fallback_total{reason="body_shape"}`, itoa64(m.fallbackTotal.Load())},
+	)
+	errSamples := make([][2]string, 0, len(snap.UpstreamErrs))
+	for _, e := range snap.UpstreamErrs {
+		labels := fmt.Sprintf(`code=%q,status="%d",path=%q`, e.Code, e.Status, e.Path)
+		errSamples = append(errSamples, [2]string{"gateway_upstream_errors_total{" + labels + "}", itoa64(e.Count)})
+	}
+	if len(errSamples) > 0 {
+		counter("gateway_upstream_errors_total", "上游拒绝次数（按路径 / 错误码 / 状态码）", errSamples...)
+	}
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
