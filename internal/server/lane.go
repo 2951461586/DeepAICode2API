@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +19,30 @@ import (
 const laneProbeCooldown = 60 * time.Second
 
 // CurrentLane 返回当前生效的车道：探测结果优先，否则用编译期默认值。
+//
+// 持久化的探测值可能比编译期默认值旧（例如网关升级到对齐 0.3.36 的车道 5，
+// 而状态文件里还留着上一版探测到的 4）：此时以编译期默认值为准，
+// 否则升级完还得等一次 426 才会真正换道。
 func (s *Server) CurrentLane() string {
-	if lane := strings.TrimSpace(s.Store.Settings().Lane); lane != "" {
-		return lane
+	return newerLane(s.Store.Settings().Lane)
+}
+
+// newerLane 返回持久化车道值与编译期默认值中较新的一个。
+//
+// 两边都按十进制整数比较；任一方不是数字时退回编译期默认值，
+// 避免一个手填的怪值把车道卡死（车道不对时上游会回 426，探测会重写它）。
+func newerLane(stored string) string {
+	stored = strings.TrimSpace(stored)
+	if stored == "" {
+		return deepai.LaneVersion
+	}
+	s, errStored := strconv.Atoi(stored)
+	c, errCompiled := strconv.Atoi(deepai.LaneVersion)
+	if errStored != nil || errCompiled != nil {
+		return deepai.LaneVersion
+	}
+	if s > c {
+		return stored
 	}
 	return deepai.LaneVersion
 }

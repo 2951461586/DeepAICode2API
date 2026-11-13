@@ -228,6 +228,37 @@ func TestChatBodyRejectedRetriesWithDesktopShape(t *testing.T) {
 	}
 }
 
+// 上游 2026-11-13 起把「请求体形状」拒绝的文案换成了 "This request cannot be accepted."。
+// 若只认旧文案，相同的门槛会直接透传 400，调用方拿不到兜底重试。
+func TestChatBodyRejectedRetriesWithNewMessage(t *testing.T) {
+	var chatCalls atomic.Int64
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, deepai.PathTheos) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"enabled":true,"lane_version":5}`)
+			return
+		}
+		if chatCalls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"This request cannot be accepted.",`+
+				`"type":"invalid_request_error","code":"invalid_request_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	})
+	s, key := newTestServer(t, u)
+
+	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("新文案也应触发兜底重试，状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if chatCalls.Load() != 2 {
+		t.Fatalf("应重试一次，实际上游 chat 调用 %d 次", chatCalls.Load())
+	}
+}
+
 // social_login_required 是账号级策略拦截：回传后账号落 blocked，后续调度跳过。
 func TestSocialLoginBlocksAccount(t *testing.T) {
 	var chatCalls atomic.Int64

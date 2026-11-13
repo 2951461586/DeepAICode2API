@@ -186,8 +186,8 @@ func TestClientSendsRequiredHeaders(t *testing.T) {
 	if v := got.Get(HeaderLane); v != LaneVersion {
 		t.Fatalf("%s = %q，期望 %q", HeaderLane, v, LaneVersion)
 	}
-	if LaneVersion != "4" {
-		t.Fatalf("车道版本 = %q，0.3.19 客户端使用 4", LaneVersion)
+	if LaneVersion != "5" {
+		t.Fatalf("车道版本 = %q，0.3.36 客户端使用 5", LaneVersion)
 	}
 	if inst := got.Get(HeaderInstance); len(inst) != 32 || strings.Trim(inst, "0123456789abcdef") != "" {
 		t.Fatalf("%s = %q，期望 32 位小写 hex", HeaderInstance, inst)
@@ -271,6 +271,40 @@ func TestFetchModels(t *testing.T) {
 	}
 	if len(models[0].Input) != 1 || models[0].Input[0] != "text" {
 		t.Fatalf("缺失 input 应补为 [text]，实际 %#v", models[0].Input)
+	}
+}
+
+// /models 与车道探测刻意不带任何凭据：它们是代理预热 / 探活路径，
+// 上游目录也不随账号变化。这条测试把「免凭据」钉成契约，防止以后
+// 随手把 account 传进去（或顺手发签到头）。
+func TestModelsAndLaneProbeCarryNoCredentials(t *testing.T) {
+	var mu sync.Mutex
+	var headers []http.Header
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		headers = append(headers, r.Header.Clone())
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"models":[{"id":"m1","name":"M1"}],"default":"m1"}`)
+	})
+
+	if _, _, err := c.FetchModels(context.Background()); err != nil {
+		t.Fatalf("FetchModels: %v", err)
+	}
+	if _, err := c.DetectLane(context.Background()); err != nil {
+		t.Fatalf("DetectLane: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(headers) == 0 {
+		t.Fatal("没有捕获到任何上游请求")
+	}
+	for _, h := range headers {
+		for _, name := range []string{HeaderKeyName, HeaderCheckIn, HeaderBeacon} {
+			if v := h.Get(name); v != "" {
+				t.Fatalf("%s 不应出现在模型 / 车道探测请求上，实际 %q", name, v)
+			}
+		}
 	}
 }
 

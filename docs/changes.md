@@ -13,6 +13,7 @@
 | --- | --- | --- |
 | v0.1.2 | 53、54 | 控制台日志页漏 import（`renderLogs`）+ 二次全扫 7 处遗留 |
 | v0.1.2 之后 | 55–58 | 密钥删除/启停的存在性语义与 404 自愈；缓存命中率改今日口径、499 客户端断开、docker 注入 VERSION；README 居中 + 项目 Logo + 控制台 favicon |
+| v0.1.3 | 59 | 客户端 0.3.36 同步：车道 4 → 5（唯一协议面变更）+ 协议面全量复扫 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -35,6 +36,7 @@
 - 56 缓存命中率口径（今日 vs 累计）、客户端断开记 499 不计失败、docker 版本注入（v0.1.2 之后）
 - 57 项目 Logo（复用 DeepAI Code 桌面端图标）+ README 顶部居中（v0.1.2 之后）
 - 58 控制台用上同一图标：/favicon.ico + apple-touch-icon（v0.1.2 之后）
+- 59 客户端 0.3.36 同步：车道 4 → 5、`/models` 带 Key、UA 分流复测失效（v0.1.3）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -3052,3 +3054,98 @@ GitHub 渲染接口（POST /markdown, mode=gfm）：
 ```
 
 测试：`go test ./...` 全绿（556 用例 = 424 顶层 + 132 子用例）、冒烟 21 条不变。
+
+## 59. 客户端更新到 0.3.36：车道 4 → 5，其余协议面未变（v0.1.3）
+
+**触发**：2026-11-13 例行扫描发现官方更新源 `latest.yml` 已发 **0.3.36**
+（2026-11-13T05:42Z，releaseNotes 主要是「断线/中断回复后的聊天恢复、登录可靠性、
+更新检查卡住、终端标签页与分屏浏览器修复」），本机还停在 0.3.35。
+
+**客户端更新**（0.3.35 → 0.3.36）：
+
+- `latest.yml` 的 sha512 与下载包逐字节一致（`cnqeCSWvK3…`，483 MB）；
+  官方 CDN 单连接只有 ~40–60 KB/s，改用 16 路 Range 分段并发下载再按序拼接，
+  校验通过后 `DeepAI-Code-0.3.36-x64.exe /S` 静默安装，注册表 `DisplayVersion=0.3.36`。
+- 下载脚本与安装包放在临时目录（`/f/tmp/dl`），不入库。
+
+**白盒比对 0.3.35 vs 0.3.36**（`server.asar:/apps/server/dist/binCli-*.mjs`，
+14.3 MB → 14.8 MB；按 `//#region` 切段后逐段 `SequenceMatcher`）：
+
+| 面 | 结论 |
+| --- | --- |
+| `DEEPAI_LANE_HEADERS` | **唯一变更**：`X-DeepAI-Code-Theos` `"4"` → **`"5"`**；`X-DeepAI-Code-Instance` 仍是 `randomBytes(16).hex`（每进程一次） |
+| `-Machine` / `-Check-In` / `-Beacon` | 头名与拼装逻辑未变；`sha256(小写原始 UUID)` 指纹未变 |
+| 端点集合 | 推理与元数据全部照旧；**新增托管主机控制面** `/deepai_code/connect/{enroll,poll,devices,rooms,grant}/`（`X-DeepAI-Protocol: 1` + `X-DeepAI-Device/-Time/-Nonce/-Signature` 设备签名头），与推理无关，网关不实现 |
+| `/models` | 请求改为带 `account.apiKey`；`decodeDeepAIModels` 校验规则一字未变（仍过滤 `gpt-oss-120b`、仍把 `deepseek-v4.1-flash` 名字改写为 `… 1017`） |
+| 聊天请求体 | 字段集合未变：`store` / `max_completion_tokens` / `tools` / `tool_choice` / `parallel_tool_calls` / `reasoning_effort` / `prompt_cache_key` 出现次数两版一致 |
+| 签到 | nonce 回传与 `seconds/2` 续签逻辑未变；新增「聊天前 `ensureCheckedIn`」（`apiForOwner` 对 `/chat/completions` 加闸门）——网关的 `EnsureCheckIn` 早有同义逻辑 |
+| pi 运行时 | 仍 **1.3.0**；MCP toolkit 列表仍 25 个；`deepai_code__*` 工具 id 未变 |
+| 登录 | `desktop_auth/exchange` 加重试与证书错误文案（`UNABLE_TO_VERIFY_LEAF_SIGNATURE` 等），不在协议面 |
+
+**线上实测（2026-11-13，真实账号，直连）**：
+
+```text
+/models lane 1..5  -> 200；lane 6/7 -> 426
+/theos  lane 4/5   -> 200，lane_version=5，check_in:{nonce,seconds:600}
+chat    lane 4/5   -> 200（同一请求体，UA=node/curl/Chrome 三种都一样）
+```
+
+响应形状已再次换形（同一账号、同一请求体，只换 UA，3 次）：
+
+| 字段 | 2026-11-13 实测（三种 UA 相同） |
+| --- | --- |
+| `id` | `gen-<32 hex>`（如 `gen-639e7bf2dd35…`） |
+| `model` | 回显请求 slug：`zai/glm-5.3-flash`（注意前缀从 `z-ai/` 变成 `zai/`） |
+| `provider` / `service_tier` / `native_finish_reason` / `cost_details` / `market_cost` | **全部不出现** |
+| `system_fingerprint` | 恒给 `fp_…` |
+| `reasoning_details[0].format` | 文本回复 `stealth-v1`；强制工具调用 `unknown` |
+| SSE | 形状未变：`delta.reasoning_details`（`gwst1.…` 加密串）+ 末帧 usage + `[DONE]` |
+| 工具调用 | 仍标准 OpenAI：`tool_calls[].function.arguments` + `finish_reason=tool_calls` |
+
+→ **「UA 分流」与整套「provider/gen_ 前缀判替身」判据作废**（`docs/recon.md` §3.1
+已按当天实测重写，旧表保留为历史）。另新增一个错误码：余额为负时打付费模型回
+`403 theos_exhausted`（body 带 `refresh_at`），已记入 §4 错误表。
+
+**代码改动**：
+
+| 文件 | 改动 |
+| --- | --- |
+| `internal/deepai/types.go` | `LaneVersion` `"4"` → `"5"`；`AppVersion` `0.3.35` → `0.3.36`；新增新 400 文案常量 `CodeNotAcceptedMsg`；注释按 0.3.36 复扫重写 |
+| `internal/deepai/client.go` | `LaneCandidates` 改为 `5` 优先、`4` 兜底（上游抬车道时仍可自动跟随）；`BodyRejected` 同时匹配新旧两种文案 |
+| `internal/server/lane.go` | 新增 `newerLane`：持久化的旧车道值不再压住编译期新车道；`CurrentLane` 走它 |
+| `internal/server/server.go` | 启动时用 `newerLane(settings.Lane)` 初始化客户端车道 |
+| `internal/deepai/client_test.go`、`internal/server/lane_test.go` | 车道断言 4 → 5；探测用「下一档车道 6」做夹具；新增 3 个测试（旧值升级、保留更新值、非数字兜底） |
+
+**顺带发现的第二个兼容点：请求体形状的 400 文案变了**。同一账号、`lane=5`、
+同一请求体（无 system）做 4×2 矩阵后确认：
+
+| UA | 机器指纹 | 缺 system | 带 system |
+| --- | --- | --- | --- |
+| `node` | 本机真实指纹（桌面端用过的） | **400 `This request cannot be accepted.`** | 200 |
+| `node` | 随机新指纹 | 200 | 200 |
+| `curl/8.x` | 本机真实指纹 | 200 | 200 |
+
+旧实现只认 `This request is not one DeepAI Code sends.`，遇到新文案不会触发
+`ChatBodyFallback`（补 system + 收敛字段），400 会直接透传给调用方。
+`BodyRejected` 已改成两种文案都匹配，并补了 `client_misc_test.go` 与
+`server/chat_test.go` 两条回归（后者跑完整兜底重试链路）。
+
+**这条不是边角问题**：网关默认部署在桌面端同一台机器上，`X-DeepAI-Code-Machine`
+就是这台机器的真实指纹，正好落在新文案的强校验分支。本地起临时实例
+（`-port 10097`）实测：不带 system 的普通客户端请求第一次就是
+`400 This request cannot be accepted.`，日志打出
+`[upstream] 请求体被拒，按桌面端形状重试`，补 system 后 200；流式 + 强制工具调用
+同样 200（`tool_calls` 分片正常）。旧实现会把这个 400 原样回给调用方 ——
+也就是说，若不改这一处，升级上游后大部分 OpenAI SDK 调用会直接失败。
+
+**两处刻意的边界（已定稿并写进文档 / 测试）**：
+
+| 面 | 决定 | 落点 |
+| --- | --- | --- |
+| `/deepai_code/connect/*`（0.3.36 托管主机控制面） | **不实现**：Ed25519 + X25519 设备身份 + 受管主机生命周期 + TLS 中继，服务的是桌面端「远程主机」功能，与推理无关 | `docs/recon.md` §2.1（完整协议：proof message 拼装、enroll 响应校验、ControlError 语义）；`internal/deepai/types.go` 包注释 |
+| `GET /deepai_code/models` | **保持免凭据**：目录不随账号变化（带/不带 `Api-Key` 实测同一份 21 个模型），且它是代理预热与车道探测的探活路径 | `deepai.Client.FetchModels` 注释 + 新契约测试 `TestModelsAndLaneProbeCarryNoCredentials`（/models 与车道探测不得带 `Api-Key` / `-Check-In` / `-Beacon`） |
+
+**验证**：`gofmt` / `go vet ./...` 无输出；`sh scripts/lint.sh` 全绿（含前端语法与 21 条冒烟）；
+`go test ./...` 全绿（新增 3 个 lane 用例 + 2 个 400 文案回归 + 1 个免凭据契约用例，共 562 个用例 = 430 顶层 + 132 子用例）；
+本地临时实例实测：启动即自动探测到 `车道版本: 5`、目录 `21 个模型`，
+最小 body 与流式工具调用都经「补 system 重试」后 200。

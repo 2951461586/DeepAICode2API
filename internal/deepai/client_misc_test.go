@@ -90,6 +90,19 @@ func TestBodyRejectedRequires400(t *testing.T) {
 	}
 }
 
+// TestBodyRejectedAcceptsNewMessage 覆盖 2026-11-13 实测到的新文案：
+// 上游把同一个门槛的 message 换成了 “This request cannot be accepted.”，
+// 漏掉它 ChatBodyFallback 就不会重试，调用方直接吃 400。
+func TestBodyRejectedAcceptsNewMessage(t *testing.T) {
+	msg := `{"error":{"message":"This request cannot be accepted.","type":"invalid_request_error","code":"invalid_request_error"}}`
+	if !mustErr(t, http.StatusBadRequest, msg).BodyRejected() {
+		t.Fatal("400 + 新文案（cannot be accepted）应判定为请求体拒绝")
+	}
+	if mustErr(t, http.StatusForbidden, msg).BodyRejected() {
+		t.Fatal("非 400 不应判定为请求体拒绝")
+	}
+}
+
 // TestHomeDirFallback 覆盖主目录不可用时的回落顺序。
 func TestHomeDirFallback(t *testing.T) {
 	if runtime.GOOS == "windows" {

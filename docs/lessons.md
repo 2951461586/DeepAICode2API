@@ -134,6 +134,10 @@
   `BaseTen` / `CoreWeave` / `Makora` / `Modal` / `Morph` / `Inceptron` …），
   所以旧判据「出现 `provider` 且没有 `system_fingerprint`」会把真分支全部误判
   成替身。现在只看 **`provider` 是否等于 `"DeepAI"`**：等于 = 替身，不等于 = 真。
+  > ⚠️ **2026-11-13 已整体失效**：0.3.36 时代三种 UA 的响应完全一致，`provider` /
+  > `service_tier` / `cost_details` 全部不再出现，`id` 统一 `gen-<32 hex>`、
+  > `model` 回 `zai/<slug>`。“按响应形状判替身”目前无可靠判据；验号改用模型指纹。
+  > 详见 `docs/recon.md` §3.1。下面两条交叉验证同样只当历史。
   - 交叉验证：`service_tier`（真 `null` / 替身 `"default"`）、
     `usage.cost_details.upstream_inference_cost`（真 >0 / 替身 `0`）、
     `reasoning_details[*].format == "openrouter-stealth-v1"`（替身）；
@@ -152,8 +156,8 @@
 - **签到是有限资源**：`403 check_in_refused`（"restarted its check-in too many
   times today"）说明当天重启次数用尽，要等明天。别写脚本反复「拉 nonce + 回传」
   做体检；被限流的号仍能推理，只是一直落在替身分支。
-- **代价**：`user-agent: node` 是 Node fetch 的默认值，桌面端换 HTTP 栈后
-  这条要跟着改（见 `docs/recon.md` §3.1）。
+- **代价**：`user-agent: node` 是 Node fetch 的默认值（2026-11-13 复测：UA 已不再
+  分流，保留它只是与桌面端一致，见 `docs/recon.md` §3.1）。
 
 ---
 

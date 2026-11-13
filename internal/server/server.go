@@ -113,9 +113,10 @@ func New(st *store.Store) *Server {
 		adminGuard:         newAdminGuard(),
 		metrics:            newMetrics(),
 	}
-	// 上次探测到的车道优先（跨重启保留），否则用编译期默认值。
+	// 上次探测到的车道优先（跨重启保留），但较新的编译期默认值优先于更旧的探测值：
+	// 否则升级到对齐新客户端的版本后，还会用旧车道跑到下一轮探测。
 	if lane := strings.TrimSpace(st.Settings().Lane); lane != "" {
-		s.Up.SetLane(lane)
+		s.Up.SetLane(newerLane(lane))
 	}
 	return s
 }

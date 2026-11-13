@@ -6,7 +6,24 @@
 
 > 抓包时间：应用版本 **0.3.20**（车道 4，2026-11-07 发布）。
 >
-> **2026-11-11 复核到 0.3.35**（本机已装 0.3.35，官方更新源 `latest.yml` 同日 03:34Z 发布）。
+> **2026-11-13 复核到 0.3.36**（本机已装 0.3.36，官方更新源 `latest.yml` 同日 05:42Z 发布）。
+> 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 五轮白盒比对：**唯一一处协议面变更是车道
+> 4 → 5**（`DEEPAI_LANE_HEADERS["X-DeepAI-Code-Theos"] = "5"`，`/theos` 也回
+> `lane_version: 5`）。请求头集合、实例号粒度（每进程一次）、
+> `sha256(小写原始 UUID)` 机器指纹、签到 / beacon 形态、端点集合、聊天请求体字段、
+> 模型目录解码全部未变（pi 运行时仍 1.3.0，MCP 工具集仍 25 个）。
+> 0.3.36 的其它差异都不在推理协议面上：`/models` 改成带 `Api-Key`（目录不随账号
+> 变化，实测带不带 Key 返回同一份 21 个模型）、聊天前强制 `ensureCheckedIn`、
+> 登录换 token 加了重试 / 证书错误文案、新增托管主机控制面
+> `/deepai_code/connect/*`（设备注册 / 远程主机，见 §2 末尾）。
+>
+> **2026-11-13 重测 §3.1 的分流判据：UA 分流不再成立。** 同一账号、同一请求体，
+> `node` / `curl` / Chrome 156 三种 UA 的响应形状完全一致（`model` 都回显
+> `zai/<slug>`、`id` 都是 `gen-<32 hex>`、都没有 `provider` / `service_tier` /
+> `native_finish_reason` / `cost_details` / `market_cost`）。旧的
+> 「`provider` 缺失 = 替身」「`gen_` 前缀 = 替身」判据**全部失效**，详见 §3.1。
+>
+> **2026-11-11 复核到 0.3.35**（官方更新源 `latest.yml` 同日 03:34Z 发布）。
 > 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 四轮白盒比对结论：**wire protocol 一字未变** ——
 > 端点集合、5 个 `X-DeepAI-Code-*` 头（车道仍 `4`）、实例号粒度、
 > `sha256(小写原始 UUID)` 机器指纹、签到 / beacon 形态全部一致。
@@ -37,7 +54,7 @@
 
 | 标记 | 含义 | 怎么复核 |
 | --- | --- | --- |
-| **【源码级】** | 白盒确认：读的是 0.3.35 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`） | 解包 asar 后对着代码看，可 100% 复现 |
+| **【源码级】** | 白盒确认：读的是 0.3.36 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`，打包进 `dist/binCli-*.mjs`） | 解包 asar 后对着代码看，可 100% 复现 |
 | **【实测】** | 线上真打过，附日期与样本量 | 按文中命令复跑；样本量小的结论会写明 |
 | **【推断】** | 由前两类推广而来，**尚未验证** | 照着改代码前先补一次实测 |
 
@@ -47,7 +64,7 @@
 
 ---
 
-## 1. 进程与数据目录【源码级 0.3.35】
+## 1. 进程与数据目录【源码级 0.3.36】
 
 | 项 | 值 |
 | --- | --- |
@@ -59,7 +76,7 @@
 
 自动探测顺序见 `internal/deepai/helpers.go` 的 `DesktopSecretDirs`。
 
-## 2. 上游端点【源码级 0.3.35】
+## 2. 上游端点【源码级 0.3.36】
 
 基础地址 `https://api.deepai.org`（可用 `DEEPAI_API_ORIGIN` 覆盖）。
 
@@ -67,7 +84,7 @@
 | --- | --- | --- |
 | POST | `/deepai_code/chat/completions` | 推理（OpenAI chat 兼容） |
 | POST | `/deepai_code/responses` | 推理（仅 `api=openai-responses` 的模型） |
-| GET | `/deepai_code/models` | 模型目录（无需 API Key） |
+| GET | `/deepai_code/models` | 模型目录（0.3.36 起桌面端请求会带 `Api-Key`；上游不强制，带不带返回同一份目录） |
 | GET | `/deepai_code/theos` | 配额 / 余额 + **签到挑战** |
 | POST | `/deepai_code/web_search` | 联网搜索 |
 | POST | `/deepai_code/find_service` | 服务发现 |
@@ -86,12 +103,58 @@
 | GET | `/gravity-display-proxy` | 赞助位渲染代理（根路径，`User-Agent: DeepAI-Code`） |
 | GET | `/gravity-imp` | 赞助曝光上报（根路径） |
 
-## 3. 请求头【源码级 0.3.35】
+### 2.1 托管主机控制面（0.3.36 新增，网关不实现）
+
+0.3.36 在 `src/managed/*` 与 `packages/shared/src/managed/*` 里带了一整套
+「把一台机器注册成受管主机」的能力，入口是 `/deepai_code/connect/*`。
+**它与推理无关，网关刻意不实现**；列在这里是为了下次复扫时不用重新拆包。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/deepai_code/connect/enroll/` | 设备注册（body 带 `label`、`kind` 与公钥 `signing_key` / `exchange_key`） |
+| POST | `/deepai_code/connect/poll/` | 轮询注册结果（`enrollment_id` + `device_secret`） |
+| GET | `/deepai_code/connect/devices/` | 已注册设备列表 |
+| GET | `/deepai_code/connect/rooms/` | 可接入的房间（上行叫 `incoming`） |
+| GET | `/deepai_code/connect/grant/` | 授权状态（上行叫 `grantStatus`） |
+| — | `https://deepai.org/deepai_code/connect/approve/` | 人工确认页（`user_code` + `verification_uri`） |
+
+协议要点（源码级）：
+
+- 公共头只有 `Content-Type: application/json` 与 `X-DeepAI-Protocol: 1`，
+  `redirect: error`，超时 30s，响应体上限 256 KiB；
+- 设备身份是**两对非对称密钥**：Ed25519（签名）+ X25519（交换），
+  私钥 PEM 存本地（文件权限 0600，可选平台安全存储加密），公钥以 base64 发给上游；
+- `enroll` 不带签名；拿到 `device_secret` 后的每个请求都带一份 device proof：
+
+  ```text
+  message = "deepai-code-control-v1" \n deviceId \n generation \n METHOD \n target \n timestamp \n nonce \n sha256(body)hex
+  ```
+
+  以 Ed25519 签名（base64）放进 `X-DeepAI-Signature`，同时带
+  `X-DeepAI-Device`（deviceId）、`X-DeepAI-Time`（秒）、`X-DeepAI-Nonce`
+  （24 字节 base64url）；`target` 是含 query 的以 `/` 开头的路径；
+- `enroll` 响应校验很死：`verification_uri` 必须恰好是
+  `https://deepai.org/deepai_code/connect/approve/`、`expires_in` ∈ [1,600]、`interval` 恒 5；
+- 错误一律归一成 `ControlError{status, code, retryable, retryAfterMs}`：
+  408/429/5xx 可重试，401 → “设备授权过期或被撤销”，`Retry-After` 夹到 300s。
+
+**不实现的原因**：
+
+1. 它服务的是桌面端「远程主机 / 团队共享设备」功能，最终能力是 TLS 中继隧道
+   （`managed/{gateway,certificate,tls,host}.ts`），不经过推理端点；
+2. 要可用就得在网关里长期保管一对设备私钥并模拟桌面端的受管主机生命周期，
+   多一份高价值凭据与攻击面，却对 OpenAI / Anthropic 兼容层零收益；
+3. 号池、车道、签到、推理链路都不依赖它 —— 上游没有因为它改变任何既有端点。
+
+将来真要复刻时，需要的不是改推理客户端，而是独立模块：设备身份存储 +
+签名器 + enroll/poll 状态机（本节的 message 拼装规则可直接照抄）。
+
+## 3. 请求头【源码级 0.3.36】
 
 | 头 | 值 | 作用 |
 | --- | --- | --- |
 | `Api-Key` | 账号 API Key | **鉴权走这个头，不是 `Authorization`** |
-| `X-DeepAI-Code-Theos` | `4` | 计费车道版本；门槛分端点不同，见下方「车道版本门槛」 |
+| `X-DeepAI-Code-Theos` | `5` | 计费车道版本（0.3.36 起）；门槛分端点不同，见下方「车道版本门槛」 |
 | `X-DeepAI-Code-Instance` | 16 字节随机数的 hex（每进程一次） | 进程实例标识，随所有 JSON 请求发出 |
 | `X-DeepAI-Code-Machine` | `sha256(小写原始机器 UUID)` | 按天发放免费额度；计量模型缺失时 `machine_required` |
 | `X-Session-Affinity` | 任意会话 id | 会话粘性（body 的 `prompt_cache_key` 同效） |
@@ -124,20 +187,31 @@
 > 另外 3 个头（`-Machine` / `-Check-In` / `-Beacon`）字面量未动；
 > `User-Agent: DeepAI-Code` 仍**只**出现在 `/gravity-display-proxy`；
 > `/speech_to_text` 仍只发 `api-key`（不带车道 / 机器头）。
+>
+> **2026-11-13 用 0.3.36 复核：`DEEPAI_LANE_HEADERS` 只改了一个字面量 ——
+> `X-DeepAI-Code-Theos: "5"`**（`DEEPAI_LANE_VERSION` 就是从它 `Number()` 出来的）；
+> 实例号仍是 `randomBytes(16).hex`（每进程一次），其余 3 个字面量未动，
+> 普通头（`Content-Type` / `User-Agent: node` / `Accept` / `sec-fetch-mode`）也未动。
+> `/models` 的请求体代码从 `requestDeepAIJson("/models", null, …)` 改成
+> 带 `account.apiKey`（2026-11-13 实测：带不带 Key 目录完全一致）。
 
 要点：
 
-- 车道版本门槛（**2026-11-11 实测矩阵**；此前“三个端点一视同仁、必须 4”的结论已过期）：
+- 车道版本门槛（**2026-11-13 实测矩阵**，每格一次请求；旧行保留作对比）：
 
-  | 端点 | lane 1 | 2 | 3 | **4** | 5 | 6+ | 0 |
+  | 端点 | lane 1 | 2 | 3 | 4 | **5** | 6 | 7 |
   | --- | --- | --- | --- | --- | --- | --- | --- |
-  | `/models` | 200 | 200 | 200 | 200 | 426 | 426 | 426 |
-  | `/theos` | 200 | 200 | 200 | 200 | 未测 | 426 | 未测 |
-  | `/chat/completions`（`node` UA 真分支） | 未测 | **426** | **426** | 200 | 未测 | 未测 | 未测 |
+  | `/models`（0.3.36 当日） | 200 | 200 | 200 | 200 | **200** | 426 | 426 |
+  | `/theos`（0.3.36 当日） | 未测 | 未测 | 未测 | 200 | **200** | 未测 | 未测 |
+  | `/chat/completions`（0.3.36 当日） | 未测 | 未测 | 未测 | 200 | **200** | 未测 | 未测 |
+  | `/models`（2026-11-11 快照） | 200 | 200 | 200 | 200 | 426 | 426 | — |
+  | `/theos`（2026-11-11 快照） | 200 | 200 | 200 | 200 | 未测 | 426 | — |
+  | `/chat/completions`（2026-11-11 快照） | 未测 | **426** | **426** | 200 | 未测 | 未测 | — |
 
-  → 元数据端点已放宽到 **1–4**，**推理仍只认 `4`**（2/3 直接 426）
-  「This version of DeepAI Code is no longer supported」。网关恒发 `4` 仍然正确，
-  号池不需要按端点区分车道；但“车道不对就全线 426”不能再拿来判断上游可用性。
+  → 门槛整体右移了一格：元数据端点 **1–5**，推理端点 **4 / 5 都 200**，
+  6+ 仍 426 `lane_version_unsupported`（“This version of DeepAI Code is no longer
+  supported”）。**网关跟 0.3.36 发 `5`**（`deepai.LaneVersion`），4 保留为探测兜底；
+  把 `/models` 当“车道健康检查”仍然不靠谱（它对旧车道更宽容）。
 - `X-DeepAI-Code-Instance` 只在进程启动时生成一次；网关按「进程 / 出口代理」
   各生成一份即可（`clientFor` 按代理缓存 Client），**不要每请求换值**
   （桌面端也不是每请求换）。
@@ -147,14 +221,37 @@
   macOS `IOPlatformUUID`、Linux `/sys/class/dmi/id/product_uuid` 或 `/etc/machine-id`。
 - 固件占位 UUID（全 0 / 全 f / `03000200-…`）必须过滤，否则指纹不稳定。
 
-### 3.1 User-Agent 决定服务哪个模型【实测 2026-11-10，判据已整体重写】
+### 3.1 响应形状与「替身分支」判据【最新实测 2026-11-13：UA 分流已消失，旧判据全失效】
 
-这是本项目最重要的一条逆向结论：**上游按 `User-Agent` 分流**，同一个
-`model` 会因为 UA 不同而落到不同的后端。
+**2026-11-13 重测（0.3.36 时代，单账号 3 次）**：同一账号、同一机器指纹、
+同一请求体（`glm-5.3-flash`，已签到，非流式），只换 `User-Agent`：
 
-> ⚠ 这节的判据**已经被改过两次**（2026-11-07 → 11-09 → 11-10）。上游每次换
-> 路由实现，判据就整体换形；照抄旧判据会得出相反结论。复核时请按下面
-> 2026-11-10 的实测重跑一次，再改代码 / 改号池评估。
+| `user-agent` | 状态 | `model` | `id` | `provider` | `service_tier` | `system_fingerprint` | `native_finish_reason` | `cost_details` / `market_cost` | `reasoning_details[0].format` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `node` | 200 | `zai/glm-5.3-flash` | `gen-639e7bf2…`（32 hex） | 无 | 无 | `fp_3qkh4qwihw` | 无 | 无 | `stealth-v1` |
+| `curl/8.9.1` | 200 | `zai/glm-5.3-flash` | `gen-f3b1884e…` | 无 | 无 | `fp_28knbcfnc3` | 无 | 无 | `stealth-v1` |
+| Chrome 156 | 200 | `zai/glm-5.3-flash` | `gen-aa723a81…` | 无 | 无 | `fp_fu6cxxk30b` | 无 | 无 | `stealth-v1` |
+
+结论（三条样本 + 一次 `tool_choice` 强制工具调用）：
+
+1. **UA 已不再分流**：三种 UA 的响应形状、模型回显、延迟同一量级，不再有
+   “带 Chrome UA 会被换模型”的现象。网关仍发 `user-agent: node`（无害且更贴近
+   桌面端），但不要再把“UA 不对”当成号池故障原因。
+2. **`provider` / `service_tier` / `native_finish_reason` / `cost_details` /
+   `market_cost` 现在全部不出现**；`id` 统一是 `gen-<32 hex>`、`model` 统一回显
+   `zai/<请求的 id>`（注意 slug 前缀从 `z-ai/` 变成了 `zai/`）。
+   → 「`provider` 缺失 = 替身」「`gen_` 前缀 = 替身」「cost=0 = 替身」
+   这三条旧判据**全部失效**（当前真实请求也长这样）。
+3. `reasoning_details` 的形状：普通文本回复是 `{type:"reasoning.encrypted",
+   data:"gwst1.…", format:"stealth-v1"}`；强制工具调用时是
+   `{type:"reasoning.text", text:"…", format:"unknown"}`。工具调用本身仍是
+   标准 OpenAI 形状（`tool_calls` + `finish_reason: tool_calls`）。
+4. 所以**现在没有任何可靠的“响应形状”判据能区分真模型与替身**。判断一个号
+   是否对齐，只能看准入条件：签到是否完成、是否被 426/403 拒绝，以及模型是否
+   明显答非所问（见 `docs/model-fingerprint-2026-11-10.md` 的指纹方法）。
+
+> 下面 2026-11-10 的记录保留作历史：它解释了为什么旧判据长那样，
+> 也说明了每次上游改路由实现，判据就得整段重测。
 
 **2026-11-10 重测（0.3.32 时代的线上行为，单账号 3 次）**：分流仍按 UA，
 但替身分支**不再发 `provider`**，`model` 也不再回显请求的 slug。
@@ -181,7 +278,7 @@
 | `usage.market_cost` | 字段缺失 | **`0`** |
 | 顶层 `generationId` | 字段缺失 | **有**（与 `id` 同值） |
 
-真 / 替身的判据（按可靠度排序，2026-11-10 版）：
+真 / 替身的判据（按可靠度排序，**2026-11-10 历史版，已于 11-13 失效**）：
 
 1. **`provider` 字段缺失 → 替身**；有值（`Wafer` / `InferenceNet` / `Reka` /
    `BaseTen` / `CoreWeave` / `Makora` / `Modal` / `Morph` / `Inceptron` /
@@ -196,20 +293,20 @@
 6. `system_fingerprint` **完全不能当判据**：真分支只有 vLLM 系后端才给，
    替身现在反而恒给 `fp_…`；`service_tier` 同样不再可用（替身直接省略）。
 
-其它要点：
+其它要点（**2026-11-10 历史记录，不再适用于 11-13 之后的线上行为**）：
 
-- 判定开关仍然是 **UA**，与 `Accept` / `Accept-Language` / `sec-fetch-mode` 无关
-  （实测 `node` + `application/json` 仍在真分支）；
+- 判定开关当时是 **UA**，与 `Accept` / `Accept-Language` / `sec-fetch-mode` 无关
+  （当时实测 `node` + `application/json` 仍在真分支）；
 - 替身分支明显更慢（单样本 5.5s vs 6.6s / 8.5s），但样本量太小，只当参考；
-- 替身分支仍更容易被 `finish_reason=length` 截断（reasoning 吃 token 却不计 content）；
-- 推论不变：**推理请求必须发 `user-agent: node`**（网关 `BrowserFingerprint=false`
-  那条路径），带 Chrome UA 或 Go 默认 UA 都会被换模型。
+- 替身分支当时更容易被 `finish_reason=length` 截断（reasoning 吃 token 却不计 content）；
+- 当时推论是“推理必须发 `user-agent: node`”；**2026-11-13 复测三种 UA 已无差异**，
+  网关继续发 `node` 只是保持与桌面端一致，不再是“必须”。
 
-**网关链路实测（2026-11-09，旧判据；结论仍成立）**：本地起网关（14 个账号、
+**网关链路实测（2026-11-09，旧判据）**：本地起网关（14 个账号、
 每号独立机器指纹），用 `glm-5.3-flash` 非流式打 12 次：`200 × 12`，
 `provider` 在 `Wafer` / `InferenceNet` / `Reka` / `BaseTen` / `CoreWeave` /
-`Makora` / `Modal` / `Morph` 之间轮换（按今天的判据即 12/12 真分支），
-单次 1.5–4.7s；日志里 14 个账号各命中一次（轮询公平）。
+`Makora` / `Modal` / `Morph` 之间轮换，单次 1.5–4.7s；日志里 14 个账号各命中一次
+（轮询公平）。现在只剩“轮询公平”这半条结论仍然可用。
 
 ## 4. 错误语义【实测 2026-11-07 ~ 11-08】
 
@@ -221,9 +318,10 @@
 | 403 + `social_login_required` | — | 账号只能用 Google/Apple 登录（0.3.19 阶段性策略，**11-09 已解除**，见 §4.1） | **策略终态**：标记 blocked、换号不再打它 |
 | 403 + `check_in_refused` | `DeepAI Code has restarted its check-in too many times today. Try again tomorrow.` | **签到当日次数用尽** | 不改账号状态（推理仍可用，但落在替身分支）；今天不要再重启签到 |
 | 403 + `network_bound` | `Today's free Theos for your network have all been claimed. More become available at <RFC3339>` | **网络级**免费额度已领完 | 按 message 里的时间等 `refresh_at`；换号通常无效（同出口 IP） |
+| 403 + `theos_exhausted` | `You've used today's Theos. They refresh at <RFC3339>.`（body 带 `refresh_at`） | **账号级**额度用完（付费模型扣完 / 余额为负，2026-11-13 实测 `balance=-7.58` 时打 `minimax-m3`） | 当天该号无法再跑计量模型；换号或等 `refresh_at`，免费模型不受影响 |
 | 400 + `machine_required` | — | 计量模型缺机器指纹 | 不重试，提示配置 `DEEPAI_MACHINE_ID` |
 | 426 + `lane_version_unsupported` | — | 车道版本不对 | 不重试，提示升级网关 |
-| 400 + `invalid_request_error` | message = `This request is not one DeepAI Code sends.` | 请求体不是桌面端形状 | 同号按桌面端字段白名单 + 补 system 重试一次 |
+| 400 + `invalid_request_error` | message = `This request is not one DeepAI Code sends.`（旧）或 `This request cannot be accepted.`（2026-11-13 新） | 请求体不是桌面端形状 | 同号按桌面端字段白名单 + 补 system 重试一次（两种文案同一处理，见 §5.2） |
 | 400 / 404 / 422 | — | 请求本身的问题 | 不重试 |
 
 `Retry-After` 会被夹到 30s 上限（`deepai.RetryAfter`）。
@@ -302,7 +400,7 @@ DeepAI 有两条社交登录实现，**都必须在浏览器里完成**——服
   （客户端会主动过滤它）。
 - SSE 里同一事件可能有多行 `data:`，按规范用 `\n` 拼接后再解析。
 
-## 5.1 签到（check-in）【源码级 0.3.35 + 实测】
+## 5.1 签到（check-in）【源码级 0.3.36 + 实测】
 
 - `/theos` 是签到通道：成功（200）与拒绝（403）都会带
   `check_in:{nonce,seconds=600}`。
@@ -310,7 +408,7 @@ DeepAI 有两条社交登录实现，**都必须在浏览器里完成**——服
   与心跳 `X-DeepAI-Code-Beacon: v=<版本>;up=<秒>;pi=<0\|1>`（`focus` 可选，
   只在窗口焦点状态已知时才出现）。
 - 0.3.30 起 `pi` 也变成**可选**：`piActive === null`（本进程还没转发过
-  推理）时整段省略，所以 `v=0.3.35;up=12` 这种两段式心跳是合法的。
+  推理）时整段省略，所以 `v=0.3.36;up=12` 这种两段式心跳是合法的。
   网关恒发 `pi=<0|1>` 与桌面端“已转发过”的状态等价，上游不挑格式。
 - 重新签到的时机是 `seconds/2`（默认 300s）；推理前会先确保签到（失败不阻塞）。
 - 推理请求本身**不带** check-in / beacon，只带车道、实例、机器指纹与 `Api-Key`。
@@ -365,14 +463,34 @@ GET /deepai_code/theos lane=4 → 403
   （启动探测一次 + 每 `seconds/2` 续签）是安全的。被限流的账号仍能推理，
   只是继续落在替身分支。
 
-## 5.2 请求体形状【实测 2026-11-07】
+## 5.2 请求体形状【实测 2026-11-07，2026-11-13 复核文案】
 
 上游会以 `400 invalid_request_error` 拒绝「不是 DeepAI Code 会发的」请求体：
 
 - 桌面端每个 chat 请求都带 **system 消息**与 **tools**；
 - 裸请求（无 system）只有在**本进程已签到**（`/theos` 回传过
-  `X-DeepAI-Code-Check-In`）时才被接受；否则回
-  `400 This request is not one DeepAI Code sends.`。补一条 system 也能过校验，
+  `X-DeepAI-Code-Check-In`）时才被接受；否则回 400。**2026-11-13 实测同一个门槛
+  现在有两种文案**：
+
+  ```json
+  {"error":{"message":"This request is not one DeepAI Code sends.","code":"invalid_request_error"}}
+  {"error":{"message":"This request cannot be accepted.","type":"invalid_request_error","code":"invalid_request_error"}}
+  ```
+
+  新文案的触发条件更窄（同一账号、`lane=5`、同一 body 下的矩阵）：
+
+  | UA | 机器指纹 | body 缺 system | body 带 system |
+  | --- | --- | --- | --- |
+  | `node` | 本机真实指纹（HAR / 桌面端用过的那个） | **400 cannot be accepted** | 200 |
+  | `node` | 随机新指纹 | 200 | 200 |
+  | `curl/8.x` | 本机真实指纹 | 200 | 200 |
+
+  → 旧文案是“不签到就拒裸请求”，新文案看起来是“已绑定的客户端机器 + node UA 时，
+  强制桌面端形状”。**网关默认部署和桌面端同机，机器指纹就是本机真实指纹，
+  所以这条新文案是常态路径**：裸请求（无 system）第一次 400，补 system 后 200
+  （2026-11-13 本地临时实例实测）。不管是哪条，网关都应该把它当“请求体形状拒绝”
+  处理：`deepai.HTTPError.BodyRejected` **同时匹配两种文案**（旧实现只认第一种，
+  会把 400 直接透传给调用方）。补一条 system 也能过校验，
   但那是改采样条件——指纹类检测要的是“发得起 + 条件不变”，所以要先签到；
 - 每个 reasoning 模型都会带 `reasoning_effort`：`deepAIPiModels` 给它设了
   `thinkingLevelMap:{off:"none"}`，所以「关思考」时发的是 `"none"`，选了档位就发档位值；

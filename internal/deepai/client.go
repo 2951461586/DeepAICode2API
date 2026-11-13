@@ -114,12 +114,18 @@ func (e *HTTPError) LaneUnsupported() bool {
 // BodyRejected 报告上游是否因“请求体不是 DeepAI Code 的形状”而拒绝。
 //
 // 上游对新车道加了请求体校验，典型响应是 400 + code=invalid_request_error，
-// message 固定为 "This request is not one DeepAI Code sends."。
+// message 有两种实测文案：
+//   - `This request is not one DeepAI Code sends.`（旧，2026-11-07 起）
+//   - `This request cannot be accepted.`（2026-11-13 起，0.3.36 时代）
+//
+// 两版都要能识别：漏了新文案，ChatBodyFallback（补 system + 收敛字段）就不会重试，
+// 调用方直接吃 400。
 func (e *HTTPError) BodyRejected() bool {
 	if e.Status != http.StatusBadRequest {
 		return false
 	}
-	return strings.Contains(strings.ToLower(string(e.Body)), CodeNotDeepAICodeMsg)
+	body := strings.ToLower(string(e.Body))
+	return strings.Contains(body, CodeNotDeepAICodeMsg) || strings.Contains(body, CodeNotAcceptedMsg)
 }
 
 // CheckInRefused 报告签到是否被上游按「当天重启次数」限流。
@@ -394,9 +400,10 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 
 // LaneCandidates 是车道探测的候选序列。
 //
-// 上游每抬一次车道就把旧值一律回 426（0.3.17 是 2，0.3.19 起是 4）。
-// 按「新版优先、旧版兜底」试：命中即用，这样上游升级车道时网关不需要改代码。
-var LaneCandidates = []string{"4", "5", "6", "7", "8", "9", "10", "11", "12", "3", "2"}
+// 上游每抬一次车道就把其它值回 426（0.3.17 是 2，0.3.19 起是 4，0.3.36 起是 5）。
+// 按「当前客户端优先、更新的猜一个、旧版兜底」试：命中即用，
+// 这样上游升级车道时网关不需要改代码。
+var LaneCandidates = []string{"5", "6", "7", "8", "9", "10", "11", "12", "4", "3", "2"}
 
 // SetLane 设置当前车道（空串 = 用编译期默认值）。
 func (c *Client) SetLane(lane string) {
@@ -418,6 +425,10 @@ func (c *Client) Lane() string { return c.laneVersion() }
 //
 // /models 不需要 API Key 与签到，所以启动时探测几乎零成本；一旦命中就把结果
 // 写回 Client，后续请求自动带上新车道。全部候选都失败时返回最后一个错误。
+//
+// 局限：/models 对车道比推理端点宽容（2026-11-13 实测 1–5 都 200，而推理是
+// 4、5）。若某天出现“/models 接受、推理 426”的车道，这条探测会一直选中它，
+// 需要在代码里把 LaneVersion 抬到新值（探测序列会从新值开始试）。
 func (c *Client) DetectLane(ctx context.Context) (string, error) {
 	var lastErr error
 	for _, lane := range LaneCandidates {
@@ -481,6 +492,15 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 }
 
 // FetchModels 拉取上游模型目录（无需 API Key，但需要机器指纹）。
+//
+// 刻意保持**免凭据**：
+//   - 上游目录不随账号变化（2026-11-13 实测带 / 不带 `Api-Key` 返回同一份 21 个模型）；
+//   - 它同时是「上游是否可达」与车道探测的探活路径（`WarmUpstream` /
+//     `laneWorks` 都走它），预热只需要车道头与机器指纹，不应该为了拉目录
+//     把账号密钥发到一个本来匿名就能用的端点。
+//
+// 桌面端 0.3.36 改成带 `account.apiKey` 请求，那是它自己的账号会话；网关
+// 不做同样的事（见 docs/recon.md §2）。
 func (c *Client) FetchModels(ctx context.Context) ([]Model, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ModelURL(PathModels), nil)
 	if err != nil {

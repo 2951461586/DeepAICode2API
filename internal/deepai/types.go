@@ -14,6 +14,15 @@
 // 鉴权使用桌面端登录后写入的 API Key（`Api-Key` 头），并附带
 // `X-DeepAI-Code-Theos` 车道版本、`X-DeepAI-Code-Instance` 进程实例、
 // `X-DeepAI-Code-Machine` 机器指纹；`/theos` 还要带签到 nonce 与心跳。
+//
+// 不实现的两块上游能力（刻意为之，见 docs/recon.md）：
+//   - 托管主机控制面 `/deepai_code/connect/*`（设备注册 / 远程主机 / TLS 中继）：
+//     它靠 Ed25519 设备身份 + X25519 交换密钥做客户端认证，服务的是桌面端
+//     “把这台机器变成受管主机”的功能，与推理复刻无关；
+//   - 赞助位渲染（`/gravity-*`）：属于 UI 变现链路，网关没有渲染面。
+//
+// `/models` 与车道探测**刻意不带任何凭据**（只看车道头 + 机器指纹）：
+// 它是代理预热与车道探测的探活路径，上游目录也不随账号变化。
 package deepai
 
 import (
@@ -25,19 +34,25 @@ import (
 const (
 	// LaneVersion 是本网关对齐的 Theos 计费车道版本。
 	//
-	// 0.3.17 → 0.3.19 上游把车道从 2 提到 4：其它值一律 426
-	// lane_version_unsupported（"This version of DeepAI Code is no longer supported"）。
-	LaneVersion = "4"
+	// 0.3.17 → 0.3.19 上游把车道从 2 提到 4；0.3.36（2026-11-13）又提到 5：
+	// 桌面端发 `X-DeepAI-Code-Theos: 5`，`/theos` 也回 `lane_version: 5`。
+	// 车道不符时回 426 lane_version_unsupported（"This version of DeepAI Code
+	// is no longer supported"）。2026-11-13 实测：元数据端点仍接受 1–5（≥6 回
+	// 426），推理端点 4 / 5 都 200 —— 跟客户端发 5 即可，4 留作探测兜底。
+	LaneVersion = "5"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
 	//
-	// 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35（2026-11-11 发布）逐项白盒核对：车道仍是 4、
-	// 实例仍是每进程一次、机器指纹算法未变、签到/beacon 形态未变、端点集合未变；
-	// 0.3.32 与 0.3.35 的差异只有三处，都不在 Windows 协议面上：Linux 用
-	// `/etc/machine-id` 取指纹（修「免费每日 Theos 不发放」）、Linux 走 undici 代理
-	// 传输、pi 侧图片/文本数组处理（pi 运行时两版同为 1.3.0）。
+	// 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 逐项白盒核对。0.3.36 是
+	// 车道升级那一版（4 → 5），其余协议面仍然未变：实例仍是每进程一次、
+	// 机器指纹算法（sha256(小写原始 UUID)）未变、签到 / beacon 形态未变、
+	// 5 个 `X-DeepAI-Code-*` 头未变、聊天请求体字段未变（pi 运行时仍 1.3.0）。
+	// 0.3.36 的其它差异：`/models` 改成带 `Api-Key` 请求（目录不随账号变化，
+	// 实测带不带 Key 结果一致）、聊天前强制走一次 ensureCheckedIn、
+	// 新增托管主机控制面 `/deepai_code/connect/*`（设备注册 / 远程主机，
+	// 与推理无关，网关不实现）。
 	// 只有心跳里的版本号需要跟上，否则 /theos 上自报的是旧客户端。
-	AppVersion = "0.3.35"
+	AppVersion = "0.3.36"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。
@@ -73,8 +88,15 @@ const (
 	CodeInvalidReq      = "invalid_request_error"
 	// CodeCheckInRefused 是签到被限流：账号本身没坏，推理仍可用，
 	// 但当天不能再签到 —— 会一直落在替身模型分支直到明天。
-	CodeCheckInRefused   = "check_in_refused"
+	CodeCheckInRefused = "check_in_refused"
+	// CodeNotDeepAICodeMsg 是上游拒绝“请求体不是桌面端形状”时的旧文案。
 	CodeNotDeepAICodeMsg = "not one deepai code sends"
+	// CodeNotAcceptedMsg 是同一个门槛的新文案（2026-11-13 实测）：
+	// 400 {"error":{"message":"This request cannot be accepted.",
+	// "type":"invalid_request_error","code":"invalid_request_error"}}。
+	// 触发条件：UA=node + 已知客户端机器指纹 + 缺 system 消息（补上 system 即 200，
+	// 不需要 tools）；换未知机器指纹或换 UA 都不触发。两版文案都要当 BodyRejected。
+	CodeNotAcceptedMsg = "this request cannot be accepted"
 
 	// StatusBlocked 是账号级“上游策略拦截”状态（目前来源：social_login_required）。
 	//
