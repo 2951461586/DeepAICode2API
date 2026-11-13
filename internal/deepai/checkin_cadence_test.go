@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -90,9 +91,9 @@ func TestEnsureCheckInFollowsHalfLife(t *testing.T) {
 // TestEnsureCheckInBudget 固化「签到预算可调」：上游超时后立即放行推理，
 // 结果标记 TimedOut，且不影响后续请求继续补签。
 func TestEnsureCheckInBudget(t *testing.T) {
-	hits := 0
+	var hits atomic.Int64
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		hits.Add(1)
 		time.Sleep(300 * time.Millisecond)
 		_, _ = io.WriteString(w, `{"enabled":true}`)
 	})
@@ -111,8 +112,8 @@ func TestEnsureCheckInBudget(t *testing.T) {
 	if elapsed > 250*time.Millisecond {
 		t.Fatalf("预算 40ms 应尽快返回，实际等了 %v", elapsed)
 	}
-	if hits != 1 {
-		t.Fatalf("上游调用次数 = %d，期望 1", hits)
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("上游调用次数 = %d，期望 1", got)
 	}
 }
 
