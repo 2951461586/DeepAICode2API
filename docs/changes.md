@@ -3149,3 +3149,9 @@ chat    lane 4/5   -> 200（同一请求体，UA=node/curl/Chrome 三种都一�
 `go test ./...` 全绿（新增 3 个 lane 用例 + 2 个 400 文案回归 + 1 个免凭据契约用例，共 562 个用例 = 430 顶层 + 132 子用例）；
 本地临时实例实测：启动即自动探测到 `车道版本: 5`、目录 `21 个模型`，
 最小 body 与流式工具调用都经「补 system 重试」后 200。
+
+**发版（v0.1.3）**：`git tag v0.1.3` + `sh scripts/release.sh v0.1.3 --publish`。
+上传时发现 `release.sh` 传的是 `dist/*`，而 `dist/` 里还残留 v0.1.2 的五个二进制，
+于是 v0.1.3 的 Release 一度带着上一版资产。已删掉旧资产、按 v0.1.3 重新生成
+`checksums.txt`，并改脚本：构建前先清掉 `dist/deepaicode2api_*`（只清本项目产物，
+不动 `dist/` 里其它文件），避免下次重演。

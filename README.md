@@ -663,7 +663,8 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   ```
 - 发版流程：`git tag v0.1.3 && git push origin v0.1.3`，再用
   `sh scripts/release.sh v0.1.3 --publish` 交叉编译各平台二进制并创建 GitHub Release
-  （构建前先 `rm -rf dist`：脚本按版本号命名产物，旧版本文件会被一起上传）。
+  （脚本构建前会清掉 `dist/` 里上一版的 `deepaicode2api_*` 产物：`gh release upload`
+  传的是 `dist/*`，残留的旧二进制会被一起传上去）。
 
 ## 十、限制与说明
 

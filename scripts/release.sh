@@ -25,6 +25,10 @@ esac
 echo "版本：$VER"
 mkdir -p dist
 
+# gh release upload 是 `dist/*`：不清掉上一版产物，旧版本二进制会被一起传上去
+# （v0.1.3 就踩过一次）。只清理本项目自己的产物，不动 dist/ 里其它文件。
+rm -f dist/deepaicode2api_* dist/checksums.txt
+
 # os/arch 组合：桌面端与服务器最常用的五种。
 for target in \
 	linux/amd64 \
