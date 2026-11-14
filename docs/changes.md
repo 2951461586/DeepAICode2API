@@ -15,7 +15,9 @@
 | v0.1.2 之后 | 55–58 | 密钥删除/启停的存在性语义与 404 自愈；缓存命中率改今日口径、499 客户端断开、docker 注入 VERSION；README 居中 + 项目 Logo + 控制台 favicon |
 | v0.1.3 | 59 | 客户端 0.3.36 同步：车道 4 → 5（唯一协议面变更）+ 协议面全量复扫 |
 | v0.1.4 | 60 | 线上数据驱动的 P0/P1：首字节预算、签到节奏、扩展指标、形状预置、错误策略表 + 前端 P1-P3 |
-| v0.1.5（未发） | 61 | 巡检四连：探测失败退避、版本号 `vv`、代理/指纹弹窗结构化、缓存命中率下钻脚本 |
+| v0.1.5 | 61 | 巡检四连：探测失败退避、版本号 `vv`、代理/指纹弹窗结构化、缓存命中率下钻脚本 |
+| v0.1.5 | 62 | 上游服务端变更同步：`/models` 强制 Api-Key（目录/车道/预热三处改借账号凭据）+ 模型目录 21 → 27 |
+| v0.1.5 | 63 | 文档整理与仓库清理（验收基线重算、索引状态列、dist 与陈旧状态文件）+ 发版 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -41,6 +43,8 @@
 - 59 客户端 0.3.36 同步：车道 4 → 5、`/models` 带 Key、UA 分流复测失效（v0.1.3）
 - 60 线上运行数据落地：非流式首字节预算、签到节奏修复、扩展指标、形状预置、错误策略表；前端对话框/实时日志/运行健康卡/i18n 拆分（v0.1.4）
 - 61 巡检四连：探测失败退避（323 次/小时 → 2m/10m/1h）、版本号 `vv`、代理弹窗结构化、缓存命中率下钻脚本（v0.1.5）
+- 62 上游服务端变更：`/models` 强制 `Api-Key`、模型目录 21 → 27（客户端仍 0.3.36，无需同步）（v0.1.5）
+- 63 文档整理（验收基线重算、索引加状态列）+ 仓库清理（dist 旧产物、根目录陈旧状态文件）+ v0.1.5 发版
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -3375,3 +3379,105 @@ go vet ./...                  无输出
 go test ./... -count=1        11 个包全绿
 node scripts/console-smoke.mjs 23 条全过
 ```
+
+---
+
+## 62. 2026-11-14 复核：客户端未变，但上游改了两处服务端行为（v0.1.5）
+
+**触发**：例行扫描。官方更新源 `latest.yml` 仍是 **0.3.36**（`releaseDate`
+2026-11-13T05:42Z，sha512 `cnqeCSWvK3…` 与 11-13 完全一致），本机注册表
+`DisplayVersion=0.3.36` —— **客户端没有更新，无需拆包比对**。
+但按「客户端没变也要复测协议面」的惯例打了一遍上游，发现两处变化都在**服务端**：
+
+| 项 | 11-13 的结论 | 11-14 实测 |
+| --- | --- | --- |
+| `GET /deepai_code/models` | 带不带 `Api-Key` 返回同一份目录（21 个） | **不带 Key 一律 401 `auth_required`**；带任意账号 Key → 200，**27 个**模型 |
+| 车道 | 5（4/6 回 426） | 仍是 5（`/theos` 200 且 `lane_version: 5`；4/6 仍 426） |
+| 目录内容 | 21 个（10 免费 / 11 付费） | 27 个（11 免费 / 16 付费），新增 6 个、无下线 |
+
+新增模型：`muse-ember`（免费）、`kimi-k3.1-pro`（3）、`gpt-6.1-terra`（5）、
+`gemini-4-hydrogen`（8）、`gemini-4-carbon`（10）、`claude-sonnet-5-5`（10）；
+`default` 仍是 `glm-5.3-flash`。
+
+### 62.1 影响面：三条「无凭据探活」路径全部失效
+
+| 路径 | 原来的依据 | 失败表现 |
+| --- | --- | --- |
+| `RefreshModels`（控制台「刷新模型目录」） | `/models` 免凭据 | 401，目录永远停在旧快照（线上 `/health` 的 `models=21` 就是这个快照） |
+| `DetectLane` / `RefreshLane` | `/models` 免凭据，探活零成本 | 每个候选车道都 401，返回「所有候选车道都被上游拒绝」，车道无法自动跟进 |
+| `WarmUpstream`（启动预热） | `/models` 免凭据、不烧 Theos | 全部失败，连接预热计数归零（首请求又要付整条握手成本） |
+
+### 62.2 决策：借一个账号的凭据，而不是把 Key 撒进探活路径
+
+- `deepai.Client.FetchModels(ctx, acct)` / `DetectLane(ctx, acct)` 新增账号参数：
+  **acct 非 nil 时带 `Api-Key`，nil 时仍发匿名**（只用于区分「链路通」与「能拉目录」）；
+- `Server.probeAccount()`：优先「就绪 + 带机器指纹」的号，其次任一启用且有 Key 的号。
+  目录与车道探测都不消耗 Theos，借谁的 Key 都一样；带机器指纹是让请求形状更接近桌面端；
+- `RefreshModels`：号池为空时提前返回「上游 /models 需要 Api-Key：请先导入或添加一个
+  账号再刷新目录」，不把上游 401 包装成「Key 失效」；
+- `RefreshLane`：没有账号时直接跳过探测（编译期 `LaneVersion=5` + 426 兜底仍在）；
+- `WarmUpstream`：每个出口取该出口上的**真实账号**预热；**401 也算预热成功**
+  （DNS/TCP/TLS/代理 CONNECT 都已打通），只有 5xx / 超时才不计。
+
+### 62.3 验证
+
+```text
+curl -s https://api.deepai.org/deepai_code/models                     → 401 auth_required
+curl -s https://api.deepai.org/deepai_code/models -H "Api-Key: …"      → 200，27 个模型
+curl -s https://api.deepai.org/deepai_code/theos  -H "X-…-Theos: 5" -H "Api-Key: …"
+                                                                       → 200，lane_version: 5
+curl -s … -H "X-…-Theos: 4" / 6                                       → 426 lane_version_unsupported
+```
+
+新增测试 4 条：`TestModelsAndLaneProbeCarryAccountKeyOnly`（凭据契约反转：
+带账号必须发 `Api-Key`、不带账号不发、签到/beacon 头始终不发）、
+`TestWarmUpstreamCountsUnauthorizedAsReachable`、`TestWarmUpstreamSendsAccountKey`、
+`TestRefreshModelsNeedsAccount`、`TestRefreshModelsSendsAccountKey`、
+`TestProbeAccountPrefersReadyWithMachine`；既有调用点（`cmd/probe`、测试）同步改签名。
+
+文档：`docs/recon.md` 头部 banner + §2 端点表 + 新增 §2.2（目录/车道探测的鉴权与
+401 语义）；`README` 模型表按 11-14 快照重生成（27 行）+ 修正「免凭据」那条结论。
+
+### 62.4 遗留
+
+线上容器仍是 11-13 的镜像（目录快照 21 个）。重新部署后在控制台点一次
+「刷新模型目录」，`/health` 的 `models` 才会变成 27；在此之前 `muse-ember` 等
+6 个新模型在网关侧不可见（请求会被宽松解析回落，不会 404）。
+
+---
+
+## 63. 文档整理、仓库清理与 v0.1.5 发版
+
+### 63.1 文档
+
+| 动作 | 落点 |
+| --- | --- |
+| 验收基线按当前代码重算 | README 徽章与验收表：测试 **594 → 602**（458 顶层 + 144 子用例）、测试行数 14.4k、前端冒烟 **21 → 23** 条 |
+| 修掉悬空引用 | README 模型表里「详见 §反向结论」并不存在该章节，改为指向 §10.1「已知坑」 |
+| 版本示例跟上当前版本 | 发版流程示例 `v0.1.3` → `v0.1.5` |
+| 已知坑补一条 | `/models` 401 `auth_required`（2026-11-14 起要求 `Api-Key`）：不要当成「Key 失效」去清号 |
+| 文档索引加「状态」列 | 区分 `维护中` / `历史`：`optimization-plan*.md` 标为历史，`model-fingerprint-2026-11-10.md` 标为历史快照（目录已从 22 → 27，判据仍适用） |
+| 快照文档加 banner | `docs/model-fingerprint-2026-11-10.md` 顶部注明目录已变，避免被当成当前目录引用 |
+
+### 63.2 仓库清理
+
+| 清理项 | 原因 |
+| --- | --- |
+| `dist/` 里 v0.1.4 的 5 个二进制 + `checksums.txt` | 构建产物（gitignore）；`gh release upload` 传的是 `dist/*`，残留会被一起上传（v0.1.3 踩过） |
+| 仓库根目录 `deepaicode2api-data.json` / `-stats.json` | 运行期状态（含上游 Key，AES-GCM 加密）且是**陈旧快照**：README 与 §40.1 都说过「不能当模型目录依据」，直接删掉比留着提醒更可靠 |
+| 巡检期临时文件（`.tmpk`、`.m2.json`、`.theos*.json`、`/tmp/m*.json`） | 含本机 API Key 或上游响应正文，用完即删并已复扫确认无残留 |
+
+`.env` 仍保留在本地（gitignore，绝不入库）。
+
+### 63.3 发版
+
+```text
+git tag v0.1.5 && git push origin v0.1.5
+sh scripts/release.sh v0.1.5 --publish     # 5 个平台二进制 + checksums.txt → GitHub Release
+```
+
+版本内容：§61（探测退避 / 版本号 `vv` / 弹窗结构化 / 命中率下钻）+ §62
+（`/models` 强制 `Api-Key`、模型目录 21 → 27）+ 本轮文档与清理。
+
+发版后建议：控制台点一次「刷新模型目录」，`/health` 的 `models` 应从 21 变 27；
+再跑一次 `node scripts/cache-hit.mjs --hours 24` 复核命中率口径。

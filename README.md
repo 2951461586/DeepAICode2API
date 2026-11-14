@@ -10,7 +10,7 @@
 复用桌面端登录后写入的 API Key，无需另申请密钥；纯 Go 标准库实现，
 单文件约 10 MB，零外部依赖。
 
-[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-594%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
+[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-602%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#三接口清单) [![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://img.shields.io/badge/Ask%20DeepWiki-blue.svg?labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAPoAAAD6AG1e1JrAAACIUlEQVRYw+2XP2gUQRTGv7d3JhYWQawkIBaCVWzETos0gmAnVoKNTSoLK0E7EQQrC20sBVFBtLPQRgTBtBaKjYgIQUSxiJq7fT+LvCGPJZdNLt4dQj5Y3u7sznzfzLw/s9IO/icANiniCujEfWdsQgBLxAbsbraPZcmBfcAt4DNwKQsZNfEUsAB8YRV12LfA6ZHuedg7AO7ed/c+UBcbQhbiu+6wXIM6EnZWkszMJe2Ke0n6I2la0v51hFeSMLN6OwIK6jJwEBdUYb2MAxRSz6sY4geiahFgLe1Hwq6YWe3us8AN4FQQU4QM64SPY69Xyr43fADgNjAPXHb3peSsD4FDQ0VLEjAHvIhBPS6AHvA1bBO9JPAXcHFbIRtJ5yzwIQZ9CZwAusDJENIkLqsG8DpNyIZJwSUk9wLHgakcesC1JCCjiHm1kYDNOEjptCxpSVK/8f73OFLxPLAYM3oCzEX7MXf/lJbc/8kWpA4HgQdpYI9IWAbeh83whi84cHXL+58EPBoQhnmm94EzwE3gZ2p/Dhzdbhg+TaRr01x7ftb4/jBwFzjXrCvDpmLW9crVLNeR9CaapoGemb2TdCERW1tNaBNQ8jktwmozqwtpqRNtdWAjARYk39IS12ZWRX7vmJmA71nQZgi36gN7gCvAj5xc3P0jcH7kx7Ik5IC73wsh14GZsZySow5002l4Jr0b6+m4eSyvpAn8lEzsx2QHo8RfUrlN+uPq4ksAAAAASUVORK5CYII=)](https://deepwiki.com/2951461586/DeepAICode2API)
 
@@ -29,7 +29,7 @@
 | 账号接入 | 浏览器登录（Google / Apple / 邮箱密码）、桌面端凭据导入、手工 API Key；入池自动分配机器指纹与代理 |
 | 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 设置 |
 | 安全 | 密钥鉴权、管理口令、同源写保护、状态文件 AES-256-GCM 可选加密 |
-| 可回归 | 594 个用例（450 顶层 + 144 子用例）/ 13.3k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 10 个含测试的包（另 3 个无测试）+ 前端语法与冒烟（21 条） |
+| 可回归 | 602 个用例（458 顶层 + 144 子用例）/ 14.4k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 10 个含测试的包（另 3 个无测试）+ 前端语法与冒烟（23 条） |
 
 ```text
 ┌──────────────┐  /v1/chat/completions   ┌────────────────┐   Api-Key + Theos 头   ┌─────────────────────────────┐
@@ -113,27 +113,35 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 ## 二、支持的模型
 
 模型目录**完全由上游下发**：网关只做缓存与别名，上游新增或下线模型都无需改代码。
-下表是 2026-11-13 从线上 `/v1/models` 导出的**实时目录**（21 个：10 免费 / 11 付费），
+下表是 2026-11-14 从线上 `/v1/models` 导出的**实时目录**（27 个：11 免费 / 16 付费），
 `Theos/次` 取自上游 `theosPerRequest`（字符串），`0` 即免费。控制台「模型目录」页读的是同一份数据。
-（上一版快照里的 `crouton-alpha` 已被上游下线；`gpt-oss-120b` 客户端会主动过滤，网关也不展示。）
+（上一版快照里的 `crouton-alpha` 已被上游下线；`gpt-oss-120b` 客户端会主动过滤，网关也不展示。
+ 相比 2026-11-13 的快照，本轮新增 6 个、无下线：`muse-ember`（免费）、`kimi-k3.1-pro`、
+ `gpt-6.1-terra`、`gemini-4-hydrogen`、`gemini-4-carbon`、`claude-sonnet-5-5`。）
 
 | ID | 名称 | 上下文 | 最大输出 | Theos/次 | 说明 |
 | --- | --- | ---: | ---: | ---: | --- |
-| `glm-5.3-flash` | GLM 5.3 Flash | 1,048,576 | 131,072 | **0** | 默认模型，免费 |
 | `deepai-cyber` | DeepAI Cyber | 1,048,576 | 131,072 | **0** | 免费，纯文本 |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 1,048,576 | 131,072 | **0** | 免费（上游下拉是 `DeepSeek V4.1 Flash 1017`，桌面端会把旧名改写成它） |
+| `glm-5.3-flash` | GLM 5.3 Flash | 1,048,576 | 131,072 | **0** | 免费，默认模型 |
 | `glyph-cluster` | Glyph Cluster | 256,000 | 131,072 | **0** | 免费，纯文本 |
 | `gpt-6-luna` | GPT-6 Luna | 1,048,576 | 128,000 | **0** | 免费 |
 | `mimo-2.6-flash` | MiMo 2.6 Flash | 1,048,576 | 131,072 | **0** | 免费 |
 | `mimo-2.6-pro` | MiMo 2.6 Pro | 1,048,576 | 131,072 | **0** | 免费 |
 | `minimax-m3.1-flash` | MiniMax M3.1 Flash | 1,048,576 | 131,072 | **0** | 免费 |
+| `muse-ember` | Muse Ember | 1,048,576 | 131,072 | **0** | 免费（2026-11-14 新增） |
 | `qwen-3.8-flash` | Qwen 3.8 Flash | 991,000 | 128,000 | **0** | 免费 |
 | `solar-mini-4` | Solar Mini 4 | 524,288 | 131,072 | **0** | 免费，纯文本 |
 | `minimax-m3` | MiniMax M3 | 512,000 | 131,000 | 2 | 付费，纯文本 |
 | `glm-5.3` | GLM 5.3 | 1,048,576 | 131,072 | 3 | 付费，纯文本 |
 | `kimi-k3` | Kimi K3 | 1,048,576 | 131,072 | 3 | 付费 |
+| `kimi-k3.1-pro` | Kimi K3.1 Pro | 1,000,000 | 131,072 | 3 | 付费（2026-11-14 新增） |
+| `gpt-6.1-terra` | GPT-6.1 Terra | 1,048,576 | 128,000 | 5 | 付费（2026-11-14 新增） |
 | `muse-spark-1.3` | Muse Spark 1.3 | 1,048,576 | 131,072 | 6 | 付费 |
+| `gemini-4-hydrogen` | Gemini 4 Hydrogen | 1,000,000 | 131,072 | 8 | 付费（2026-11-14 新增） |
+| `claude-sonnet-5-5` | Claude Sonnet 5.5 | 1,000,000 | 64,000 | 10 | 付费（2026-11-14 新增） |
 | `gemini-4-argon` | Gemini 4 Argon | 1,048,576 | 131,072 | 10 | 付费 |
+| `gemini-4-carbon` | Gemini 4 Carbon | 1,000,000 | 131,072 | 10 | 付费（2026-11-14 新增） |
 | `gpt-6.1-sol` | GPT-6.1 Sol | 1,048,576 | 128,000 | 10 | 付费 |
 | `claude-opus-5-5` | Claude Opus 5.5 | 1,000,000 | 64,000 | 15 | 付费 |
 | `muse-wonder` | Muse Wonder | 1,048,576 | 131,072 | 15 | 付费 |
@@ -145,13 +153,17 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 
 - 只有 `deepai-cyber` / `glm-5.3` / `glyph-cluster` / `solar-mini-4` / `minimax-m3` 是纯文本
   （`input: [text]`），其余都接受图片输入（`input: [text, image]`）；全部支持推理（`reasoning`）；
+- **2026-11-14 起上游 `/deepai_code/models` 要求 `Api-Key`**：不带 Key 一律 401
+  `auth_required`（此前「带不带都返回同一份目录」的结论已失效）。网关的目录刷新与
+  车道探测因此都借用号池里一个账号的凭据；运维上要知道的坑见 §10.1；
 - `gpt-6-astra` 的 `api` 是 `openai-responses`，必须走 `/v1/responses`，
   用 `/v1/chat/completions` 调用会被上游拒绝；
 - 付费模型按 `Theos/次` 计量，从账号的每日额度 / 余额里扣；额度耗尽后上游返回 403（见 §6.9）；
 - 上游若还下发 `theosPerSecond`（按秒计费），控制台会在「每秒计费」列显示，
   `/v1/models` 的 `deepai` 元信息里也能读到；
-- **以线上 `/v1/models` 为准**：仓库里若残留旧的 `deepaicode2api-data.json`，
-  它的 `models` 字段可能落后于上游，别拿它当目录依据。
+- **以线上 `/v1/models` 为准**：仓库里不放状态文件（`deepaicode2api-data*.json`
+  是运行期产物，含上游 Key，已 gitignore 且已清理）；本表与 `/v1/models` 不一致时，
+  先在控制台点「刷新模型目录」再按本表格式重新导出。
 
 内置别名（可在控制台覆盖，共 13 个，全部指向默认免费模型 `glm-5.3-flash`）：
 
@@ -661,8 +673,8 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   VERSION=$(git describe --tags) docker compose up -d --build
   # 等价：make docker（自动带上 git describe 的版本）
   ```
-- 发版流程：`git tag v0.1.3 && git push origin v0.1.3`，再用
-  `sh scripts/release.sh v0.1.3 --publish` 交叉编译各平台二进制并创建 GitHub Release
+- 发版流程：`git tag v0.1.5 && git push origin v0.1.5`，再用
+  `sh scripts/release.sh v0.1.5 --publish` 交叉编译各平台二进制并创建 GitHub Release
   （脚本构建前会清掉 `dist/` 里上一版的 `deepaicode2api_*` 产物：`gh release upload`
   传的是 `dist/*`，残留的旧二进制会被一起传上去）。
 
@@ -684,10 +696,12 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 - **不实现托管主机控制面** `/deepai_code/connect/*`（设备注册 / 远程主机 / TLS 中继）：
   它要 Ed25519 + X25519 双密钥设备身份与受管主机生命周期，服务的是桌面端
   「把机器变成受管主机」功能，与推理无关（逆向细节见 `docs/recon.md` §2.1）；
-- 模型目录与车道探测**刻意不带凭据**：网关的 `GET /deepai_code/models` 只发车道头 +
-  机器指纹（代理预热 / 车道探测都走它）。桌面端 0.3.36 会给 `/models` 带 `Api-Key`，
-  但目录不随账号变化（带/不带返回同一份），把密钥发到一个本来匿名就能用的
-  端点上没有收益（见 `docs/recon.md` §2）；
+- 模型目录与车道探测**必须带一个账号的 `Api-Key`**（2026-11-14 起，此前「免凭据」
+  的结论已失效）：`GET /deepai_code/models` 不带 Key 一律 401 `auth_required`。
+  目录 / 车道探测都不消耗 Theos，所以网关借号池里一个账号的凭据即可
+  （`Server.probeAccount`：优先就绪且带机器指纹的号），没有账号时刷新目录会直接
+  报「请先导入账号」而不是把 401 抛给控制台；代理预热把 401 也算成功
+  （链路已通），见 `docs/recon.md` §2；
 - `/v1/messages/count_tokens` 是字符数估算，不是上游真实 tokenizer；
 - 状态文件默认明文保存上游 API Key（与桌面端一致）；配置
   `DEEPAI2API_MASTER_KEY` 后整文件加密，请务必保证主密钥不随备份泄露；
@@ -727,6 +741,7 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 | `403 check_in_refused` | 当天「重启签到」次数用尽（`restarted its check-in too many times today`） | 不要重试、不要把账号标 error：推理仍可用，明天自动恢复；也别再跑签到体检 |
 | `400 This request cannot be accepted.` | 请求体不是桌面端形状的新文案（2026-11-13 起；`node` UA + 本机真实机器指纹 + 缺 system 消息。网关与桌面端同机部署时这就是**常态**） | 别只认旧文案 `not one DeepAI Code sends`：`BodyRejected` 要两种都匹配，否则 `ChatBodyFallback` 不重试（见 `docs/recon.md` §5.2） |
 | 上游模型目录默认模型为空 | 字段叫 `default` 不是 `default_model` | 不要加 `default_model` 兼容，会静默拿不到值 |
+| 刷新模型目录 / 车道探测返回 401 `auth_required` | **2026-11-14 起 `/models` 要求 `Api-Key`**（此前免凭据）；号池为空时必然 401 | 不要当成「Key 失效」去清号；网关已改为借一个账号的凭据（见 `docs/recon.md` §2.2） |
 | 池内账号 `granted=0` | 共用机器指纹，每日额度只发一次 | 不要去掉 `Account.MachineID` 回退逻辑 |
 | 长响应被掐断 | 上游心跳 `: keep-alive` 被丢弃 | `streamChat` 要原样透传注释行 |
 | 工具调用参数被截断 | 同一事件多行 `data:` 未按 `\n` 拼接 | 用 `deepai.ReadSSE`，不要逐行 `json.Unmarshal` |
@@ -742,16 +757,21 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 
 ## 十一、文档索引
 
-| 文件 | 内容 |
-| --- | --- |
-| `README.md` | 总览、接口、参数、验收基线与已知坑（本文） |
-| `docs/lessons.md` | **工程经验沉淀**：十批压测 → 可复用规则 + 改动前检查清单 |
-| `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） |
-| `docs/changes.md` | 2026-11 的安全 / 正确性改造记录：根因、决策与验收 |
-| `docs/performance.md` | 压测数据与优化方案：单号 E2E、阶段分解、P0/P1/P2 收益测算 |
-| `docs/optimization-plan.md` | 首轮扫描的完整优化方案（已全部实施，保留作为设计依据） |
-| `docs/optimization-plan-r2.md` | 第二轮扫描（写放大 / 控制台 / 复探）的方案与收益测算 |
-| `docs/pi-lens.md` | 本仓的 pi-lens 配置说明：关了什么、为什么、怎么验证与恢复 |
+**先看「状态」再看内容**：`维护中` = 与当前代码一致、可当依据；`历史` = 保留的
+过程记录，结论可能已被后来的复核推翻（以 `docs/changes.md` 与 `docs/recon.md` 的
+最新条为准）。
+
+| 文件 | 内容 | 状态 |
+| --- | --- | --- |
+| `README.md` | 总览、接口、参数、验收基线与已知坑（本文） | 维护中 |
+| `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） | 维护中（最近复核 2026-11-14） |
+| `docs/changes.md` | 2026-11 的改造记录：根因、决策与验收（§61/§62 是最新一轮） | 维护中 |
+| `docs/lessons.md` | **工程经验沉淀**：十批压测 → 可复用规则 + 改动前检查清单 | 维护中 |
+| `docs/performance.md` | 压测数据与优化方案：单号 E2E、阶段分解、P0/P1/P2 收益测算 | 维护中（数据快照 2026-11-10） |
+| `docs/pi-lens.md` | 本仓的 pi-lens 配置说明：关了什么、为什么、怎么验证与恢复 | 维护中 |
+| `docs/model-fingerprint-2026-11-10.md` | 号池 22 个模型的指纹实测（判据与复现命令） | 历史快照：目录已变 27 个，判据仍适用 |
+| `docs/optimization-plan.md` | 首轮扫描的完整优化方案 | 历史：已全部实施 |
+| `docs/optimization-plan-r2.md` | 第二轮扫描（写放大 / 控制台 / 复探）的方案与收益测算 | 历史：已实施 |
 | `docs/assets/` | 项目图标：`logo.png`（512，README 用）/ `logo.ico`（16–256 多尺寸，Windows 用）；控制台的 `/favicon.ico` 是同一份（见 `docs/changes.md` §58） |
 | `.env.example` | 全部可配置项与说明 |
 | `Makefile` | `make build / test / test-race / lint / cover` |
