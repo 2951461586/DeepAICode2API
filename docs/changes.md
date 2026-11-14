@@ -15,6 +15,7 @@
 | v0.1.2 之后 | 55–58 | 密钥删除/启停的存在性语义与 404 自愈；缓存命中率改今日口径、499 客户端断开、docker 注入 VERSION；README 居中 + 项目 Logo + 控制台 favicon |
 | v0.1.3 | 59 | 客户端 0.3.36 同步：车道 4 → 5（唯一协议面变更）+ 协议面全量复扫 |
 | v0.1.4 | 60 | 线上数据驱动的 P0/P1：首字节预算、签到节奏、扩展指标、形状预置、错误策略表 + 前端 P1-P3 |
+| v0.1.5（未发） | 61 | 巡检四连：探测失败退避、版本号 `vv`、代理/指纹弹窗结构化、缓存命中率下钻脚本 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -39,6 +40,7 @@
 - 58 控制台用上同一图标：/favicon.ico + apple-touch-icon（v0.1.2 之后）
 - 59 客户端 0.3.36 同步：车道 4 → 5、`/models` 带 Key、UA 分流复测失效（v0.1.3）
 - 60 线上运行数据落地：非流式首字节预算、签到节奏修复、扩展指标、形状预置、错误策略表；前端对话框/实时日志/运行健康卡/i18n 拆分（v0.1.4）
+- 61 巡检四连：探测失败退避（323 次/小时 → 2m/10m/1h）、版本号 `vv`、代理弹窗结构化、缓存命中率下钻脚本（v0.1.5）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -3282,3 +3284,94 @@ go test ./...            ok（594 用例 = 450 顶层 + 144 子用例）
    再把签到预算调到 2000ms；
 3. 打开「预置桌面端形状」前先看 `gateway_fallback_total` 的增长曲线，
    确认调用方确实缺 system（否则预置不会触发，只是多一层判断）。
+
+---
+
+## 61. 线上巡检四连：探测退避、版本号 `vv`、代理弹窗、缓存命中率下钻（v0.1.5）
+
+**触发**：2026-11-14 例行巡检。客户端 `latest.yml` 仍是 **0.3.36**（与
+`types.go` 的 `AppVersion` / `LaneVersion=5` 一致，无需同步）；线上容器
+`local-20261113-v014-efa5d24` 跑 10h 零重启、16/16 号 ready、0 blocked。
+但日志与前端暴露了四个问题。
+
+### 61.1 探测失败没有退避：同一个号 1 小时被重探 323 次
+
+**现象**：`docker logs --since 1h | grep -c 额度复探失败` = 323（≈每 11 秒一次），
+全部指向同一个号，错误是 `DeepAI models are temporarily unavailable`。
+
+**根因**：`probeAsync`（推理热路径的按需复探）失败时**只写日志**，没有调用
+`SetAccountAllowance`，于是 `ProbeFailures` / `ProbeAfter` 永远是 0 与
+「已过期」——`quotaNeedsRefresh` 一直返回 true，每个选中该号的请求都会再探一次。
+`probeSem` 只限制并发（4），不限制频率；这既刷日志，也让探针本身变成上游风控特征。
+对照：后台守护与手动 checkin 走的 `probeBatch` 有退避（`probeBackoff` 2m → 10m → 1h），
+唯独热路径漏了。
+
+**决策**：新增 `Store.RecordProbeFailure(id)` —— 只推进 `ProbeFailures` /
+`ProbeAfter`，**不动** `Status` / `Failures` / `LastErr`。理由与既有约定一致：
+一次出口抖动不该让调度器判号坏了，也不该盖掉控制台上更具体的原因
+（`social_login_required` 之类）。`probeAsync` 与 `probeBatch(strict=false)` 的
+失败分支都接上它，并落盘（退避窗口内最多 2 分钟一次写）。
+
+**验证**：`internal/store` 新增 2 条（退避 2m → 10m → 1h、成功清零、不动调度字段、
+未知账号无副作用）；`internal/server` 新增 1 条 —— 让上游回 400，走一次
+`probeAsync`，断言 `ProbeAfter` 前进且 `quotaNeedsRefresh` 立即变 false。
+
+### 61.2 控制台显示 `vv0.1.4+efa5d24`
+
+**根因**：两处叠加。构建参数 `VERSION=$(git describe --tags)` 自带 `v` 前缀，
+`/health` 与 `/admin/api/version` 照实返回 `v0.1.4+efa5d24`；而
+`js/version.js` 的 `renderVersion` 无条件 `"v" + v`。
+
+**决策**：前缀归展示层，服务端只回它真实知道的构建版本。`renderVersion`
+改成「已经有 v/V 就不再补」，`dev` 兜底不变。
+
+**验证**：冒烟新增 5 组用例（`v0.1.4+...` / `0.1.4` / `V1.0.0` / 空 / undefined）。
+
+### 61.3 代理与机器指纹弹窗：从「一句话」改成「改前 → 改后」
+
+**问题**：三个弹窗（补绑 / 重绑 / 清除代理、分配机器指纹）都是一句拼接文案，
+长代理 host 会把句子扭成一团；「清除代理」用的是 primary 按钮，看起来跟安全操作一样；
+英文界面下这三句还没有词条（静默显示中文）。
+
+**决策**：`dialog.js` 支持 `rows`（label + 等宽 value），账号治理弹窗统一改成
+「账号 / 当前出口 / 新出口」三行 + 一句后果说明；清除代理与删除用 `danger` 按钮
++ 语义化 `okText`（重新分配 / 分配 / 清除代理）。新增 12 条中英词条，并删掉 3 条
+因改写而失效的旧词条（死词条棘轮会盯着）。
+
+**验证**：冒烟新增 1 条结构化断言（字段数、label/value、mono 类、primary/danger 按钮与文案）。
+
+### 61.4 缓存命中率：先分清「没报」与「没命中」
+
+**口径**（`store.Record` + `overview.js`）：`今日命中率 = day_cached_tokens /
+day_tokens_in`，分子分母都来自上游 `usage`（`prompt_tokens_details.cached_tokens` /
+`input_tokens_details.cached_tokens` / `cache_read_input_tokens` 三形态）。
+
+**观察**：控制台显示的 78.1% 无法自己解释「为什么走低」——同一个数背后可能是三件事：
+上游没报缓存字段、前缀不再复用、或某条链路把 usage 丢了。另外「今日」按**网关
+本地日期**滚动（容器未设 `TZ`，即 UTC），北京时间 08:00 才翻页：早上看到的
+是一个只有几十分钟样本的数，天然会低且抖。
+
+**决策**：新增 `scripts/cache-hit.mjs`，读 `/admin/api/logs` 把命中率按
+模型 / 端点 / 密钥 / 小时拆开，并单独给出「有用量但 cached=0」的占比
+（区分上面三种情况）；`--selftest` 带 9 条纯函数断言，不依赖网络。
+
+```text
+node scripts/cache-hit.mjs --selftest                  # 纯函数自检
+DEEPAI2API_ADMIN_PASSWORD=… node scripts/cache-hit.mjs --hours 24
+```
+
+### 61.5 顺手修掉一条定时炸弹用例
+
+`deepai.TestQuotaExhaustedDetectionAndReset` 把 `refresh_at` 写死成
+`2026-11-14T00:05:52Z`，而 `QuotaResetAt` 对**已过期**的 refresh_at 会回落到
+`now+6h`：日期一过，CI 必然变红（本次巡检就撞上了）。改成相对 `now+2h` 生成，
+并补一条「refresh_at 已过期 → 回落到 6h」的断言，把踩过坑的语义固化成用例。
+
+### 61.6 验证
+
+```text
+gofmt -l ./internal           无输出
+go vet ./...                  无输出
+go test ./... -count=1        11 个包全绿
+node scripts/console-smoke.mjs 23 条全过
+```
