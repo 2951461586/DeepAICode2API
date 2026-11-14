@@ -128,7 +128,7 @@ func TestDoTransportError(t *testing.T) {
 	c := NewClient()
 	c.Origin = url
 
-	_, _, err := c.FetchModels(context.Background())
+	_, _, err := c.FetchModels(context.Background(), nil)
 	if err == nil {
 		t.Fatal("连接失败应返回错误")
 	}
@@ -151,7 +151,7 @@ func TestDoTransportError(t *testing.T) {
 	if _, err := c.ExchangeCode(context.Background(), "code"); err == nil {
 		t.Fatal("ExchangeCode 连接失败应返回错误")
 	}
-	if _, err := c.DetectLane(context.Background()); err == nil {
+	if _, err := c.DetectLane(context.Background(), nil); err == nil {
 		t.Fatal("DetectLane 连接失败应返回错误")
 	}
 	if c.Lane() != LaneVersion {
@@ -165,7 +165,7 @@ func TestDetectLaneServerErrorFallback(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 	})
-	_, err := c.DetectLane(context.Background())
+	_, err := c.DetectLane(context.Background(), nil)
 	if err == nil || !strings.Contains(err.Error(), "所有候选车道都被上游拒绝") {
 		t.Fatalf("全 5xx 应给出兜底错误，得到 %v", err)
 	}

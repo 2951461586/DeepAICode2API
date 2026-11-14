@@ -87,3 +87,31 @@ func TestWarmUpstreamFailureIsSilent(t *testing.T) {
 		t.Fatalf("上游 500 时预热数 = %d，期望 0", got)
 	}
 }
+
+// 401 也算预热成功：上游 2026-11-14 起对 /models 要求 Api-Key，而预热只关心
+// DNS/TCP/TLS 与代理 CONNECT 是否打通 —— 401 已经证明链路是通的。
+func TestWarmUpstreamCountsUnauthorizedAsReachable(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"code":"auth_required","type":"auth_required"}}`)
+	})
+	s, _ := newTestServer(t, u)
+
+	if got := s.WarmUpstream(context.Background()); got != 1 {
+		t.Fatalf("401 应算预热成功（链路已通），实际 %d", got)
+	}
+}
+
+// 预热必须带账号凭据：/models 没有 Api-Key 只会 401，带上才真的把目录请求
+// 走完整链路（也顺带验证了「按出口挑代表账号」确实拿到了真实账号）。
+func TestWarmUpstreamSendsAccountKey(t *testing.T) {
+	u := newWarmupUpstream(t)
+	s, _ := newTestServer(t, u)
+
+	if got := s.WarmUpstream(context.Background()); got != 1 {
+		t.Fatalf("预热数 = %d，期望 1", got)
+	}
+	if key := u.last(t).Header.Get(deepai.HeaderKeyName); key != "upstream-key" {
+		t.Fatalf("预热请求的 Api-Key = %q，期望 upstream-key", key)
+	}
+}

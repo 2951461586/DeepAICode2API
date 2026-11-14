@@ -259,7 +259,7 @@ func TestFetchModels(t *testing.T) {
 		_, _ = io.WriteString(w, `{"models":[{"id":"m1","name":"M1"},{"id":"m2","name":"M2"}],"default":"m2"}`)
 	})
 
-	models, def, err := c.FetchModels(context.Background())
+	models, def, err := c.FetchModels(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("FetchModels: %v", err)
 	}
@@ -274,10 +274,14 @@ func TestFetchModels(t *testing.T) {
 	}
 }
 
-// /models 与车道探测刻意不带任何凭据：它们是代理预热 / 探活路径，
-// 上游目录也不随账号变化。这条测试把「免凭据」钉成契约，防止以后
-// 随手把 account 传进去（或顺手发签到头）。
-func TestModelsAndLaneProbeCarryNoCredentials(t *testing.T) {
+// /models 与车道探测的凭据契约（2026-11-14 起反转）。
+//
+// 旧契约是「刻意不带任何凭据」，依据是上游目录不随账号变化、带不带 Key
+// 返回同一份。**2026-11-14 实测失效**：不带 Api-Key 一律 401 auth_required。
+// 现在：给账号就必须带上该账号的 Key（否则目录 / 车道探测全是 401），
+// 但仍不该带签到或 beacon 这类「推理会话」的头 —— 它们与拉目录无关，
+// 发出去只会被上游当成一次可疑的签到调用。
+func TestModelsAndLaneProbeCarryAccountKeyOnly(t *testing.T) {
 	var mu sync.Mutex
 	var headers []http.Header
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -287,22 +291,36 @@ func TestModelsAndLaneProbeCarryNoCredentials(t *testing.T) {
 		_, _ = io.WriteString(w, `{"models":[{"id":"m1","name":"M1"}],"default":"m1"}`)
 	})
 
-	if _, _, err := c.FetchModels(context.Background()); err != nil {
+	acct := &Account{APIKey: "sk-catalog", MachineID: "11111111-1111-1111-1111-111111111111"}
+	if _, _, err := c.FetchModels(context.Background(), acct); err != nil {
 		t.Fatalf("FetchModels: %v", err)
 	}
-	if _, err := c.DetectLane(context.Background()); err != nil {
+	if _, err := c.DetectLane(context.Background(), acct); err != nil {
 		t.Fatalf("DetectLane: %v", err)
+	}
+	// 匿名调用仍然允许（预热 / 连通性探测用）：只是不发送 Api-Key。
+	if _, _, err := c.FetchModels(context.Background(), nil); err != nil {
+		t.Fatalf("FetchModels(nil): %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(headers) == 0 {
-		t.Fatal("没有捕获到任何上游请求")
+	if len(headers) < 3 {
+		t.Fatalf("请求数 = %d，期望至少 3", len(headers))
+	}
+	last := headers[len(headers)-1]
+	if got := last.Get(HeaderKeyName); got != "" {
+		t.Fatalf("acct=nil 时不应发送 Api-Key，实际 %q", got)
+	}
+	for _, h := range headers[:len(headers)-1] {
+		if got := h.Get(HeaderKeyName); got != "sk-catalog" {
+			t.Fatalf("带账号时 Api-Key = %q，期望 sk-catalog", got)
+		}
 	}
 	for _, h := range headers {
-		for _, name := range []string{HeaderKeyName, HeaderCheckIn, HeaderBeacon} {
+		for _, name := range []string{HeaderCheckIn, HeaderBeacon} {
 			if v := h.Get(name); v != "" {
-				t.Fatalf("%s 不应出现在模型 / 车道探测请求上，实际 %q", name, v)
+				t.Fatalf("%s 不应出现在目录 / 车道探测请求上，实际 %q", name, v)
 			}
 		}
 	}
@@ -313,7 +331,7 @@ func TestFetchModelsNormalizes(t *testing.T) {
 		// 无 default、有重复 ID、有空 ID。
 		_, _ = io.WriteString(w, `{"models":[{"id":"a"},{"id":"a"},{"id":""},{"id":"b","input":["text","image"]}]}`)
 	})
-	models, def, err := c.FetchModels(context.Background())
+	models, def, err := c.FetchModels(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("FetchModels: %v", err)
 	}
@@ -332,7 +350,7 @@ func TestFetchModelsEmptyIsError(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"models":[]}`)
 	})
-	if _, _, err := c.FetchModels(context.Background()); err == nil {
+	if _, _, err := c.FetchModels(context.Background(), nil); err == nil {
 		t.Fatal("空模型目录应返回错误")
 	}
 }
@@ -673,7 +691,7 @@ func TestGetRequestsMatchDesktopHeaders(t *testing.T) {
 	c.BrowserFingerprint = false // 推理形态：UA 应为 node
 	acct := &Account{APIKey: "k"}
 
-	if _, _, err := c.FetchModels(context.Background()); err != nil {
+	if _, _, err := c.FetchModels(context.Background(), nil); err != nil {
 		t.Fatalf("FetchModels: %v", err)
 	}
 	if _, err := c.Theos(context.Background(), acct); err != nil {
@@ -840,7 +858,7 @@ func TestDetectLanePicksAcceptedLane(t *testing.T) {
 		_, _ = io.WriteString(w, `{"enabled":true}`)
 	})
 
-	lane, err := c.DetectLane(context.Background())
+	lane, err := c.DetectLane(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("DetectLane: %v", err)
 	}
@@ -866,7 +884,7 @@ func TestDetectLaneAllRejected(t *testing.T) {
 		w.WriteHeader(http.StatusUpgradeRequired)
 		_, _ = io.WriteString(w, `{"error":{"code":"lane_version_unsupported"}}`)
 	})
-	if _, err := c.DetectLane(context.Background()); err == nil {
+	if _, err := c.DetectLane(context.Background(), nil); err == nil {
 		t.Fatal("全部候选被拒应返回错误")
 	}
 	if c.Lane() != LaneVersion {

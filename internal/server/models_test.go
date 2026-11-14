@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"deepaicode2api/internal/deepai"
@@ -168,5 +170,71 @@ func TestAdminModelsFallbackWhenCatalogEmpty(t *testing.T) {
 	}
 	if len(pub.Data) != 1 || pub.Data[0].ID != deepai.DefaultModel {
 		t.Fatalf("公开端兜底目录异常: %#v", pub.Data)
+	}
+}
+
+// 2026-11-14 起上游 /models 要求 Api-Key：目录刷新必须借一个账号的凭据，
+// 号池空时要给出可行动的错误，而不是把上游 401 原样抛给控制台。
+func TestRefreshModelsNeedsAccount(t *testing.T) {
+	u := newWarmupUpstream(t)
+	s, _ := newTestServer(t, u)
+	s.Store.UpdateAccounts(func(a *deepai.Account) bool {
+		a.Enabled = false
+		return true
+	})
+
+	_, err := s.RefreshModels(context.Background())
+	if err == nil {
+		t.Fatal("没有可用账号时应报错")
+	}
+	if !strings.Contains(err.Error(), "Api-Key") {
+		t.Fatalf("错误应说明需要 Api-Key，实际 %v", err)
+	}
+	if got := countPath(u, deepai.ModelBasePath+deepai.PathModels); got != 0 {
+		t.Fatalf("没有凭据时不应发请求，实际 %d 次", got)
+	}
+}
+
+// 有账号时必须带上它的 Key（否则目录拉取必然 401）。
+func TestRefreshModelsSendsAccountKey(t *testing.T) {
+	u := newWarmupUpstream(t)
+	s, _ := newTestServer(t, u)
+
+	models, err := s.RefreshModels(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshModels: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("目录不应为空")
+	}
+	if key := u.last(t).Header.Get(deepai.HeaderKeyName); key != "upstream-key" {
+		t.Fatalf("拉目录的 Api-Key = %q，期望 upstream-key", key)
+	}
+}
+
+// probeAccount 优先「就绪 + 带机器指纹」的号；没有就退到任一有 Key 的启用号。
+func TestProbeAccountPrefersReadyWithMachine(t *testing.T) {
+	s, _ := newTestServer(t, nil) // acc-1：ok，但没机器指纹
+	s.Store.UpsertAccount(&deepai.Account{
+		ID: "with-machine", Name: "wm", APIKey: "k-wm", Enabled: true, Status: "ok",
+		MachineID: "11111111-1111-1111-1111-111111111111",
+	})
+	s.Store.UpsertAccount(&deepai.Account{
+		ID: "disabled", Name: "off", APIKey: "k-off", Enabled: false,
+	})
+
+	got := s.probeAccount()
+	if got == nil || got.ID != "with-machine" {
+		t.Fatalf("应优先选带机器指纹的就绪号，实际 %+v", got)
+	}
+
+	s.Store.UpdateAccounts(func(a *deepai.Account) bool {
+		if a.ID == "with-machine" || a.ID == "disabled" {
+			a.Enabled = false
+		}
+		return true
+	})
+	if got := s.probeAccount(); got == nil || got.ID != "acc-1" {
+		t.Fatalf("应回落到仍启用的 acc-1，实际 %+v", got)
 	}
 }

@@ -45,7 +45,7 @@ func main() {
 	}
 	fmt.Printf("账号: %s（username=%s，key=%s）\n", acct.Name, acct.Username, deepai.MaskSecret(acct.APIKey))
 
-	models, def, err := client.FetchModels(ctx)
+	models, def, err := client.FetchModels(ctx, acct)
 	if err != nil {
 		fmt.Println("模型目录拉取失败:", err)
 		os.Exit(1)

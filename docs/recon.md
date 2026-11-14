@@ -6,6 +6,20 @@
 
 > 抓包时间：应用版本 **0.3.20**（车道 4，2026-11-07 发布）。
 >
+> **2026-11-14 复核：客户端仍是 0.3.36（`latest.yml` 未动，sha512 与 11-13 一致），
+> 但上游服务端变了两处，两处都不在客户端代码里。**
+> 1. **`/models` 开始强制鉴权**：不带 `Api-Key` 一律 401
+>    `{"code":"auth_required","message":"Sign in to DeepAI to use DeepAI Code."}`；
+>    带任意账号的 Key（车道 5 + 机器指纹头）即 200。【实测 2026-11-14】
+>    这作废了 11-13 的「带不带 Key 返回同一份目录」结论 —— 网关原先的免凭据
+>    目录刷新 / 车道探测从此必然 401。
+> 2. **模型目录从 21 涨到 27**（11 免费 / 16 付费，无下线）：新增 `muse-ember`（免费）、
+>    `kimi-k3.1-pro`、`gpt-6.1-terra`、`gemini-4-hydrogen`、`gemini-4-carbon`、
+>    `claude-sonnet-5-5`；`default` 仍是 `glm-5.3-flash`。【实测 2026-11-14】
+>
+> 车道未变：`/theos` 车道 5 → 200（`lane_version: 5`），车道 4 / 6 → 426
+> `lane_version_unsupported`，与 0.3.36 一致。
+>
 > **2026-11-13 复核到 0.3.36**（本机已装 0.3.36，官方更新源 `latest.yml` 同日 05:42Z 发布）。
 > 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 五轮白盒比对：**唯一一处协议面变更是车道
 > 4 → 5**（`DEEPAI_LANE_HEADERS["X-DeepAI-Code-Theos"] = "5"`，`/theos` 也回
@@ -84,7 +98,7 @@
 | --- | --- | --- |
 | POST | `/deepai_code/chat/completions` | 推理（OpenAI chat 兼容） |
 | POST | `/deepai_code/responses` | 推理（仅 `api=openai-responses` 的模型） |
-| GET | `/deepai_code/models` | 模型目录（0.3.36 起桌面端请求会带 `Api-Key`；上游不强制，带不带返回同一份目录） |
+| GET | `/deepai_code/models` | 模型目录。**2026-11-14 起必须带 `Api-Key`**：不带一律 401 `auth_required`；带任意账号的 Key 即 200（目录不随账号变化）。同时是车道探测路径（§2.2） |
 | GET | `/deepai_code/theos` | 配额 / 余额 + **签到挑战** |
 | POST | `/deepai_code/web_search` | 联网搜索 |
 | POST | `/deepai_code/find_service` | 服务发现 |
@@ -148,6 +162,30 @@
 
 将来真要复刻时，需要的不是改推理客户端，而是独立模块：设备身份存储 +
 签名器 + enroll/poll 状态机（本节的 message 拼装规则可直接照抄）。
+
+### 2.2 目录与车道探测：两件事共用同一条被鉴权的路径【实测 2026-11-14】
+
+网关有两处「不消耗 Theos 的探活」：拉模型目录（`FetchModels`）与探测车道
+（`DetectLane` → `RefreshLane`），两者都打 `GET /deepai_code/models`。
+这条路径**曾经免凭据**（只看车道头 + 机器指纹），2026-11-14 起要求 `Api-Key`：
+
+| 请求 | 结果 |
+| --- | --- |
+| `GET /models`，仅车道头 + 机器指纹 | 401 `{"code":"auth_required","message":"Sign in to DeepAI to use DeepAI Code."}` |
+| `GET /models` + 任意账号 `Api-Key` | 200，27 个模型，`default: glm-5.3-flash` |
+
+因此：
+
+- 目录刷新与车道探测都借用号池里一个账号的凭据（`Server.probeAccount`：
+  优先「就绪 + 带机器指纹」的号，其次任一启用且有 Key 的号）；号池为空时
+  刷新目录直接给出可行动的错误，而不是把 401 抛成「Key 失效」；
+- 代理预热（`WarmUpstream`）把 **401 当作成功**：DNS/TCP/TLS 与代理 CONNECT
+  都已经通了，预热的目的一样达到，只有 5xx / 超时才不算；
+- 车道探测失败不再影响正确性：编译期 `LaneVersion=5` 仍是默认值，
+  真遇到 426 也会触发一次探测（此时号池里必然有账号）。
+
+车道门槛本身没变（2026-11-14 复测）：`/theos` 车道 5 → 200 且回
+`lane_version: 5`；车道 4 / 6 → 426 `lane_version_unsupported`。
 
 ## 3. 请求头【源码级 0.3.36】
 

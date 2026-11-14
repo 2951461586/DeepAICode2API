@@ -1,10 +1,12 @@
 package server
 
 import (
-	"deepaicode2api/internal/deepai"
-	"deepaicode2api/internal/registry"
 	"fmt"
 	"strings"
+	"time"
+
+	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/registry"
 )
 
 // catalog 返回当前模型目录；目录为空时回落到内置兜底模型，
@@ -15,6 +17,28 @@ func (s *Server) catalog() []deepai.Model {
 		return []deepai.Model{deepai.DefaultModelEntry()}
 	}
 	return catalog
+}
+
+// probeAccount 返回一个可以用于「目录 / 车道探测」的账号。
+//
+// 上游 2026-11-14 起对 `/models` 也要求 Api-Key（不带一律 401 auth_required），
+// 而这两个探测都不消耗 Theos、也与账号身份无关，所以借任意一个号的 Key 即可。
+// 挑号顺序：就绪且带机器指纹的 → 任一启用且有 Key 的 → nil（没有凭据）。
+func (s *Server) probeAccount() *deepai.Account {
+	var fallback *deepai.Account
+	now := time.Now()
+	for _, a := range s.Store.Accounts() {
+		if a == nil || !a.Enabled || strings.TrimSpace(a.APIKey) == "" {
+			continue
+		}
+		if fallback == nil {
+			fallback = a
+		}
+		if deepai.AccountReady(a, now) && a.MachineID != "" {
+			return a
+		}
+	}
+	return fallback
 }
 
 // resolveModel 用当前目录 + 别名解析请求模型（宽松：解析不到时回落，永不失败）。

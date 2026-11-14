@@ -448,18 +448,16 @@ func (c *Client) laneVersion() string {
 // Lane 返回当前生效的车道版本。
 func (c *Client) Lane() string { return c.laneVersion() }
 
-// DetectLane 用免鉴权的 /models 探测可用的车道版本。
+// DetectLane 用 /models 探测可用的车道版本。
 //
-// /models 不需要 API Key 与签到，所以启动时探测几乎零成本；一旦命中就把结果
-// 写回 Client，后续请求自动带上新车道。全部候选都失败时返回最后一个错误。
-//
-// 局限：/models 对车道比推理端点宽容（2026-11-13 实测 1–5 都 200，而推理是
-// 4、5）。若某天出现“/models 接受、推理 426”的车道，这条探测会一直选中它，
-// 需要在代码里把 LaneVersion 抬到新值（探测序列会从新值开始试）。
-func (c *Client) DetectLane(ctx context.Context) (string, error) {
+// 2026-11-14 起 /models 也要求 Api-Key（不带一律 401 auth_required，见
+// docs/recon.md §2），所以探测必须带上一个账号凭据；acct 为 nil 时发匿名
+// 请求，上游会回 401，此时探测只会得到「鉴权失败」而无法判断车道。
+// 命中即写回 Client，后续请求自动带新车道；全部候选失败时返回最后一个错误。
+func (c *Client) DetectLane(ctx context.Context, acct *Account) (string, error) {
 	var lastErr error
 	for _, lane := range LaneCandidates {
-		ok, err := c.laneWorks(ctx, lane)
+		ok, err := c.laneWorks(ctx, lane, acct)
 		if ok {
 			c.SetLane(lane)
 			return lane, nil
@@ -476,13 +474,15 @@ func (c *Client) DetectLane(ctx context.Context) (string, error) {
 
 // laneWorks 用候选车道请求一次 /models。
 //
-// 只有 2xx 才算通过：5xx 说明上游抖动而不是车道不对，继续试下一个候选。
-func (c *Client) laneWorks(ctx context.Context, lane string) (bool, error) {
+// 只有 2xx 才算通过：5xx 说明上游抖动而不是车道不对，继续试下一个候选；
+// 401 说明缺凭据（上游 2026-11-14 起对 /models 也要求 Api-Key），
+// 与车道无关，同样继续试但结果必然是全部失败。
+func (c *Client) laneWorks(ctx context.Context, lane string, acct *Account) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ModelURL(PathModels), nil)
 	if err != nil {
 		return false, err
 	}
-	c.commonHeaders(req, nil)
+	c.commonHeaders(req, acct)
 	req.Header.Set(HeaderLane, lane) // 覆盖成待测值
 	resp, err := c.do(req)
 	if err != nil {
@@ -518,22 +518,24 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// FetchModels 拉取上游模型目录（无需 API Key，但需要机器指纹）。
+// FetchModels 拉取上游模型目录（2026-11-14 起必须带 Api-Key）。
 //
-// 刻意保持**免凭据**：
-//   - 上游目录不随账号变化（2026-11-13 实测带 / 不带 `Api-Key` 返回同一份 21 个模型）；
-//   - 它同时是「上游是否可达」与车道探测的探活路径（`WarmUpstream` /
-//     `laneWorks` 都走它），预热只需要车道头与机器指纹，不应该为了拉目录
-//     把账号密钥发到一个本来匿名就能用的端点。
+// 曾经的结论是「上游目录不随账号变化，带 / 不带 `Api-Key` 返回同一份目录」，
+// 因此刻意保持免凭据。**2026-11-14 实测失效**：不带 Key 一律
+// 401 `{"code":"auth_required","message":"Sign in to DeepAI to use DeepAI Code."}`，
+// 带任意账号的 Key 才 200（见 docs/recon.md §2）。所以：
+//   - acct 非 nil 时带该账号的 Key（目录与账号无关，随便一个就行）；
+//   - acct 为 nil 时仍发匿名请求：只用于「没有账号时的连通性探测」，
+//     上游会回 401，调用方据此区分「链路通」与「拉目录成功」。
 //
-// 桌面端 0.3.36 改成带 `account.apiKey` 请求，那是它自己的账号会话；网关
-// 不做同样的事（见 docs/recon.md §2）。
-func (c *Client) FetchModels(ctx context.Context) ([]Model, string, error) {
+// 注意上游目录**会变**：2026-11-14 一次实测从 21 个涨到 27 个（新增 6 个
+// 免费 / 付费模型，无下线）。目录是缓存，重启或手动刷新才会更新。
+func (c *Client) FetchModels(ctx context.Context, acct *Account) ([]Model, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ModelURL(PathModels), nil)
 	if err != nil {
 		return nil, "", err
 	}
-	c.commonHeaders(req, nil)
+	c.commonHeaders(req, acct)
 
 	resp, err := c.do(req)
 	if err != nil {

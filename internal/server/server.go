@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -222,7 +223,13 @@ func (s *Server) RefreshModels(ctx context.Context) ([]deepai.Model, error) {
 
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	models, def, err := s.Up.FetchModels(ctx)
+	// 2026-11-14 起上游 /models 要求 Api-Key：没有账号时提前给出可行动的
+	// 错误，而不是把上游的 401 原样抛给控制台（那看起来像「Key 失效」）。
+	acct := s.probeAccount()
+	if acct == nil {
+		return nil, errors.New("上游 /models 需要 Api-Key：请先导入或添加一个账号再刷新目录")
+	}
+	models, def, err := s.Up.FetchModels(ctx, acct)
 	if err != nil {
 		return nil, err
 	}

@@ -49,12 +49,18 @@ func newerLane(stored string) string {
 
 // RefreshLane 探测一次可用车道并落盘，返回最终使用的车道。
 //
-// 探测只打免鉴权的 /models（不需要 Key、不消耗签到），按 LaneCandidates
-// 顺序试到 2xx 为止 —— 上游抬车道后网关自动跟上，不用改代码。
+// 探测打 /models（不消耗 Theos、不触发签到），按 LaneCandidates 顺序试到
+// 2xx 为止 —— 上游抬车道后网关自动跟上，不用改代码。**2026-11-14 起
+// /models 要求 Api-Key**，所以探测要借一个账号的凭据；没有账号时探测器
+// 只会拿到 401，直接跳过探测（编译期 LaneVersion + 426 兜底仍然有效）。
 // 冷却期内直接返回当前值；探测失败时保留旧值并把错误交给调用方。
 func (s *Server) RefreshLane(ctx context.Context) (string, error) {
 	if strings.TrimSpace(s.Up.Machine) == "" {
 		return s.CurrentLane(), errors.New("缺少机器指纹，无法探测车道")
+	}
+	acct := s.probeAccount()
+	if acct == nil {
+		return s.CurrentLane(), errors.New("没有可用账号：上游 /models 需要 Api-Key，无法探测车道")
 	}
 
 	s.laneMu.Lock()
@@ -68,7 +74,7 @@ func (s *Server) RefreshLane(ctx context.Context) (string, error) {
 
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	lane, err := s.Up.DetectLane(cctx)
+	lane, err := s.Up.DetectLane(cctx, acct)
 	if err != nil {
 		return s.CurrentLane(), err
 	}
