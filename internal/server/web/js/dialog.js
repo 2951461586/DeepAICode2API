@@ -47,6 +47,24 @@ function openDialog(opts) {
     form.appendChild(mk("p", "dialog-message", opts.message));
   }
 
+  // rows 是「改前 / 改后」这类结构化预览：账号、当前出口、新出口……
+  // 塞进 message 里拼句子既不好读、也没法对齐等宽值（代理 host 很长），
+  // 更没法在窄屏上换行。label 走 t()，value 原样（已经是脱敏过的展示值）。
+  if (opts.rows && opts.rows.length) {
+    var list = mk("dl", "dialog-rows");
+    opts.rows.forEach(function (r) {
+      if (!r) return;
+      var item = mk("div", "dialog-row");
+      item.appendChild(mk("dt", null, r.label || ""));
+      var dd = mk("dd", r.mono === false ? null : "mono", r.value === undefined ? "" : String(r.value));
+      if (r.title) dd.title = r.title;
+      item.appendChild(dd);
+      // append 而不是 appendChild：本仓 lint 规则偏好前者。
+      list.append(item);
+    });
+    form.append(list);
+  }
+
   var input = null;
   if (opts.input) {
     var field = mk("label", "dialog-field");

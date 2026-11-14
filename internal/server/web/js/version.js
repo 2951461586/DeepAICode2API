@@ -8,10 +8,15 @@ import { api } from './api.js';
 import { t } from './i18n.js';
 
 // renderVersion 只改文案，不触发网络请求。
+//
+// 版本号本身可能已经带 v 前缀（git describe --tags / docker 构建参数都是
+// `v0.1.4+efa5d24`），再无条件拼一个 v 就变成线上的 `vv0.1.4+efa5d24`。
+// 前缀归 JS 管：服务端只回它真实知道的构建版本，不替展示层做格式化。
 export function renderVersion(v) {
   var el = $("#version");
   if (!el) return;
-  el.textContent = "v" + (v || "dev");
+  var s = String(v === undefined || v === null || v === "" ? "dev" : v).trim();
+  el.textContent = /^v/i.test(s) ? s : "v" + s;
 }
 
 // checkUpdate 查一次更新；有新版则把版本号变成可点的高亮徽章。

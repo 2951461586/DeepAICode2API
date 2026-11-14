@@ -380,6 +380,14 @@ a.ver{text-decoration:none}
   background:var(--card2);color:var(--fg);font:13px/1.4 ui-monospace,monospace;
 }
 .dialog-input:focus{outline:2px solid var(--faint);outline-offset:1px}
+/* 结构化字段（账号 / 当前出口 / 新出口）：label 定宽、值右对齐且可换行，
+   避免长代理 host 把弹窗撑宽或把 label 挤掉。 */
+.dialog-rows{margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r);
+  background:var(--card2);display:flex;flex-direction:column;gap:6px}
+.dialog-row{display:flex;gap:12px;align-items:baseline;justify-content:space-between;font-size:12.5px}
+.dialog-row dt{color:var(--dim);flex:0 0 auto}
+.dialog-row dd{margin:0;flex:1 1 auto;text-align:right;word-break:break-all;color:var(--fg)}
+.dialog-row dd.mono{font-family:ui-monospace,monospace;font-size:12px}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
 
 /* ---------- 运行健康卡（概览页） ---------- */

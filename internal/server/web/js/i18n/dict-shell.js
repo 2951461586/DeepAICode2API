@@ -40,10 +40,14 @@ export const SHELL_DICT = {
   "分配机器指纹":"Assign machine ID", "改分组":"Change group", "标记已验证":"Mark verified",
   "新分组名":"New group name", "分组不能为空":"Group cannot be empty",
   "密钥绑定的分组（留空=全部）":"Key group (empty = all)",
-  "该账号已绑定代理（{p}），从代理池重新分配？":"This account already has a proxy ({p}); reassign from the pool?",
-  "从代理池为 {name} 分配一个出口？":"Assign an exit from the proxy pool to {name}?",
-  "清除 {name} 的代理（回到直连）？":"Clear the proxy for {name} (back to direct)?",
-  "为 {name} 生成独立机器指纹？（只补空值，不覆盖已有指纹）":"Generate a dedicated machine ID for {name}? (only fills empty values)",
+  // 代理 / 机器指纹弹窗的结构化字段（“改前 → 改后”）
+  "当前出口":"Current exit", "新出口":"New exit", "直连":"Direct",
+  "代理池随机分配":"Random pick from proxy pool", "重新分配":"Reassign", "分配":"Assign",
+  "当前机器":"Current machine", "新机器":"New machine", "生成独立指纹":"Generate dedicated ID",
+  "换出口后，该账号的后续请求都会走新代理（旧出口不再使用）。":"Once switched, this account's requests use the new proxy (the previous exit is dropped).",
+  "分配后，该账号的后续请求都会走代理。":"After assigning, this account's requests go through the proxy.",
+  "清除后该账号回到直连，不再经过代理池。":"After clearing, this account connects directly and no longer uses the proxy pool.",
+  "只补空值，不覆盖已有指纹。":"Only fills empty values; existing IDs are never overwritten.",
   "把 {name} 标记为邮箱已验证？":"Mark {name} as email-verified?",
   // 输入占位 / 标签
   "账号名称（可选）":"Account name (optional)",

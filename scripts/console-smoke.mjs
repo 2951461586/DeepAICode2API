@@ -65,6 +65,9 @@ class El {
   focus() {}
   select() {}
   submit() {}
+  // <dialog> 的两个原生方法：桩里只需要不抛异常，断言看结构。
+  showModal() { this.open = true; }
+  close() { this.open = false; }
 }
 
 const bySelector = new Map();
@@ -221,6 +224,23 @@ check('侧边栏收起 / 展开', () => {
 check('fmtCompact 纯函数', () => {
   if (format.fmtCompact(1500) !== '1.5K') throw new Error('fmtCompact(1500) = ' + format.fmtCompact(1500));
 });
+// 顶栏版本号：git describe / docker 构建参数本身带 v 前缀，接口也照实返回，
+// 展示层再拼一个 v 就成了线上的 `vv0.1.4+efa5d24`。
+await checkAsync('版本号只补一个 v 前缀', async () => {
+  const version = await load('version.js');
+  const cases = [
+    ['v0.1.4+efa5d24', 'v0.1.4+efa5d24'],
+    ['0.1.4', 'v0.1.4'],
+    ['V1.0.0', 'V1.0.0'],
+    ['', 'vdev'],
+    [undefined, 'vdev'],
+  ];
+  for (const [input, want] of cases) {
+    version.renderVersion(input);
+    const got = String(el('#version').textContent || '');
+    if (got !== want) throw new Error(`renderVersion(${JSON.stringify(input)}) = ${got}，期望 ${want}`);
+  }
+});
 check('renderSettings 保留显式 0', () => {
   // 0 是「限流关闭」的合法值：曾经用 `|| ""`，结果设置被吞成空框、看上去像没生效。
   settings.renderSettings({ request_timeout_sec: 0, max_retries: 0, log_keep: 0, rate_limit_rps: 0, rate_limit_burst: 0, key_concurrency: 0 });
@@ -345,6 +365,42 @@ await checkAsync('密钥操作遇到 404 仍然重拉', async () => {
   }
   if (reloads !== 1) throw new Error(`404 后 reload ${reloads} 次（期望 1）`);
   if (!String(el('#toast').textContent || '').includes('失败')) throw new Error('404 应仍然报错');
+});
+
+// 代理 / 机器指纹弹窗：改前 → 改后的字段要成结构化列表，危险操作用 danger 按钮。
+// 以前这是一句拼接文案，长代理 host 会把句子扭成一团，也看不出“会改成什么”。
+await checkAsync('改出口弹窗是结构化字段', async () => {
+  const dialog = await load('dialog.js');
+  const rows = [
+    { label: '账号', value: 'u***@x.com', mono: false },
+    { label: '当前出口', value: 'eu.gw.proxylane.dev:10001' },
+    { label: '新出口', value: '代理池随机分配' },
+  ];
+
+  // 不 await：监听器在桩里是空实现，Promise 永远不会落定（真实 DOM 里由按钮兜）。
+  dialog.confirmDialog({ title: '重绑代理', rows: rows, message: '换出口后……', okText: '重新分配' });
+  const card = document.body.children.at(-1).children[0];
+  const list = card.children.find((c) => c.className === 'dialog-rows');
+  if (!list) throw new Error('没有 dialog-rows 列表');
+  if (list.children.length !== rows.length) {
+    throw new Error(`字段数 = ${list.children.length}，期望 ${rows.length}`);
+  }
+  const first = list.children[0];
+  if (String(first.children[0].textContent) !== '账号') throw new Error('label 错了：' + first.children[0].textContent);
+  if (String(first.children[1].textContent) !== 'u***@x.com') throw new Error('value 错了：' + first.children[1].textContent);
+  if (String(first.children[1].className || '') !== '') throw new Error('mono:false 不应加等宽类');
+  if (String(list.children[1].children[1].className || '') !== 'mono') throw new Error('代理 host 应为等宽字体');
+  const actions2 = card.children.find((c) => c.className === 'dialog-actions');
+  const okBtn = actions2.children.at(-1);
+  if (!String(okBtn.className || '').includes('primary')) throw new Error('确认键不是 primary：' + okBtn.className);
+  if (String(okBtn.textContent) !== '重新分配') throw new Error('确认键文案 = ' + okBtn.textContent);
+
+  // 危险操作（清除代理 / 删除）：同一个入口，按钮要变 danger。
+  dialog.confirmDialog({ title: '清除代理', rows: rows, danger: true, okText: '清除代理' });
+  const card2 = document.body.children.at(-1).children[0];
+  const actions3 = card2.children.find((c) => c.className === 'dialog-actions');
+  const okBtn2 = actions3.children.at(-1);
+  if (!String(okBtn2.className || '').includes('danger')) throw new Error('危险操作没用 danger 按钮：' + okBtn2.className);
 });
 
 if (failures.length) {
