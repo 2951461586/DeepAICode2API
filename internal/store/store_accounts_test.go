@@ -89,3 +89,59 @@ func TestProbeCooldownBackoff(t *testing.T) {
 		t.Fatalf("成功应清零冷却，实际 after=%d failures=%d", a.ProbeAfter, a.ProbeFailures)
 	}
 }
+
+// RecordProbeFailure 只推进探测退避：线上热路径的按需复探失败时，
+// 不能把号标坏（Status/Failures 原样），但必须让 ProbeAfter 前进，
+// 否则 quotaNeedsRefresh 永远 true，每个选中该号的请求都会再探一次
+// （docs/changes.md §61：同一账号 323 次/小时）。
+func TestRecordProbeFailureBacksOffOnlyProbe(t *testing.T) {
+	st := newStore(t)
+	st.UpsertAccount(&deepai.Account{
+		ID: "a1", APIKey: "k1", Enabled: true, Status: "ok",
+		Theos: &deepai.Allowance{Enabled: true, CheckedAt: time.Now().Add(-time.Hour).Unix()},
+	})
+
+	st.RecordProbeFailure("a1")
+
+	a := st.Accounts()[0]
+	if a.ProbeFailures != 1 {
+		t.Fatalf("ProbeFailures = %d，期望 1", a.ProbeFailures)
+	}
+	left := time.Until(time.Unix(a.ProbeAfter, 0))
+	if left < 90*time.Second || left > 3*time.Minute {
+		t.Fatalf("首次失败冷却 = %v，期望约 2 分钟", left)
+	}
+	if a.Status != "ok" || a.Failures != 0 {
+		t.Fatalf("不应改调度状态: status=%q failures=%d", a.Status, a.Failures)
+	}
+	if a.Theos == nil {
+		t.Fatal("额度快照不应被清掉")
+	}
+
+	// 第二次失败要拉长到 10 分钟，第三次封顶 1 小时。
+	for i, want := range []time.Duration{10 * time.Minute, time.Hour} {
+		st.RecordProbeFailure("a1")
+		a = st.Accounts()[0]
+		left = time.Until(time.Unix(a.ProbeAfter, 0))
+		if left < want-time.Minute || left > want+time.Minute {
+			t.Fatalf("第 %d 次失败冷却 = %v，期望约 %v", i+2, left, want)
+		}
+	}
+
+	// 探测成功（任何写入额度的路径）都要把退避清零。
+	st.SetAccountAllowance("a1", &deepai.Allowance{Enabled: true}, nil)
+	a = st.Accounts()[0]
+	if a.ProbeAfter != 0 || a.ProbeFailures != 0 {
+		t.Fatalf("成功应清零退避，实际 after=%d failures=%d", a.ProbeAfter, a.ProbeFailures)
+	}
+}
+
+// 未知账号不 panic、不影响其它账号。
+func TestRecordProbeFailureUnknownAccount(t *testing.T) {
+	st := newStore(t)
+	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true})
+	st.RecordProbeFailure("nope")
+	if a := st.Accounts()[0]; a.ProbeFailures != 0 || a.ProbeAfter != 0 {
+		t.Fatalf("不应影响其它账号: %+v", a)
+	}
+}

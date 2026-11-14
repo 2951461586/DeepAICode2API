@@ -57,3 +57,49 @@ func TestProbeCheckInRefusedLocksProbe(t *testing.T) {
 		t.Fatalf("探测锁应约 6h，实际剩余 %v", left)
 	}
 }
+
+// 推理热路径的按需复探失败后必须留退避：线上（docs/changes.md §61）同一个号
+// 1 小时被重探 323 次，就是因为这里只写了日志、没写 ProbeAfter。
+func TestProbeAsyncFailureRecordsBackoff(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"models temporarily unavailable"}}`)
+	})
+	s, _ := newTestServer(t, u)
+
+	stale := time.Now().Add(-time.Hour).Unix()
+	s.Store.UpsertAccount(&deepai.Account{
+		ID: "stale-1", Name: "stale", APIKey: "sk-stale", Enabled: true, Status: "ok",
+		Theos: &deepai.Allowance{Enabled: true, CheckedAt: stale},
+	})
+	a := s.Store.Account("stale-1")
+	if a == nil {
+		t.Fatal("账号不存在")
+	}
+	if !quotaNeedsRefresh(a, time.Now(), quotaStaleAfter) {
+		t.Fatal("前置条件：额度快照过旧，应需要复探")
+	}
+
+	if !s.probeAsync(a) {
+		t.Fatal("应发起一次探测")
+	}
+	s.quotaWG.Wait()
+
+	got := s.Store.Account("stale-1")
+	if got.ProbeFailures != 1 {
+		t.Fatalf("探测失败应记一次退避，实际 ProbeFailures = %d", got.ProbeFailures)
+	}
+	if got.ProbeAfter <= time.Now().Unix() {
+		t.Fatalf("应落探测冷却，实际 ProbeAfter = %d", got.ProbeAfter)
+	}
+	if quotaNeedsRefresh(got, time.Now(), quotaStaleAfter) {
+		t.Fatal("冷却期内不应再被判为需要复探（否则每个请求都会重探一次）")
+	}
+	// 热路径失败不能污染调度：状态与失败计数都不动。
+	if got.Status != "ok" || got.Failures != 0 {
+		t.Fatalf("不应改调度状态: status=%q failures=%d", got.Status, got.Failures)
+	}
+	if got.Theos == nil || got.Theos.CheckedAt != stale {
+		t.Fatal("失败不应改写额度快照")
+	}
+}

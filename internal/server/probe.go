@@ -131,6 +131,21 @@ func checkedAt(a *deepai.Account) int64 {
 	return a.Theos.CheckedAt
 }
 
+// probeCooldownLeft 返回账号剩余的探测冷却（无冷却 / 已到期时为 0）。
+//
+// 只用于日志：把「%s 后再试」说清楚，运维不用自己去翻 ProbeAfter。
+func probeCooldownLeft(a *deepai.Account) time.Duration {
+	if a == nil || a.ProbeAfter <= 0 {
+		return 0
+	}
+	left := time.Until(time.Unix(a.ProbeAfter, 0))
+	if left <= 0 {
+		return 0
+	}
+	// 日志里不需要秒级精度，抹掉零头更好读。
+	return left.Round(time.Second)
+}
+
 // claimProbe 占用某账号的探测槽位；已有探测在跑时返回 false。
 //
 // 三条路径会同时探同一批账号：手动 checkin、入池后延迟复探、推理时的
@@ -209,6 +224,9 @@ func (s *Server) probeBatch(ctx context.Context, accts []*deepai.Account, timeou
 		al, err := s.clientFor(a).Theos(cctx, a)
 		out[i].Allowance, out[i].Err = al, err
 		if err != nil && !strict {
+			// 自动批次同样要留退避（这里返回后不落任何状态，否则下一次
+			// quotaNeedsRefresh 立刻又把这个号挑出来重探）。
+			s.Store.RecordProbeFailure(a.ID)
 			return
 		}
 		// 策略拦截不是“额度探测失败”：单独落 blocked，调度器会跳过它。
@@ -309,7 +327,14 @@ func (s *Server) probeAsync(a *deepai.Account) bool {
 				log.Printf("[quota] %s 已被上游要求改用 Google/Apple 登录（social_login_required）", a.Name)
 				return
 			}
-			log.Printf("[quota] %s 额度复探失败（不影响调度）: %v", a.Name, err)
+			// 退避必须留下：否则额度永远判 stale，每个选中该号的请求都会再探
+			// 一次，热路径变成 /theos 风暴。
+			s.Store.RecordProbeFailure(a.ID)
+			if saveErr := s.Store.Save(); saveErr != nil {
+				log.Printf("[quota] 保存探测退避失败: %v", saveErr)
+			}
+			log.Printf("[quota] %s 额度复探失败（不影响调度，%s 后再试）: %v",
+				a.Name, probeCooldownLeft(s.Store.Account(a.ID)), err)
 			return
 		}
 		s.Store.SetAccountAllowance(a.ID, al, nil)

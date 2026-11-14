@@ -518,8 +518,7 @@ func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) 
 			a.LastErr = err.Error()
 			a.LastErrAt = time.Now().Unix()
 			a.Failures++
-			a.ProbeFailures++
-			a.ProbeAfter = time.Now().Add(probeBackoff(a.ProbeFailures)).Unix()
+			bumpProbeBackoff(a)
 			return
 		}
 		a.Theos = al
@@ -531,6 +530,34 @@ func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) 
 		a.ProbeAfter = 0
 		return
 	}
+}
+
+// RecordProbeFailure 记一次「自动复探」失败：只推进探测退避，不改调度状态。
+//
+// 与 SetAccountAllowance 的错误分支的区别：那里是**有人明确想知道**
+// 探测结果的路径（手动 checkin / 入池探活），失败要落 Status / Failures；
+// 这里来自推理路径上的按需复探，一次出口抖动不该让调度器判号坏了，
+// 也不该覆盖控制台上更具体的原因（social_login 之类的备注）。
+//
+// 但退避**必须**留下：不记 ProbeAfter 时 quotaNeedsRefresh 永远返回 true，
+// 每一个选中该账号的请求都会再探一次 —— 线上实测同一账号连续失败
+// 323 次/小时（见 docs/changes.md §61），探针本身就成了上游风控特征。
+func (s *Store) RecordProbeFailure(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.st.Accounts {
+		if a.ID != id {
+			continue
+		}
+		bumpProbeBackoff(a)
+		return
+	}
+}
+
+// bumpProbeBackoff 推进账号的探测退避（调用方持锁）。
+func bumpProbeBackoff(a *deepai.Account) {
+	a.ProbeFailures++
+	a.ProbeAfter = time.Now().Add(probeBackoff(a.ProbeFailures)).Unix()
 }
 
 // probeBackoff 给出连续探测失败后的冷却时长：2min → 10min → 1h（封顶）。
