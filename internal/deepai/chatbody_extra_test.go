@@ -57,8 +57,12 @@ func TestEnsureSystemMessageAddsOnlyWhenMissing(t *testing.T) {
 // TestQuotaExhaustedDetectionAndReset 覆盖 403 theos_exhausted 的识别与恢复时间。
 func TestQuotaExhaustedDetectionAndReset(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	body := `{"error":{"message":"You've used today's Theos. They refresh at 2026-11-14T00:05:52+00:00.",` +
-		`"type":"theos_exhausted","code":"theos_exhausted","refresh_at":"2026-11-14T00:05:52+00:00"}}`
+	// refresh_at 必须是**相对** now 的时间：写死日期会让这条用例变成定时炸弹
+	// （2026-11-14T00:05:52 一过，QuotaResetAt 按“已过期”回退到 now+6h，CI 就红）。
+	resetAt := now.Add(2 * time.Hour)
+	stamp := resetAt.Format(time.RFC3339)
+	body := `{"error":{"message":"You've used today's Theos. They refresh at ` + stamp + `.",` +
+		`"type":"theos_exhausted","code":"theos_exhausted","refresh_at":"` + stamp + `"}}`
 	e := mustErr(t, http.StatusForbidden, body)
 	if !e.QuotaExhausted() {
 		t.Fatal("应识别为 theos_exhausted")
@@ -66,9 +70,15 @@ func TestQuotaExhaustedDetectionAndReset(t *testing.T) {
 	if e.SocialLoginRequired() || e.EmailUnverified() || e.MachineRequired() {
 		t.Fatal("不应误判为其它账号终态")
 	}
-	want, _ := time.Parse(time.RFC3339, "2026-11-14T00:05:52+00:00")
-	if got := e.QuotaResetAt(6*time.Hour, now); !got.Equal(want) {
-		t.Fatalf("恢复时间 = %v，期望 %v", got, want)
+	if got := e.QuotaResetAt(6*time.Hour, now); !got.Equal(resetAt) {
+		t.Fatalf("恢复时间 = %v，期望 %v", got, resetAt)
+	}
+	// refresh_at 已经过期（上游给的是过去时间）时用 fallback，而不是立刻重试。
+	past := now.Add(-time.Hour).UTC().Format(time.RFC3339)
+	stale := mustErr(t, http.StatusForbidden,
+		`{"error":{"code":"theos_exhausted","refresh_at":"`+past+`"}}`)
+	if got, want := stale.QuotaResetAt(6*time.Hour, now), now.Add(6*time.Hour); !got.Equal(want) {
+		t.Fatalf("过期 refresh_at 应回退到 now+6h，实际 %v", got)
 	}
 	// 其它错误码不应命中。
 	if mustErr(t, http.StatusForbidden, `{"error":{"code":"check_in_refused"}}`).QuotaExhausted() {
