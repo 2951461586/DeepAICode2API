@@ -36,25 +36,27 @@ import (
 const (
 	// LaneVersion 是本网关对齐的 Theos 计费车道版本。
 	//
-	// 0.3.17 → 0.3.19 上游把车道从 2 提到 4；0.3.36（2026-11-13）又提到 5：
-	// 桌面端发 `X-DeepAI-Code-Theos: 5`，`/theos` 也回 `lane_version: 5`。
-	// 车道不符时回 426 lane_version_unsupported（"This version of DeepAI Code
-	// is no longer supported"）。2026-11-13 实测：元数据端点仍接受 1–5（≥6 回
-	// 426），推理端点 4 / 5 都 200 —— 跟客户端发 5 即可，4 留作探测兜底。
-	LaneVersion = "5"
+	// 0.3.17 → 0.3.19 上游把车道从 2 提到 4；0.3.36（2026-11-13）提到 5；
+	// 0.3.37（2026-11-14）又提到 6：桌面端发 `X-DeepAI-Code-Theos: 6`，
+	// `/theos` 也回 `lane_version: 6`。车道不符时回 426
+	// lane_version_unsupported（"This version of DeepAI Code is no longer
+	// supported"）。2026-11-15 实测：`/models` 车道 6 → 200、7 → 426；
+	// `/theos` 车道 5 / 6 都 200、4 → 426；推理端点 5 / 6 都 200。
+	// 注意 `/models` 对旧车道很宽容（5 仍 200），所以探测必须从 6 开始试，
+	// 否则会一直钉在旧车道上（见 client.go 的 laneCandidates）。
+	LaneVersion = "6"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
 	//
-	// 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 逐项白盒核对。0.3.36 是
-	// 车道升级那一版（4 → 5），其余协议面仍然未变：实例仍是每进程一次、
-	// 机器指纹算法（sha256(小写原始 UUID)）未变、签到 / beacon 形态未变、
-	// 5 个 `X-DeepAI-Code-*` 头未变、聊天请求体字段未变（pi 运行时仍 1.3.0）。
-	// 0.3.36 的其它差异：`/models` 改成带 `Api-Key` 请求（目录不随账号变化，
-	// 实测带不带 Key 结果一致）、聊天前强制走一次 ensureCheckedIn、
-	// 新增托管主机控制面 `/deepai_code/connect/*`（设备注册 / 远程主机，
-	// 与推理无关，网关不实现）。
+	// 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 逐项白盒核对。
+	// 0.3.36 → 0.3.37（2026-11-14 发布）的 `server.asar` 全量 diff 只有 27 个
+	// hunk，落在推理协议面上的**只有车道 5 → 6**：端点集合、5 个
+	// `X-DeepAI-Code-*` 头、实例号粒度、机器指纹、签到 / beacon 形态、聊天
+	// 请求体字段全部未变（pi 运行时仍 1.3.0）。其余差异是长会话压缩、
+	// 工具失败去重、Codex 审批、SQLite 索引与 `thinkingLevelMap`（后者只影响
+	// 桌面端下拉，不是 wire protocol）。
 	// 只有心跳里的版本号需要跟上，否则 /theos 上自报的是旧客户端。
-	AppVersion = "0.3.36"
+	AppVersion = "0.3.37"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。

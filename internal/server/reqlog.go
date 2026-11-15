@@ -2,6 +2,7 @@ package server
 
 import (
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/store"
 	"sync/atomic"
 	"time"
@@ -48,7 +49,7 @@ func (s *Server) newReqLog(key string, acct *deepai.Account, model, endpoint str
 // 幂等：同一个请求只会被记一次。这样「某条提前返回的分支忘了记 / 加了一层 defer
 // 兜底」都不会造成重复计数，调用方也不必先判断有没有记过。
 func (l reqLog) done(outLen int, usage Usage, err error) {
-	l.doneStatus(statusOf(err), outLen, usage, err)
+	l.doneStatus(httpx.StatusOf(err), outLen, usage, err)
 }
 
 // doneStatus 与 done 相同，但状态码由调用方给出。

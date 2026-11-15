@@ -186,8 +186,8 @@ func TestClientSendsRequiredHeaders(t *testing.T) {
 	if v := got.Get(HeaderLane); v != LaneVersion {
 		t.Fatalf("%s = %q，期望 %q", HeaderLane, v, LaneVersion)
 	}
-	if LaneVersion != "5" {
-		t.Fatalf("车道版本 = %q，0.3.36 客户端使用 5", LaneVersion)
+	if LaneVersion != "6" {
+		t.Fatalf("车道版本 = %q，0.3.37 客户端使用 6", LaneVersion)
 	}
 	if inst := got.Get(HeaderInstance); len(inst) != 32 || strings.Trim(inst, "0123456789abcdef") != "" {
 		t.Fatalf("%s = %q，期望 32 位小写 hex", HeaderInstance, inst)
@@ -567,6 +567,32 @@ func TestChatBodyFallback(t *testing.T) {
 	}
 }
 
+// 文案再次更换时，400 + code=invalid_request_error 仍要按形状拒绝处理；
+// 其它 400（上下文超限、鉴权等）不能误判，否则会拿改动过的 body 白重试一次。
+func TestBodyRejectedFallsBackToInvalidRequestCode(t *testing.T) {
+	unknown := mustErr(t, http.StatusBadRequest,
+		`{"error":{"message":"Something new entirely.","type":"invalid_request_error",`+
+			`"code":"invalid_request_error"}}`)
+	if !unknown.BodyRejected() {
+		t.Fatal("400 + invalid_request_error 应按请求体形状拒绝处理")
+	}
+
+	context := mustErr(t, http.StatusBadRequest,
+		`{"error":{"message":"maximum context length exceeded","code":"context_length_exceeded"}}`)
+	if context.BodyRejected() {
+		t.Fatal("上下文超限不应触发形状重试")
+	}
+
+	invalidKey := mustErr(t, http.StatusBadRequest, `{"error":{"code":"invalid_api_key"}}`)
+	if invalidKey.BodyRejected() {
+		t.Fatal("非形状错误不应触发形状重试")
+	}
+
+	if mustErr(t, http.StatusUnprocessableEntity, `{"error":{"code":"invalid_request_error"}}`).BodyRejected() {
+		t.Fatal("非 400 不应按形状拒绝处理")
+	}
+}
+
 // 已带 system 的请求不应被重复插入。
 func TestChatBodyFallbackKeepsExistingSystem(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)
@@ -843,7 +869,7 @@ func TestDetectLanePicksAcceptedLane(t *testing.T) {
 		mu.Lock()
 		lanes = append(lanes, lane)
 		mu.Unlock()
-		if lane != "5" {
+		if lane != LaneVersion {
 			w.WriteHeader(http.StatusUpgradeRequired)
 			_, _ = io.WriteString(w, `{"error":{"code":"lane_version_unsupported"}}`)
 			return
@@ -862,8 +888,8 @@ func TestDetectLanePicksAcceptedLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DetectLane: %v", err)
 	}
-	if lane != "5" || c.Lane() != "5" {
-		t.Fatalf("命中车道 = %q / Lane() = %q，期望 5", lane, c.Lane())
+	if lane != LaneVersion || c.Lane() != LaneVersion {
+		t.Fatalf("命中车道 = %q / Lane() = %q，期望 %q", lane, c.Lane(), LaneVersion)
 	}
 
 	// 之后的请求直接带新车道。
@@ -873,8 +899,44 @@ func TestDetectLanePicksAcceptedLane(t *testing.T) {
 	mu.Lock()
 	last := lanes[len(lanes)-1]
 	mu.Unlock()
-	if last != "5" {
-		t.Fatalf("后续请求车道 = %q，期望 5", last)
+	if last != LaneVersion {
+		t.Fatalf("后续请求车道 = %q，期望 %q", last, LaneVersion)
+	}
+}
+
+// 探测必须从编译期车道开始，不能先试旧车道。
+//
+// `/models` 对旧车道很宽容（0.3.37 时代 5 / 6 都 200），若候选序列以旧值开头，
+// DetectLane 第一次就命中旧车道，网关会一直冒充旧客户端。
+func TestDetectLaneStartsAtCompiledLane(t *testing.T) {
+	want := laneCandidates()
+	if len(want) == 0 || want[0] != LaneVersion {
+		t.Fatalf("候选序列 = %v，第一项应为编译期车道 %q", want, LaneVersion)
+	}
+
+	var mu sync.Mutex
+	var probed []string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		probed = append(probed, r.Header.Get(HeaderLane))
+		mu.Unlock()
+		// 所有车道都接受：探测应当第一次就停在编译期车道。
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"models":[]}`)
+	})
+
+	lane, err := c.DetectLane(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("DetectLane: %v", err)
+	}
+	if lane != LaneVersion {
+		t.Fatalf("命中车道 = %q，期望编译期车道 %q", lane, LaneVersion)
+	}
+	mu.Lock()
+	got := append([]string(nil), probed...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != LaneVersion {
+		t.Fatalf("探测序列 = %v，应只试编译期车道 %q", got, LaneVersion)
 	}
 }
 

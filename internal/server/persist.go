@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 
+	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/logx"
 )
 
@@ -29,7 +30,7 @@ func (s *Server) persist() {
 func (s *Server) persistOrFail(w http.ResponseWriter) bool {
 	if err := s.Store.Save(); err != nil {
 		logx.Warn("状态文件保存失败", "err", err, "path", s.Store.Path())
-		writeErr(w, http.StatusInternalServerError,
+		httpx.WriteErr(w, http.StatusInternalServerError,
 			"状态保存失败（改动未落盘）: "+err.Error(), "server_error")
 		return false
 	}

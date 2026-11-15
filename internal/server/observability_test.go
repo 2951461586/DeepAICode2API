@@ -2,6 +2,7 @@ package server
 
 import (
 	"compress/gzip"
+	"deepaicode2api/internal/httpx"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -109,7 +110,7 @@ func TestGzipCompressesJSON(t *testing.T) {
 
 // TestGzipSkipsSSE 验证流式响应不压缩（逐帧 flush 语义不能破坏）。
 func TestGzipSkipsSSE(t *testing.T) {
-	h := withGzip(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := httpx.WithGzip(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data: {\"a\":1}\n\n"))
@@ -133,7 +134,7 @@ func TestGzipSkipsSSE(t *testing.T) {
 // 与部分客户端把空体当成压缩流解析。
 func TestGzipSkipsBodylessStatus(t *testing.T) {
 	for _, code := range []int{http.StatusNotModified, http.StatusNoContent} {
-		h := withGzip(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := httpx.WithGzip(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(code)
 		}))
@@ -152,13 +153,13 @@ func TestGzipSkipsBodylessStatus(t *testing.T) {
 
 // TestGzipHonorsQZero 验证 gzip;q=0 被尊重（客户端明确拒绝）。
 func TestGzipHonorsQZero(t *testing.T) {
-	if acceptsGzip(reqWithEncoding("gzip;q=0")) {
+	if httpx.AcceptsGzip(reqWithEncoding("gzip;q=0")) {
 		t.Fatal("gzip;q=0 应视为拒绝")
 	}
-	if !acceptsGzip(reqWithEncoding("deflate, gzip;q=0.5")) {
+	if !httpx.AcceptsGzip(reqWithEncoding("deflate, gzip;q=0.5")) {
 		t.Fatal("gzip;q=0.5 应视为接受")
 	}
-	if acceptsGzip(reqWithEncoding("")) {
+	if httpx.AcceptsGzip(reqWithEncoding("")) {
 		t.Fatal("空 Accept-Encoding 不应压缩")
 	}
 }

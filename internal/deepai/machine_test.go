@@ -198,3 +198,24 @@ func TestClientFallsBackToClientFingerprint(t *testing.T) {
 		t.Fatalf("无账号指纹时不应发送 Accept-Language，实际 %q", v)
 	}
 }
+
+// 与 0.3.37 桌面端 parseLinuxMachineId 对齐：32 位小写 hex、非全 0。
+func TestParseLinuxMachineID(t *testing.T) {
+	cases := []struct {
+		raw, want string
+	}{
+		{"0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"},
+		{"  0123456789ABCDEF0123456789ABCDEF\n", "0123456789abcdef0123456789abcdef"},
+		{"00000000000000000000000000000000", ""},
+		{"", ""},
+		{"not-a-machine-id", ""},
+		{"0123456789abcdef0123456789abcde", ""},   // 31 位
+		{"0123456789abcdef0123456789abcdef0", ""}, // 33 位
+		{"0123456789abcdef0123456789abcdeg", ""},  // 非 hex
+	}
+	for _, c := range cases {
+		if got := parseLinuxMachineID(c.raw); got != c.want {
+			t.Fatalf("parseLinuxMachineID(%q) = %q，期望 %q", c.raw, got, c.want)
+		}
+	}
+}

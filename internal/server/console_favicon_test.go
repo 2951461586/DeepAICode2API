@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"deepaicode2api/internal/server/web"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,7 +69,7 @@ func TestConsoleFaviconServed(t *testing.T) {
 // 移动端「添加到主屏」也拿不到图标。
 func TestConsolePagesReferenceFavicon(t *testing.T) {
 	for _, name := range []string{"web/index.html", "web/login.html"} {
-		page := string(mustConsoleAsset(name))
+		page := string(web.MustRead(name))
 		for _, want := range []string{
 			`<link rel="icon" href="/favicon.ico" sizes="any">`,
 			`<link rel="apple-touch-icon" href="/apple-touch-icon.png">`,
@@ -90,7 +91,7 @@ func TestConsoleFaviconMatchesDocsAsset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取 docs/assets/logo.ico 失败: %v", err)
 	}
-	got := mustConsoleAsset("web/favicon.ico")
+	got := web.MustRead("web/favicon.ico")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("web/favicon.ico 与 docs/assets/logo.ico 不一致（%d vs %d 字节）："+
 			"换图标后要同时更新两份，见 docs/changes.md §58", len(got), len(want))

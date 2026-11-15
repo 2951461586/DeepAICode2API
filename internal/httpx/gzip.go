@@ -1,4 +1,4 @@
-package server
+package httpx
 
 import (
 	"compress/gzip"
@@ -110,10 +110,10 @@ func (w *gzipWriter) close() {
 	}
 }
 
-// withGzip 对声明支持 gzip 的客户端压缩文本响应。
-func withGzip(next http.Handler) http.Handler {
+// WithGzip 对声明支持 gzip 的客户端压缩文本响应。
+func WithGzip(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !acceptsGzip(r) {
+		if !AcceptsGzip(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -123,11 +123,11 @@ func withGzip(next http.Handler) http.Handler {
 	})
 }
 
-// acceptsGzip 判断客户端是否接受 gzip（支持 q 权重，q=0 表示拒绝）。
+// AcceptsGzip 判断客户端是否接受 gzip（支持 q 权重，q=0 表示拒绝）。
 //
 // 不能简单地判断 `strings.Contains(params, "q=0")`：那会把 q=0.5（接受）
 // 也当成拒绝。这里按 "q=" 后面的数字取值比较。
-func acceptsGzip(r *http.Request) bool {
+func AcceptsGzip(r *http.Request) bool {
 	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
 		enc, params, _ := strings.Cut(strings.TrimSpace(part), ";")
 		if !strings.EqualFold(strings.TrimSpace(enc), "gzip") {

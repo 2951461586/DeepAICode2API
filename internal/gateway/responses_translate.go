@@ -73,18 +73,7 @@ func ResponsesToChatPayload(payload map[string]any, modelID string) (map[string]
 					"role": role, "content": ResponsesInputContent(item["content"]),
 				})
 			case "function_call":
-				callID := FirstString(item["call_id"], item["id"])
-				messages = append(messages, map[string]any{
-					"role":    "assistant",
-					"content": nil,
-					"tool_calls": []any{map[string]any{
-						"id": callID, "type": "function",
-						"function": map[string]any{
-							"name":      StrOf(item["name"]),
-							"arguments": StrOf(item["arguments"]),
-						},
-					}},
-				})
+				appendResponsesFunctionCall(&messages, item)
 			case "function_call_output":
 				messages = append(messages, map[string]any{
 					"role":         "tool",
@@ -162,6 +151,33 @@ func ResponsesInputContent(v any) any {
 		return parts
 	}
 	return ""
+}
+
+// appendResponsesFunctionCall 把 function_call 合并到相邻的 assistant 消息。
+//
+// Responses 的并行工具调用是连续多个 function_call item；若每个都单独成一条
+// assistant 消息，就会变成 assistant(call1) → assistant(call2) → tool(call1)，
+// 而 OpenAI 要求 role=tool 的消息紧跟在带 tool_calls 的 assistant 之后。
+// 合并后一条 assistant 带多个 tool_calls，后面的 function_call_output 才能正确对应。
+func appendResponsesFunctionCall(messages *[]any, item map[string]any) {
+	call := map[string]any{
+		"id": FirstString(item["call_id"], item["id"]), "type": "function",
+		"function": map[string]any{
+			"name":      StrOf(item["name"]),
+			"arguments": StrOf(item["arguments"]),
+		},
+	}
+	if n := len(*messages); n > 0 {
+		if last, ok := (*messages)[n-1].(map[string]any); ok && StrOf(last["role"]) == "assistant" {
+			if tcs, ok := last["tool_calls"].([]any); ok {
+				last["tool_calls"] = append(tcs, call)
+				return
+			}
+		}
+	}
+	*messages = append(*messages, map[string]any{
+		"role": "assistant", "content": nil, "tool_calls": []any{call},
+	})
 }
 
 func ResponsesToolOutput(v any) string {

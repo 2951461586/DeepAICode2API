@@ -259,6 +259,37 @@ func TestChatBodyRejectedRetriesWithNewMessage(t *testing.T) {
 	}
 }
 
+// 上游文案再次变化时，400 + code=invalid_request_error 也要触发一次形状回退。
+// 这是 2026-11-15 加的 code 兜底：只认两句话术，下一次换文案就得再改代码。
+func TestChatBodyRejectedRetriesOnInvalidRequestCode(t *testing.T) {
+	var chatCalls atomic.Int64
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, deepai.PathTheos) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"enabled":true,"lane_version":6}`)
+			return
+		}
+		if chatCalls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"A wording we have never seen.",`+
+				`"type":"invalid_request_error","code":"invalid_request_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	})
+	s, key := newTestServer(t, u)
+
+	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key,
+		`{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}],"user":"u1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("未知文案 + invalid_request_error 应触发兜底，状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if chatCalls.Load() != 2 {
+		t.Fatalf("应重试一次，实际上游 chat 调用 %d 次", chatCalls.Load())
+	}
+}
+
 // social_login_required 是账号级策略拦截：回传后账号落 blocked，后续调度跳过。
 func TestSocialLoginBlocksAccount(t *testing.T) {
 	var chatCalls atomic.Int64

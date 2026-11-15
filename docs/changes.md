@@ -18,6 +18,8 @@
 | v0.1.5 | 61 | 巡检四连：探测失败退避、版本号 `vv`、代理/指纹弹窗结构化、缓存命中率下钻脚本 |
 | v0.1.5 | 62 | 上游服务端变更同步：`/models` 强制 Api-Key（目录/车道/预热三处改借账号凭据）+ 模型目录 21 → 27 |
 | v0.1.5 | 63 | 文档整理与仓库清理（验收基线重算、索引状态列、dist 与陈旧状态文件）+ 发版 |
+| v0.1.6 | 64 | 客户端 0.3.37 同步：车道 5 → 6（唯一协议面变更）+ 探测序列改为从编译期车道开始 |
+| v0.1.6 | 65 | 结构治理：抽出 `internal/httpx` / `internal/server/web`、重构 `api.js`、0.3.37 复核修补（响应顺序 / 流式出错）+ race 与覆盖率基线 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -45,6 +47,8 @@
 - 61 巡检四连：探测失败退避（323 次/小时 → 2m/10m/1h）、版本号 `vv`、代理弹窗结构化、缓存命中率下钻脚本（v0.1.5）
 - 62 上游服务端变更：`/models` 强制 `Api-Key`、模型目录 21 → 27（客户端仍 0.3.36，无需同步）（v0.1.5）
 - 63 文档整理（验收基线重算、索引加状态列）+ 仓库清理（dist 旧产物、根目录陈旧状态文件）+ v0.1.5 发版
+- 64 客户端 0.3.37 同步：车道 5 → 6（唯一协议面变更）+ 车道探测顺序修复（v0.1.6）
+- 65 结构治理与 0.3.37 复核收尾：拆 `httpx` / `web` 包（14.6k → 7.0k 行）、`api.js` 重构、`response.output` 按 `output_index` 排序、流式出错不 flush 工具（v0.1.6）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -3481,3 +3485,190 @@ sh scripts/release.sh v0.1.5 --publish     # 5 个平台二进制 + checksums.tx
 
 发版后建议：控制台点一次「刷新模型目录」，`/health` 的 `models` 应从 21 变 27；
 再跑一次 `node scripts/cache-hit.mjs --hours 24` 复核命中率口径。
+
+---
+
+## 64. 2026-11-15 复核：客户端 0.3.37（车道 5 → 6，v0.1.6）
+
+**触发**：例行扫描。官方更新源 `latest.yml` 从 **0.3.36** 变为 **0.3.37**
+（`releaseDate` 2026-11-14T08:08Z；本机装的还是 0.3.36）。这次客户端**真的更新了**，
+所以按惯例拆包做 wire protocol 比对。
+
+### 64.1 结论：协议面只有车道一处变更
+
+下载 `DeepAI-Code-0.3.37-x64.exe` → 7z 解 NSIS 的 `$PLUGINSDIR/app-64.7z` →
+`resources/server.asar` → `apps/server/dist/binCli-BIPvs5sY.mjs`（14.8 MB），与
+0.3.36 的 `binCli-Dlwr1V0p.mjs` 做全量 diff：**27 个 hunk / 296 行**，其中
+
+| 区域 | 0.3.37 的差异 | 是否协议面 |
+| --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` | `X-DeepAI-Code-Theos: "5"` → **`"6"`** | **是（唯一一处）** |
+| `deepAIBeacon` | 未改；`v=` 仍取打包的 `version$2`（0.3.37） | 否（只是版本号跟着走） |
+| `/models` | 新增 `catalogAccountId`：切换账号时目录退回内置快照 | 否 |
+| 模型条目 | `thinkingLevelMap` 给 `deepai-cyber` / `muse-ember` 加 `max` / `xhigh` | 否（桌面端下拉） |
+| 其它 | 长会话压缩、工具失败去重、Codex 审批、SQLite 索引、trace 默认级别 | 否 |
+
+端点集合、5 个 `X-DeepAI-Code-*` 头、实例号粒度（每进程 `randomBytes(16).hex`）、
+机器指纹、签到 / beacon 形态、聊天请求体字段、`/models` 解码全部未变
+（pi 运行时仍 1.3.0）。
+
+**2026-11-15 实测**（单账号、单次/格）：
+
+| 端点 | lane 4 | lane 5 | lane 6 | lane 7 |
+| --- | --- | --- | --- | --- |
+| `GET /deepai_code/models` | 未测 | 200 | **200** | 426 |
+| `GET /deepai_code/theos` | 426 | 200 | **200**（`lane_version: 6`） | 未测 |
+| `POST /deepai_code/chat/completions` | 未测 | 200 | **200** | 未测 |
+
+**两份目录不一样**：车道 6 把 27 个模型的 `contextWindow` 全部收敛到 **320,000**
+（车道 5 仍是各模型的真实上限 1M / 991k / 512k…），`maxTokens` 不变。
+`/models` 对旧车道很宽容（5 也 200），所以它**不能**用来判断“当前车道”，
+只能判断“某个车道能不能用”。
+
+### 64.2 代码同步
+
+- `deepai.LaneVersion` `5` → `6`，`deepai.AppVersion` `0.3.36` → `0.3.37`；
+- **探测顺序重构**：原来的 `var LaneCandidates = {"5","6",…}` 是静态列表，第一项永远
+  是旧车道。上游这次同时接受 5 / 6 之后，`DetectLane` 会第一次就命中 5 并
+  `SetLane("5")`，而 `CurrentLane()` 又按 `newerLane` 报 6 —— 状态自相矛盾，
+  实际请求仍带旧车道、目录也停在旧版本。改成 `laneCandidates()`：
+  **编译期车道优先 → 向上猜 `laneGuessAhead` 个 → 再回落到 2**；
+- 测试：`TestDetectLanePicksAcceptedLane` 改用 `LaneVersion`；新增
+  `TestDetectLaneStartsAtCompiledLane`（所有车道都接受时，只能探测一次且必须是
+  编译期车道）；`internal/server/lane_test.go` 的“新车道”场景从 6 改成 7，
+  “旧状态文件”场景从 4 改成真实的 5 → 6 升级。
+
+### 64.3 文档
+
+`docs/recon.md` 头部加 0.3.37 banner + §3 头表 / 车道矩阵 / 白盒复核；
+`README` 的客户端版本、车道、协议头、模型表上下文列（320k）与心跳版本同步。
+
+### 64.4 客户端升级与清理
+
+用官方安装包静默升级本机桌面端：`0.3.36 → 0.3.37`（sha512 与 `latest.yml` 一致），
+安装后 `DeepAI Code.exe` 文件版本为 0.3.37、`resources/app.asar` 时间为
+2026-11-14T08:07Z。清理了 0.3.36 / 0.3.37 的安装包与解包目录、`deepai-code-desktop-updater`
+缓存里的 `installer.exe`、旧的 0.3.35 / 0.3.36 临时解包，以及含 Cookie 的旧
+HAR 临时文件，共约 2.6 GB；`~/.deepai-code` 里的登录凭据和设置保留。
+
+### 64.5 可选项落地
+
+| 项 | 实现 |
+| --- | --- |
+| `BodyRejected` 文案兜底 | 400 + `code=invalid_request_error` 也按形状拒绝处理（`ChatBodyFallback` 同号重试一次）；其它 400（上下文超限 / 参数错误）不误判 |
+| Anthropic `budget_tokens` 新档位 | 4k 以下 low、16k 以下 medium、32k 以下 high、64k 以下 xhigh、再高 max；`output_config.effort` 仍原样透传。2026-11-15 实测上游对 `deepai-cyber` / `muse-ember` / `glm-5.3-flash` 接受六档 |
+| `newerLane` 反向场景 | 新增持久化 `Settings.LaneBuild`：写入 `Lane` 时记录当时的编译期车道。`LaneBuild == LaneVersion` 说明探测结果由本次构建验证过，即使比编译值旧也信任；否则仍按 `max(存储值, 编译值)`，避免升级后跑旧车道 |
+
+### 64.6 深度扫描：指纹 / 请求接口 / 工具调用
+
+| 模块 | 发现 | 处理 |
+| --- | --- | --- |
+| 机器指纹（Linux） | 网关先读 `/sys/class/dmi/id/product_uuid`，固件占位值会返回不稳定指纹；0.3.37 桌面端只读 `/etc/machine-id` → `/var/lib/dbus/machine-id`（32 位小写 hex、非全 0） | 删除 product_uuid 分支，新增 `parseLinuxMachineID` + 用例 |
+| Anthropic 工具结果顺序 | `tool_result` 前的文本会先变成 user 消息，插在 assistant(tool_calls) 与 role=tool 之间，违反 OpenAI 顺序 | tool_result 全部先行，文本/图片随后 |
+| Anthropic 流式并行工具 | OpenAI 的 `tool_calls[].index` 分片可能交错；原实现把后到分片写进当前打开块 | 按 index 缓冲参数，`Finish()` 时按序一次性发 `input_json_delta` |
+| Responses 并行 function_call | 每个 item 单独成 assistant，`function_call_output` 不再紧跟对应 `tool_calls` | 连续 `function_call` 合并进同一条 assistant 的 `tool_calls` |
+| Responses 流式输出顺序 | 工具项存 map，`closeTools` 直接遍历导致最终 `response.output` 顺序随机 | 按 `output_index` 排序后发出 |
+
+请求接口与请求头逐项复扫：端点集合、`Api-Key` / 车道 / 实例号 / 机器指纹 /
+签到 / beacon 头、普通 Node fetch 头、`/speech_to_text` 的 multipart 形态均与
+0.3.37 一致；0.3.37 未新增推理侧请求头或端点。
+
+### 64.7 验证
+
+```text
+gofmt -l ./internal ./cmd   无输出
+go vet ./...                无输出
+go test ./... -count=1      11 个含测试的包全绿
+go test -race ./internal/deepai ./internal/server   全绿
+测试总数 602 → 614（顶层 458 → 466，子用例 144 → 148）
+```
+
+新增用例：`TestBodyRejectedFallsBackToInvalidRequestCode`、
+`TestChatBodyRejectedRetriesOnInvalidRequestCode`、`TestDetectLaneStartsAtCompiledLane`、
+`TestNewTrustsLowerLaneVerifiedByThisBuild`、`TestNewPrefersCompiledOverProbeFromOlderBuild`、
+`TestAnthropicBlockWriterInterleavedToolCalls`、`TestResponsesToChatParallelToolCalls`、
+`TestParseLinuxMachineID`，以及 Anthropic effort 两档与 tool_result 顺序子用例。
+
+### 64.8 遗留
+
+- 车道 6 的 320k 是**客户端压缩预算**还是新的服务端上限，暂按上游原样透传；
+  若上游恢复各模型真实上限，目录刷新会自动跟上，不需要改代码；
+- `budget_tokens → xhigh/max` 的阈值是量级近似（Anthropic 没有标准换算）；
+  若上游开始区分档位效果，再按实测调整分界；
+- 本机已升级到 0.3.37，但暂无真实进程抓包；下次可直接对比运行中的 `/theos`
+  beacon 与包内代码。
+
+---
+
+## 65. 结构治理与 0.3.37 复核收尾（2026-11-15）
+
+**触发**：三项并行任务——拆 `internal/server`、重构 `api.js`、复核未提交的
+0.3.37 改动，并补一次 `-race` + 覆盖率基线。
+
+### 65.1 `internal/server` 拆分（第一阶段）
+
+`internal/server` 原来 83 个文件 / 14.6k 行，把路由、协议、管理台、中间件、
+静态资源混在同一层。第一阶段只搬**零耦合的叶子**（不碰 `*Server`、不反向依赖）：
+
+| 新包 | 内容 | 行数 | 说明 |
+| --- | --- | --- | --- |
+| `internal/httpx` | `WriteJSON` / `WriteErr` / `WriteRawJSON` / `DecodeOptionalJSON` / `DecodeJSONRequest` / `ReadBodyWithLimit` / `ContextWithTimeout` / `StatusOf` / `ETagMatches` / `WithGzip`（含 `AcceptGzip`） | 310 | 160 处 `httpx.*` 调用点（编译期校验，纯机械替换）；`etagMatches` 原本在 `admin_api.go` 与资源服务里各一份，现在合并为一份 |
+| `internal/server/web` | `embed.FS`（HTML/CSS/JS/图标）+ ETag 指纹 + Content-Type + CSP + 304 协商 | 170 | 资源路径白名单仍留在 `server`（属路由契约）；`web.Read` 兼容旧的 `web/` 前缀 |
+
+结果：`internal/server` 非测试代码 **14.6k → 7.0k 行（83 → 38 个文件）**。
+剩下的 38 个文件按域聚成四块，后续按此顺序搬（每步都保持 `*Server` 门面不动）：
+
+1. `metrics`（`metrics.go` + `observability.go` 的计数/直方图核心）——渲染体
+   仍读 `Store`，需要先抽出一个只读快照接口；
+2. `relay`（`chat.go` / `responses.go` / `anthropic.go` / `stream.go` / `sse.go`）——
+   `sseWriter` 与 `Usage` 要先下沉到 `gateway`；
+3. `sched`（`probe.go` / `admission.go` / `upstream_policy.go` / `lane.go` /
+   `warmup.go`）——依赖 `Server` 的探测信号量与 `quotaWG`；
+4. `admin`（`admin*.go`）——依赖 `Store` 最多，留到最后。
+
+### 65.2 `api.js` 重构
+
+原实现把「发请求 → 解析 → 错误归一」写了两遍（首发 / 重试），复杂度 47 集中在
+`api()` 一个函数里。拆成 `decodeResponse` / `fetchJSON` / `makeError` /
+`isTransient` 后，`api()` 只剩去重、超时与重试编排。顺带修掉重试路径的两个
+不一致：401 不再漏掉「清口令 + 回登录页」，英文错误分类在重试路径也生效。
+`node --check` 与 `scripts/console-smoke.mjs`（Go 侧 `TestConsoleSmoke`）全过。
+
+### 65.3 0.3.37 改动复核
+
+逐文件看过未提交的 22 个文件（+777/−163），确认以下改动成立：车道 6 与
+`laneCandidates` 的「先向上猜、再向下兜底」、`Settings.LaneBuild` 的
+「本构建验证过的探测值优先」、Linux 机器指纹只认 systemd machine-id、
+`budget_tokens → xhigh/max` 两档、Anthropic `tool_result` 前置、流式
+`tool_calls[].index` 缓冲、Responses 并行 `function_call` 合并。
+
+复核中修掉两处：
+
+| 位置 | 问题 | 处理 |
+| --- | --- | --- |
+| `responses_stream.go` | 只按工具 index 排了 `toolItems`，但 `response.output` 的追加顺序是固定的「文本 → 推理 → 工具」。上游若先发工具、后发正文，最终 `output` 会把文本排在工具前面，与流里报的 `output_index` 矛盾 | `output` 改为 `{index, item}`，`response()` 用 `sortedOutput()` 按 index 排序；新增 `TestResponsesOutputSortedByOutputIndex` |
+| `anthropic.go` | 流式出错时也调用 `Finish()`，把只到一半的 `input_json_delta` 当完整工具块发出，客户端解析必败 | 出错路径改为只 `Close()` 当前块；新增 `TestAnthropicBlockWriterCloseKeepsToolsBuffered` |
+
+留作已知项（未改）：
+
+- `HTTPError.BodyRejected()` 现在对任何 `400 + invalid_request_error` 都返回真，
+  chat 路径会补形状重试一次。若上游把「上下文超限 / 参数错误」也用这个 code，
+  每个真 400 会多打一次上游（`ChatBodyFallback` 只在确实改动了请求体时才重试）。
+  目前与实测文案一致，暂按「宁可多一次、不吞新文案」保留；
+- Linux 不再回退 `product_uuid`，Alpine / scratch 这类没有 `/etc/machine-id` 的
+  容器会拿不到指纹（上游 `machine_required`）。这类部署必须配 `DEEPAI_MACHINE_ID`，
+  `docker-compose.yml` 已有该变量。
+
+### 65.4 验证基线
+
+```text
+gofmt -l ./internal ./cmd ./main.go ./tasks.go ./env.go   无输出
+go vet ./...                                              无输出
+go test ./... -count=1                                    10 个含测试的包全绿
+go test -race ./... -count=1                              全绿（22.6s）
+go test -coverpkg=./internal/... ./...                    84.1%（基线 84.0%）
+测试总数 614 → 616（顶层 466 → 468，子用例 148 不变）
+```
+
+覆盖率热点（未被覆盖的主要是错误分支）：`deepai/client.go`、`store/store_accounts.go`、
+`server/login.go`、`server/metrics.go`、`server/probe.go`。

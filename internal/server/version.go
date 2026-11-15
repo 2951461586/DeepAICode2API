@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/logx"
 )
 
@@ -62,10 +63,10 @@ func (s *Server) currentVersion() string {
 // handleAdminVersion 返回当前版本与最新 release 的比对结果。
 func (s *Server) handleAdminVersion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.versionStatus(r.Context()))
+	httpx.WriteJSON(w, http.StatusOK, s.versionStatus(r.Context()))
 }
 
 // versionStatus 带缓存地查询最新 release。

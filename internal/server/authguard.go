@@ -1,6 +1,7 @@
 package server
 
 import (
+	"deepaicode2api/internal/httpx"
 	"log"
 	"net"
 	"net/http"
@@ -137,7 +138,7 @@ func (s *Server) checkAdminThrottle(w http.ResponseWriter, r *http.Request) bool
 		secs = 1
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
-	writeErr(w, http.StatusTooManyRequests,
+	httpx.WriteErr(w, http.StatusTooManyRequests,
 		"管理口令尝试过于频繁，请 "+strconv.Itoa(secs)+" 秒后再试", "invalid_request_error")
 	return false
 }

@@ -78,6 +78,10 @@ func AnthropicToChatPayload(req *AnthropicRequest, modelID string) (map[string]a
 // 上游默认值——测出来的“模型指纹”自然与客户端不一致。
 //
 // 优先级：output_config.effort > thinking.type > thinking.budget_tokens。
+// output_config.effort 原样透传（含 `xhigh` / `max`）；budget_tokens 没有标准
+// 换算，这里按量级粗分：4k 以下 low、16k 以下 medium、32k 以下 high、
+// 64k 以下 xhigh、再高 max。2026-11-15 实测上游对这三个免费模型接受全部
+// 六档（none/low/medium/high/xhigh/max），不会因映射到新档而 400。
 func AnthropicEffort(req *AnthropicRequest) string {
 	if req == nil {
 		return ""
@@ -108,8 +112,12 @@ func AnthropicEffort(req *AnthropicRequest) string {
 			return "low"
 		case th.BudgetTokens < 16384:
 			return "medium"
-		default:
+		case th.BudgetTokens < 32768:
 			return "high"
+		case th.BudgetTokens < 65536:
+			return "xhigh"
+		default:
+			return "max"
 		}
 	}
 	return ""
@@ -176,15 +184,27 @@ func AppendAnthropicMessage(messages *[]any, m AnthropicMessage) error {
 		return nil
 	}
 
-	// user：文本 / 图片合并为一条消息，tool_result 单独成为 role=tool 消息。
-	var parts []any
-	flush := func() {
-		if len(parts) == 0 {
-			return
+	// user：tool_result 单独成为 role=tool 消息，其余文本 / 图片合并为一条消息。
+	//
+	// **tool_result 必须先发**：OpenAI 要求 role=tool 紧跟在带 tool_calls 的
+	// assistant 之后，而 Anthropic 常把 tool_result 与后续说明放在同一条 user
+	// 消息里。按原顺序先发文本会插在 assistant 与 tool 之间，上游会直接拒绝
+	// 或把工具结果当成新的用户轮次。
+	for _, b := range blocks {
+		if b["type"] != "tool_result" {
+			continue
 		}
-		*messages = append(*messages, map[string]any{"role": role, "content": parts})
-		parts = nil
+		id, _ := b["tool_use_id"].(string)
+		content := AnthropicToolResultText(b)
+		if content == "" {
+			content = "(no output)"
+		}
+		*messages = append(*messages, map[string]any{
+			"role": "tool", "tool_call_id": id, "content": content,
+		})
 	}
+
+	var parts []any
 	for _, b := range blocks {
 		switch b["type"] {
 		case "text":
@@ -209,19 +229,11 @@ func AppendAnthropicMessage(messages *[]any, m AnthropicMessage) error {
 				}
 				parts = append(parts, map[string]any{"type": "text", "text": "[document] " + name})
 			}
-		case "tool_result":
-			flush()
-			id, _ := b["tool_use_id"].(string)
-			content := AnthropicToolResultText(b)
-			if content == "" {
-				content = "(no output)"
-			}
-			*messages = append(*messages, map[string]any{
-				"role": "tool", "tool_call_id": id, "content": content,
-			})
 		}
 	}
-	flush()
+	if len(parts) > 0 {
+		*messages = append(*messages, map[string]any{"role": role, "content": parts})
+	}
 	return nil
 }
 

@@ -10,7 +10,7 @@
 复用桌面端登录后写入的 API Key，无需另申请密钥；纯 Go 标准库实现，
 单文件约 10 MB，零外部依赖。
 
-[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-602%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
+[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-616%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#三接口清单) [![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://img.shields.io/badge/Ask%20DeepWiki-blue.svg?labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAPoAAAD6AG1e1JrAAACIUlEQVRYw+2XP2gUQRTGv7d3JhYWQawkIBaCVWzETos0gmAnVoKNTSoLK0E7EQQrC20sBVFBtLPQRgTBtBaKjYgIQUSxiJq7fT+LvCGPJZdNLt4dQj5Y3u7sznzfzLw/s9IO/icANiniCujEfWdsQgBLxAbsbraPZcmBfcAt4DNwKQsZNfEUsAB8YRV12LfA6ZHuedg7AO7ed/c+UBcbQhbiu+6wXIM6EnZWkszMJe2Ke0n6I2la0v51hFeSMLN6OwIK6jJwEBdUYb2MAxRSz6sY4geiahFgLe1Hwq6YWe3us8AN4FQQU4QM64SPY69Xyr43fADgNjAPXHb3peSsD4FDQ0VLEjAHvIhBPS6AHvA1bBO9JPAXcHFbIRtJ5yzwIQZ9CZwAusDJENIkLqsG8DpNyIZJwSUk9wLHgakcesC1JCCjiHm1kYDNOEjptCxpSVK/8f73OFLxPLAYM3oCzEX7MXf/lJbc/8kWpA4HgQdpYI9IWAbeh83whi84cHXL+58EPBoQhnmm94EzwE3gZ2p/Dhzdbhg+TaRr01x7ftb4/jBwFzjXrCvDpmLW9crVLNeR9CaapoGemb2TdCERW1tNaBNQ8jktwmozqwtpqRNtdWAjARYk39IS12ZWRX7vmJmA71nQZgi36gN7gCvAj5xc3P0jcH7kx7Ik5IC73wsh14GZsZySow5002l4Jr0b6+m4eSyvpAn8lEzsx2QHo8RfUrlN+uPq4ksAAAAASUVORK5CYII=)](https://deepwiki.com/2951461586/DeepAICode2API)
 
@@ -24,12 +24,12 @@
 | 能力 | 说明 |
 | --- | --- |
 | 双协议 | OpenAI `/v1/chat/completions`、`/v1/responses`；Anthropic `/v1/messages` |
-| 协议对齐 | 车道 5 + `X-DeepAI-Code-Instance` + `/theos` 签到；区分 `social_login_required` / `machine_required` / `lane_version_unsupported` |
+| 协议对齐 | 车道 6 + `X-DeepAI-Code-Instance` + `/theos` 签到；区分 `social_login_required` / `machine_required` / `lane_version_unsupported` |
 | 号池治理 | 分组轮询、失败换号、容量退避、按账号配额调度、策略拦截自动跳过 |
 | 账号接入 | 浏览器登录（Google / Apple / 邮箱密码）、桌面端凭据导入、手工 API Key；入池自动分配机器指纹与代理 |
 | 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 设置 |
 | 安全 | 密钥鉴权、管理口令、同源写保护、状态文件 AES-256-GCM 可选加密 |
-| 可回归 | 602 个用例（458 顶层 + 144 子用例）/ 14.4k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 10 个含测试的包（另 3 个无测试）+ 前端语法与冒烟（23 条） |
+| 可回归 | 616 个用例（468 顶层 + 148 子用例）/ 14.7k 行测试，`go test -race` + gofmt / vet / build / vulncheck 全绿，CI 覆盖 10 个含测试的包（另 5 个无测试）+ 前端语法与冒烟（23 条） |
 
 ```text
 ┌──────────────┐  /v1/chat/completions   ┌────────────────┐   Api-Key + Theos 头   ┌─────────────────────────────┐
@@ -47,9 +47,9 @@
 
 ## 一、逆向结论
 
-DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.36**，车道 5；
-0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 的 wire protocol 逐项比对：
-**0.3.36 只抬了车道（4 → 5），其余请求头 / 指纹 / 签到 / 端点未变**）。
+DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.37**，车道 6；
+0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 的 wire protocol 逐项比对：
+**0.3.37 只抬了车道（5 → 6），其余请求头 / 指纹 / 签到 / 端点未变**）。
 真正干活的不是桌面壳，而是 `resources/server.asar` 里的 t3code server；
 它把上游能力封装成本地回环 HTTP 服务，再交给 Pi（编码 agent）调用。
 
@@ -69,7 +69,7 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.
 | 语音转写 | `POST https://api.deepai.org/speech_to_text`（字段 `voiceRecording`） |
 | 联网搜索 | `POST https://api.deepai.org/deepai_code/web_search` |
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
-| 协议头 | `X-DeepAI-Code-Theos: 5`（计费车道版本；0.3.36 起为 5，推理端点 4 / 5 都接受，`/models` 放宽到 1–5，见 `docs/recon.md` §3） |
+| 协议头 | `X-DeepAI-Code-Theos: 6`（计费车道版本；0.3.37 起为 6，推理端点 5 / 6 都接受，`/models` 放宽到 1–6，见 `docs/recon.md` §3） |
 | 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每个出口代理随机一次，随该代理的所有 JSON 请求发出；桌面端是每进程一次） |
 | 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1`（`focus` 只在焦点状态已知时才追加） |
 | **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
@@ -121,38 +121,40 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 
 | ID | 名称 | 上下文 | 最大输出 | Theos/次 | 说明 |
 | --- | --- | ---: | ---: | ---: | --- |
-| `deepai-cyber` | DeepAI Cyber | 1,048,576 | 131,072 | **0** | 免费，纯文本 |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 1,048,576 | 131,072 | **0** | 免费（上游下拉是 `DeepSeek V4.1 Flash 1017`，桌面端会把旧名改写成它） |
-| `glm-5.3-flash` | GLM 5.3 Flash | 1,048,576 | 131,072 | **0** | 免费，默认模型 |
-| `glyph-cluster` | Glyph Cluster | 256,000 | 131,072 | **0** | 免费，纯文本 |
-| `gpt-6-luna` | GPT-6 Luna | 1,048,576 | 128,000 | **0** | 免费 |
-| `mimo-2.6-flash` | MiMo 2.6 Flash | 1,048,576 | 131,072 | **0** | 免费 |
-| `mimo-2.6-pro` | MiMo 2.6 Pro | 1,048,576 | 131,072 | **0** | 免费 |
-| `minimax-m3.1-flash` | MiniMax M3.1 Flash | 1,048,576 | 131,072 | **0** | 免费 |
-| `muse-ember` | Muse Ember | 1,048,576 | 131,072 | **0** | 免费（2026-11-14 新增） |
-| `qwen-3.8-flash` | Qwen 3.8 Flash | 991,000 | 128,000 | **0** | 免费 |
-| `solar-mini-4` | Solar Mini 4 | 524,288 | 131,072 | **0** | 免费，纯文本 |
-| `minimax-m3` | MiniMax M3 | 512,000 | 131,000 | 2 | 付费，纯文本 |
-| `glm-5.3` | GLM 5.3 | 1,048,576 | 131,072 | 3 | 付费，纯文本 |
-| `kimi-k3` | Kimi K3 | 1,048,576 | 131,072 | 3 | 付费 |
-| `kimi-k3.1-pro` | Kimi K3.1 Pro | 1,000,000 | 131,072 | 3 | 付费（2026-11-14 新增） |
-| `gpt-6.1-terra` | GPT-6.1 Terra | 1,048,576 | 128,000 | 5 | 付费（2026-11-14 新增） |
-| `muse-spark-1.3` | Muse Spark 1.3 | 1,048,576 | 131,072 | 6 | 付费 |
-| `gemini-4-hydrogen` | Gemini 4 Hydrogen | 1,000,000 | 131,072 | 8 | 付费（2026-11-14 新增） |
-| `claude-sonnet-5-5` | Claude Sonnet 5.5 | 1,000,000 | 64,000 | 10 | 付费（2026-11-14 新增） |
-| `gemini-4-argon` | Gemini 4 Argon | 1,048,576 | 131,072 | 10 | 付费 |
-| `gemini-4-carbon` | Gemini 4 Carbon | 1,000,000 | 131,072 | 10 | 付费（2026-11-14 新增） |
-| `gpt-6.1-sol` | GPT-6.1 Sol | 1,048,576 | 128,000 | 10 | 付费 |
-| `claude-opus-5-5` | Claude Opus 5.5 | 1,000,000 | 64,000 | 15 | 付费 |
-| `muse-wonder` | Muse Wonder | 1,048,576 | 131,072 | 15 | 付费 |
-| `qwen-3.8-max-prime` | Qwen 3.8 Max Prime | 1,000,000 | 131,072 | 15 | 付费 |
-| `claude-fable-5-2` | Claude Fable 5.2 | 1,000,000 | 64,000 | 20 | 付费 |
-| `gpt-6-astra` | GPT-6 Astra | 1,048,576 | 128,000 | 50 | 付费，仅 `/v1/responses` |
+| `deepai-cyber` | DeepAI Cyber | 320,000 | 131,072 | **0** | 免费，纯文本 |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 320,000 | 131,072 | **0** | 免费（上游下拉是 `DeepSeek V4.1 Flash 1017`，桌面端会把旧名改写成它） |
+| `glm-5.3-flash` | GLM 5.3 Flash | 320,000 | 131,072 | **0** | 免费，默认模型 |
+| `glyph-cluster` | Glyph Cluster | 320,000 | 131,072 | **0** | 免费，纯文本 |
+| `gpt-6-luna` | GPT-6 Luna | 320,000 | 128,000 | **0** | 免费 |
+| `mimo-2.6-flash` | MiMo 2.6 Flash | 320,000 | 131,072 | **0** | 免费 |
+| `mimo-2.6-pro` | MiMo 2.6 Pro | 320,000 | 131,072 | **0** | 免费 |
+| `minimax-m3.1-flash` | MiniMax M3.1 Flash | 320,000 | 131,072 | **0** | 免费 |
+| `muse-ember` | Muse Ember | 320,000 | 131,072 | **0** | 免费（2026-11-14 新增） |
+| `qwen-3.8-flash` | Qwen 3.8 Flash | 320,000 | 128,000 | **0** | 免费 |
+| `solar-mini-4` | Solar Mini 4 | 320,000 | 131,072 | **0** | 免费，纯文本 |
+| `minimax-m3` | MiniMax M3 | 320,000 | 131,000 | 2 | 付费，纯文本 |
+| `glm-5.3` | GLM 5.3 | 320,000 | 131,072 | 3 | 付费，纯文本 |
+| `kimi-k3` | Kimi K3 | 320,000 | 131,072 | 3 | 付费 |
+| `kimi-k3.1-pro` | Kimi K3.1 Pro | 320,000 | 131,072 | 3 | 付费（2026-11-14 新增） |
+| `gpt-6.1-terra` | GPT-6.1 Terra | 320,000 | 128,000 | 5 | 付费（2026-11-14 新增） |
+| `muse-spark-1.3` | Muse Spark 1.3 | 320,000 | 131,072 | 6 | 付费 |
+| `gemini-4-hydrogen` | Gemini 4 Hydrogen | 320,000 | 131,072 | 8 | 付费（2026-11-14 新增） |
+| `claude-sonnet-5-5` | Claude Sonnet 5.5 | 320,000 | 64,000 | 10 | 付费（2026-11-14 新增） |
+| `gemini-4-argon` | Gemini 4 Argon | 320,000 | 131,072 | 10 | 付费 |
+| `gemini-4-carbon` | Gemini 4 Carbon | 320,000 | 131,072 | 10 | 付费（2026-11-14 新增） |
+| `gpt-6.1-sol` | GPT-6.1 Sol | 320,000 | 128,000 | 10 | 付费 |
+| `claude-opus-5-5` | Claude Opus 5.5 | 320,000 | 64,000 | 15 | 付费 |
+| `muse-wonder` | Muse Wonder | 320,000 | 131,072 | 15 | 付费 |
+| `qwen-3.8-max-prime` | Qwen 3.8 Max Prime | 320,000 | 131,072 | 15 | 付费 |
+| `claude-fable-5-2` | Claude Fable 5.2 | 320,000 | 64,000 | 20 | 付费 |
+| `gpt-6-astra` | GPT-6 Astra | 320,000 | 128,000 | 50 | 付费，仅 `/v1/responses` |
 
 说明：
 
 - 只有 `deepai-cyber` / `glm-5.3` / `glyph-cluster` / `solar-mini-4` / `minimax-m3` 是纯文本
   （`input: [text]`），其余都接受图片输入（`input: [text, image]`）；全部支持推理（`reasoning`）；
+- **车道 6 的目录把 `contextWindow` 统一收敛到 320,000**（0.3.37 起；车道 5 还是各模型
+  的真实上限 1M / 991k / 512k…）。这是新版客户端的压缩预算，网关按上游原样透传；
 - **2026-11-14 起上游 `/deepai_code/models` 要求 `Api-Key`**：不带 Key 一律 401
   `auth_required`（此前「带不带都返回同一份目录」的结论已失效）。网关的目录刷新与
   车道探测因此都借用号池里一个账号的凭据；运维上要知道的坑见 §10.1；
@@ -564,6 +566,7 @@ internal/proxy/             代理池（轮询 / 脱敏标签 / 文件读取）
 internal/pool/              选号策略（分组轮询 / 配额判定 / 冷却窗口），不依赖 Store 即可测
 internal/parallel/          有界并发扇出（并发上限 / ctx 取消 / 按下标回填）
 internal/retry/             退避重试（阈值 / 抖动 / 不可重试错误判定）
+internal/httpx/             纯 HTTP 工具与中间件（JSON 响应 / 错误信封 / 解码 / gzip / ETag）
 internal/gateway/           协议转换层：字段映射 + 用量解析，不依赖 HTTP / store / 号池
   ├─ anthropic_types.go    Anthropic 请求模型（Messages / tools）
   ├─ anthropic_translate.go Anthropic ⇄ Chat 双向字段映射
@@ -586,7 +589,8 @@ internal/server/            HTTP 路由、流式收发、控制台（装配层�
   ├─ admin_accounts.go      账号管理入口：GET 分页 / POST 按 action 分发
   ├─ admin_actions.go       10 个 action，各自一个最小请求结构体
   ├─ gateway_alias.go       给 gateway 的包内短名（类型别名，迁移期兼容）
-  └─ web/                   控制台静态包（全部 go:embed 进二进制）
+  ├─ web.go                 控制台资源路由白名单（资源本体在 web/ 包）
+  └─ web/                   控制台静态包（assets.go：go:embed + ETag + CSP）
        ├─ index.html        页面标记（301 行）
        ├─ style.css         样式（设计令牌 + 布局）
        ├─ js/app.js         装配层：取数 / URL 状态 / 启动顺序（231 行）
@@ -598,7 +602,7 @@ internal/server/            HTTP 路由、流式收发、控制台（装配层�
        ├─ js/state.js       共享可变 UI 状态（分页游标）
        ├─ js/dom.js         DOM 助手 + 行内菜单
        ├─ js/table.js       表头排序状态与纯函数
-       ├─ js/api.js         管理接口调用（鉴权 / 错误归一 / 去重）
+       ├─ js/api.js         管理接口调用（鉴权 / 错误归一 / 去重 / 超时重试）
        ├─ js/ui.js          toast
        ├─ js/actions.js     账号 / 密钥变更 + 配额探测（刷新通过 setReload 注入）
        └─ js/render/        四个渲染模块：accounts / keys / logs / settings
@@ -629,9 +633,9 @@ docker run -d --name deepaicode2api \
   deepaicode2api
 ```
 
-> `X-DeepAI-Code-Theos: 5` 是当前客户端（0.3.36）的车道：`/chat/completions` 上
-> 4 / 5 都回 200，更旧的 2/3 与更高的 6+ 回 `426 lane_version_unsupported`
-> （`/models` 放宽到 1–5，见 `docs/recon.md` §3）。
+> `X-DeepAI-Code-Theos: 6` 是当前客户端（0.3.37）的车道：`/chat/completions` 上
+> 5 / 6 都回 200，更旧的 2–4 与更高的 7+ 回 `426 lane_version_unsupported`
+> （`/models` 放宽到 1–6，见 `docs/recon.md` §3）。
 > `X-DeepAI-Code-Machine` 仍是计量模型的必需头：缺失时返回 `400 machine_required`。
 > 容器里通常读不到宿主机的 SMBIOS UUID，因此 `DEEPAI_MACHINE_ID` 在容器部署时**必填**。
 > 填桌面端所在机器的原始 UUID 即可复用同一份每日免费额度。
@@ -680,8 +684,11 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 
 ## 十、限制与说明
 
-- `X-DeepAI-Code-Theos` 必须发 `5`（0.3.36 起，2026-11-13 复核；元数据端点 1–5 都接受，推理端点 4 / 5 都接受，别用 `/models` 判断上游可用性）；推理端点车道不符返回 426 `lane_version_unsupported`；
-- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.36**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
+- `X-DeepAI-Code-Theos` 必须发 `6`（0.3.37 起，2026-11-15 复核；元数据端点 1–6 都接受，推理端点 5 / 6 都接受，别用 `/models` 判断上游可用性）；推理端点车道不符返回 426 `lane_version_unsupported`；
+- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.37**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
+- 车道探测结果由**当前构建**验证过（`Settings.LaneBuild == deepai.LaneVersion`）时无条件信任，即使它比编译值旧；否则按 `max(存储值, 编译值)` 取较新值。探测序列从编译期车道开始，**不能先试旧车道**（`/models` 对旧车道仍然宽容）；
+- 请求体形状拒绝除匹配两版文案外，还兜底 `400 + code=invalid_request_error`；补形状重试仍失败时回传第二个错误；
+- Anthropic `budget_tokens` 按量级映射到 `low/medium/high/xhigh/max`（4k/16k/32k/64k 分界），`output_config.effort` 原样透传；2026-11-15 实测上游接受六档；
 - 推理请求按桌面端实测值发 `user-agent: node` + `accept: */*`，**不带** Chrome UA / `sec-ch-ua` / `Accept-Language`（推理侧只发桌面端请求头）；
 - `X-DeepAI-Code-Machine` 缺失时计量模型返回 `machine_required`，因此无 SMBIOS 的环境必须设置 `DEEPAI_MACHINE_ID`；
 - 0.3.19 曾把推理收窄到 **Google/Apple 登录**的账号（邮箱密码号 `403

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"deepaicode2api/internal/server/web"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,14 +15,14 @@ import (
 // 前端已拆成多个 module：只扫 index.html 会让「某函数名 / 选择器存在」
 // 这类断言静默失效（测试全绿但检查早已落空）。
 func consoleSource() string {
-	return consoleMarkup() + "\n" + consoleStyle() + "\n" + consoleJS()
+	return consoleMarkup() + "\n" + consoleStyle() + "\n" + web.Scripts()
 }
 
 // consoleMarkup 只返回页面标记（id 定义、标签页结构这类纯标记断言）。
-func consoleMarkup() string { return string(consoleHTML) }
+func consoleMarkup() string { return string(web.HTML) }
 
 // consoleStyle 返回抽出的样式表。
-func consoleStyle() string { return string(consoleCSS) }
+func consoleStyle() string { return string(web.CSS) }
 
 func TestConsoleHTMLContracts(t *testing.T) {
 	html := consoleSource()
@@ -98,11 +99,11 @@ func TestConsoleScriptIDsExist(t *testing.T) {
 	// 拆页面时最容易出的错就是「脚本引用了另一个页面的 id」，那种功能
 	// 永远不生效（按钮点了没反应、渲染函数写进 null）。
 	indexIDs := idsInMarkup(consoleMarkup())
-	loginIDs := idsInMarkup(string(consoleLoginHTML))
+	loginIDs := idsInMarkup(string(web.LoginHTML))
 
 	refs, files := 0, 0
-	for _, name := range consoleScriptNames() {
-		raw, err := consoleAssets.ReadFile(name)
+	for _, name := range web.ScriptNames() {
+		raw, err := web.Read(name)
 		if err != nil {
 			t.Fatalf("读取脚本 %s: %v", name, err)
 		}

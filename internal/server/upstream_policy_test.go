@@ -35,7 +35,8 @@ func TestClassifyUpstreamError(t *testing.T) {
 		{"形状被拒（新文案）", http.StatusBadRequest, `{"error":{"message":"This request cannot be accepted."}}`, actShapeFallback},
 		{"普通 403", http.StatusForbidden, `{"error":{"code":"forbidden"}}`, actRetryOther},
 		{"普通 429", http.StatusTooManyRequests, `{"error":{"code":"rate_limited"}}`, actRetryOther},
-		{"普通 400", http.StatusBadRequest, `{"error":{"code":"invalid_request_error","message":"bad param"}}`, actReturn},
+		{"形状被拒（只认 code）", http.StatusBadRequest, `{"error":{"code":"invalid_request_error","message":"unknown wording"}}`, actShapeFallback},
+		{"普通 400", http.StatusBadRequest, `{"error":{"code":"bad_param","message":"bad param"}}`, actReturn},
 		{"200 不应进入本函数", http.StatusOK, `{}`, actReturn},
 	}
 	for _, c := range cases {

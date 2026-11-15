@@ -37,9 +37,17 @@ type Settings struct {
 
 	// Lane 是探测到的 Theos 车道版本（空 = 用编译期默认值）。
 	//
-	// 上游抬车道时旧值一律回 426；网关启动时用免鉴权的 /models 探测一次，
+	// 上游抬车道时旧值一律回 426；网关启动时会借账号凭据探测一次 /models，
 	// 命中就写在这里，升级不用改代码。
 	Lane string `json:"lane,omitempty"`
+
+	// LaneBuild 是写入 Lane 时的编译期车道（deepai.LaneVersion）。
+	//
+	// 它把「本次构建探测到的结果」和「旧版本残留」区分开：正常情况下车道
+	// 只向前走，但上游也可能只保留旧车道（或探测结果比编译值旧）。只有
+	// LaneBuild 与当前编译值一致时，CurrentLane 才无条件信任 Lane；否则仍按
+	// max(Lane, 编译值) 取较新值，避免升级后还跑旧车道。
+	LaneBuild string `json:"lane_build,omitempty"`
 
 	// RateLimitRPS / RateLimitBurst 是每把密钥的令牌桶（0 = 不限速）。
 	// RateLimitBurst 为 0 时按 max(2, RPS) 取容量。

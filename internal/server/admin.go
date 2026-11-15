@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/registry"
 	"deepaicode2api/internal/store"
 )
@@ -46,7 +47,7 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 	}
 	safeKeys := safeKeyList(s.Store.Keys())
 	catalog := s.catalog()
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"accounts":       safe,
 		"keys":           safeKeys,
 		"models":         registry.List(catalog, s.Store.Settings().ModelAliases),
@@ -62,7 +63,7 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"keys": safeKeyList(s.Store.Keys())})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"keys": safeKeyList(s.Store.Keys())})
 	case http.MethodPost:
 		var body struct {
 			Action string `json:"action"`
@@ -71,34 +72,34 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 			Key    string `json:"key"`
 		}
 		// 畸形 JSON 直接报错；空体仍然合法（等价于「新建一把默认密钥」）。
-		if !decodeOptionalJSON(w, r, &body) {
+		if !httpx.DecodeOptionalJSON(w, r, &body) {
 			return
 		}
 		// action=set-group：只改绑定分组（保持密钥值不变）；其余 / 空值仍为新建。
 		if body.Action == "set-group" {
 			key := s.resolveKeyRef(strings.TrimSpace(body.Key))
 			if key == "" {
-				writeErr(w, http.StatusBadRequest, "缺少 key", "invalid_request_error")
+				httpx.WriteErr(w, http.StatusBadRequest, "缺少 key", "invalid_request_error")
 				return
 			}
 			ok := s.Store.SetKeyGroup(key, body.Group)
 			if !s.persistOrFail(w) {
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": ok, "group": s.Store.KeyGroup(key)})
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": ok, "group": s.Store.KeyGroup(key)})
 			return
 		}
 		k := s.Store.AddKey(body.Name, body.Group)
 		if !s.persistOrFail(w) {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": k.Key})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "key": k.Key})
 	case http.MethodDelete:
 		q := r.URL.Query()
 		delRef := strings.TrimSpace(q.Get("key"))
 		togRef := strings.TrimSpace(q.Get("toggle"))
 		if delRef == "" && togRef == "" {
-			writeErr(w, http.StatusBadRequest, "缺少 key 或 toggle 参数", "invalid_request_error")
+			httpx.WriteErr(w, http.StatusBadRequest, "缺少 key 或 toggle 参数", "invalid_request_error")
 			return
 		}
 		// 先校验再变更：resolveKeyRef 找不到时会原样返回，所以存在性得自己查。
@@ -107,11 +108,11 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 		// 两个 ref 一起校验也是为此：不能「删成功了、切失败了」半途而废后回 404。
 		delKey, togKey := s.resolveKeyRef(delRef), s.resolveKeyRef(togRef)
 		if delRef != "" && !s.keyExists(delKey) {
-			writeErr(w, http.StatusNotFound, "密钥不存在（可能已被删除或吊销）", "not_found_error")
+			httpx.WriteErr(w, http.StatusNotFound, "密钥不存在（可能已被删除或吊销）", "not_found_error")
 			return
 		}
 		if togRef != "" && !s.keyExists(togKey) {
-			writeErr(w, http.StatusNotFound, "密钥不存在（可能已被删除或吊销）", "not_found_error")
+			httpx.WriteErr(w, http.StatusNotFound, "密钥不存在（可能已被删除或吊销）", "not_found_error")
 			return
 		}
 		deleted, toggled := false, false
@@ -124,9 +125,9 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 		if !s.persistOrFail(w) {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted, "toggled": toggled})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted, "toggled": toggled})
 	default:
-		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "不支持的方法", "invalid_request_error")
 	}
 }
 
@@ -134,18 +135,18 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodDelete:
 		s.Store.ClearLogs()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	case http.MethodGet:
 	default:
 		// 以前只拦 DELETE，POST / PUT 会把日志当查询结果回包，容易被当成“写成功”。
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET / DELETE", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET / DELETE", "invalid_request_error")
 		return
 	}
 	// 支持 limit / since / endpoint / account / min_status / q。
 	// 无参数时行为与旧版一致（最近 limit 条，默认 200）。
 	f := logFilterFromQuery(r)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"logs":  s.Store.QueryLogs(f),
 		"limit": f.Limit,
 		"filter": map[string]any{
@@ -158,10 +159,10 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		s.Store.ClearStats()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Store.Stats())
+	httpx.WriteJSON(w, http.StatusOK, s.Store.Stats())
 }
 
 // settingsPatch 是控制台提交的设置增量。
@@ -231,12 +232,12 @@ func (p settingsPatch) apply(st *store.Settings) {
 
 func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusOK, sanitizedSettings(s.Store.Settings()))
+		httpx.WriteJSON(w, http.StatusOK, sanitizedSettings(s.Store.Settings()))
 		return
 	}
 	var body settingsPatch
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
 		return
 	}
 	s.Store.UpdateSettings(func(st *store.Settings) { body.apply(st) })
@@ -245,7 +246,7 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// 预算类设置要让已缓存的客户端立刻生效，不能等重启。
 	s.applyRuntimeSettings()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": sanitizedSettings(s.Store.Settings())})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": sanitizedSettings(s.Store.Settings())})
 }
 
 // handleAdminModels 刷新模型目录；GET 返回缓存。
@@ -254,7 +255,7 @@ func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
 		// 用 s.catalog() / s.defaultModelID() 而不是 Store 的裸值：
 		// 目录为空时（新装且上游不可达）它们会给出兜底模型，与 /v1/models
 		// 保持一致。否则控制台模型页空白，而 API 还能用默认模型。
-		writeJSON(w, http.StatusOK, map[string]any{
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"models":         adminModelViews(registry.List(s.catalog(), s.Store.Settings().ModelAliases)),
 			"default_model":  s.defaultModelID(),
 			"models_updated": s.Store.ModelsUpdated(),
@@ -263,10 +264,10 @@ func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
 	}
 	models, err := s.RefreshModels(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "刷新模型目录失败: "+err.Error(), "upstream_error")
+		httpx.WriteErr(w, http.StatusBadGateway, "刷新模型目录失败: "+err.Error(), "upstream_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "count": len(models), "default_model": s.Store.DefaultModel(),
 	})
 }

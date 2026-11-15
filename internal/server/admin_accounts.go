@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 )
 
 // --- 账号管理接口与配额巡检 ---
@@ -34,25 +35,25 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET / POST", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET / POST", "invalid_request_error")
 		return
 	}
 	// 两步解析：先取 action，再让具体 action 解自己的字段（见 admin_actions.go）。
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
 		return
 	}
 	var env adminActionEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
 		return
 	}
 	if fn, ok := adminActions[env.Action]; ok {
 		fn(s, w, raw)
 		return
 	}
-	writeErr(w, http.StatusBadRequest, "未知操作: "+env.Action, "invalid_request_error")
+	httpx.WriteErr(w, http.StatusBadRequest, "未知操作: "+env.Action, "invalid_request_error")
 }
 
 // handleAdminCheckin 对一批账号查询 Theos 配额。
@@ -74,7 +75,7 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 		StaleOnly bool   `json:"stale_only"`
 	}
 	// 可以不传参数（等价于「探一批全部账号」），但畸形 JSON 必须报错。
-	if !decodeOptionalJSON(w, r, &body) {
+	if !httpx.DecodeOptionalJSON(w, r, &body) {
 		return
 	}
 
@@ -163,7 +164,7 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok":        true,
 		"total":     total,
 		"probed":    probed,              // 真正发起探测的账号数（skipped 不算）

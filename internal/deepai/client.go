@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -120,12 +121,19 @@ func (e *HTTPError) LaneUnsupported() bool {
 //
 // 两版都要能识别：漏了新文案，ChatBodyFallback（补 system + 收敛字段）就不会重试，
 // 调用方直接吃 400。
+//
+// 2026-11-15 起再加一层兜底：文案可能再次更换，而 code 一直是
+// invalid_request_error。只要 400 + 该 code 就按形状拒绝处理（仅 chat 路径会
+// 真正重试）；补形状后仍失败时，第二个错误会原样回传，不会把原因吞掉。
 func (e *HTTPError) BodyRejected() bool {
 	if e.Status != http.StatusBadRequest {
 		return false
 	}
 	body := strings.ToLower(string(e.Body))
-	return strings.Contains(body, CodeNotDeepAICodeMsg) || strings.Contains(body, CodeNotAcceptedMsg)
+	if strings.Contains(body, CodeNotDeepAICodeMsg) || strings.Contains(body, CodeNotAcceptedMsg) {
+		return true
+	}
+	return e.Code() == CodeInvalidReq
 }
 
 // QuotaExhausted 报告账号当日额度是否用完（付费模型 / 余额为负）。
@@ -425,12 +433,29 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 	}
 }
 
-// LaneCandidates 是车道探测的候选序列。
+// laneGuessAhead 是车道探测向上猜测的步数（上游可能先抬车道再发客户端）。
+const laneGuessAhead = 6
+
+// laneCandidates 返回车道探测序列：编译期默认值优先，其次向上猜更新的车道，
+// 最后用旧车道兜底。
 //
-// 上游每抬一次车道就把其它值回 426（0.3.17 是 2，0.3.19 起是 4，0.3.36 起是 5）。
-// 按「当前客户端优先、更新的猜一个、旧版兜底」试：命中即用，
-// 这样上游升级车道时网关不需要改代码。
-var LaneCandidates = []string{"5", "6", "7", "8", "9", "10", "11", "12", "4", "3", "2"}
+// 顺序不能反过来：`/models` 对旧车道很宽容（0.3.37 时代车道 5 / 6 都回 200），
+// 从旧值开始试会把网关永久钉在旧车道上 —— 车道 6 的目录与 5 并不相同
+// （`contextWindow` 全部收敛到 320000），钉在 5 上等于继续冒充旧客户端。
+func laneCandidates() []string {
+	base, err := strconv.Atoi(LaneVersion)
+	if err != nil {
+		return []string{LaneVersion}
+	}
+	out := make([]string, 0, laneGuessAhead+base)
+	for lane := base; lane <= base+laneGuessAhead; lane++ {
+		out = append(out, strconv.Itoa(lane))
+	}
+	for lane := base - 1; lane >= 2; lane-- {
+		out = append(out, strconv.Itoa(lane))
+	}
+	return out
+}
 
 // SetLane 设置当前车道（空串 = 用编译期默认值）。
 func (c *Client) SetLane(lane string) {
@@ -456,7 +481,7 @@ func (c *Client) Lane() string { return c.laneVersion() }
 // 命中即写回 Client，后续请求自动带新车道；全部候选失败时返回最后一个错误。
 func (c *Client) DetectLane(ctx context.Context, acct *Account) (string, error) {
 	var lastErr error
-	for _, lane := range LaneCandidates {
+	for _, lane := range laneCandidates() {
 		ok, err := c.laneWorks(ctx, lane, acct)
 		if ok {
 			c.SetLane(lane)

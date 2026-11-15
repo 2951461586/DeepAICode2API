@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/proxy"
 )
 
@@ -55,7 +56,7 @@ func decodeAction[T any](w http.ResponseWriter, raw []byte) (T, bool) {
 	var v T
 	if err := json.Unmarshal(raw, &v); err != nil {
 		var zero T
-		writeErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
 		return zero, false
 	}
 	return v, true
@@ -134,7 +135,7 @@ func (s *Server) adminImport(w http.ResponseWriter, raw []byte) {
 	}
 	results, err := deepai.ImportAllFromDesktop(body.Dir)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "导入失败: "+err.Error(), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "导入失败: "+err.Error(), "invalid_request_error")
 		return
 	}
 	imported := make([]map[string]any, 0, len(results))
@@ -148,7 +149,7 @@ func (s *Server) adminImport(w http.ResponseWriter, raw []byte) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(imported), "imported": imported})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(imported), "imported": imported})
 }
 
 // adminManual 用一把手工粘贴的 API Key 建账号。
@@ -159,7 +160,7 @@ func (s *Server) adminManual(w http.ResponseWriter, raw []byte) {
 	}
 	acct, err := deepai.AccountFromAPIKey(body.APIKey, body.Name, "manual", false)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
 	}
 	if strings.TrimSpace(body.Group) != "" {
@@ -170,7 +171,7 @@ func (s *Server) adminManual(w http.ResponseWriter, raw []byte) {
 		return
 	}
 	s.probeAndSaveAsync(acct)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "new": isNew, "id": acct.ID})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "new": isNew, "id": acct.ID})
 }
 
 // adminEnroll 把已验活的账号写入号池（唯一写入口）。
@@ -195,7 +196,7 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 	}
 	acct, err := deepai.AccountFromRegistration(reg)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
 	}
 
@@ -208,10 +209,10 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 		probed, err := s.probeAccountQuota(acct)
 		if err != nil {
 			if deepai.IsSocialLoginRequired(err) {
-				writeErr(w, http.StatusBadRequest, "上游已限制为 Google/Apple 登录（social_login_required），该 Key 无法推理", "social_login_required")
+				httpx.WriteErr(w, http.StatusBadRequest, "上游已限制为 Google/Apple 登录（social_login_required），该 Key 无法推理", "social_login_required")
 				return
 			}
-			writeErr(w, http.StatusBadRequest, "Key 验活失败: "+err.Error(), "invalid_request_error")
+			httpx.WriteErr(w, http.StatusBadRequest, "Key 验活失败: "+err.Error(), "invalid_request_error")
 			return
 		}
 		al = probed
@@ -225,10 +226,10 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 
 	id, isNew, err := s.enrollRegistration(reg, al)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "入池失败: "+err.Error(), "server_error")
+		httpx.WriteErr(w, http.StatusInternalServerError, "入池失败: "+err.Error(), "server_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "id": id, "new": isNew,
 		"email_verified": body.EmailVerified, "theos": al,
 	})
@@ -243,7 +244,7 @@ func (s *Server) adminRemove(w http.ResponseWriter, raw []byte) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": removed})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": removed})
 }
 
 func (s *Server) adminToggle(w http.ResponseWriter, raw []byte) {
@@ -255,7 +256,7 @@ func (s *Server) adminToggle(w http.ResponseWriter, raw []byte) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) adminClearErrors(w http.ResponseWriter, raw []byte) {
@@ -271,7 +272,7 @@ func (s *Server) adminClearErrors(w http.ResponseWriter, raw []byte) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // adminAssignMachine 为存量账号补一个独立机器指纹。
@@ -300,7 +301,7 @@ func (s *Server) adminAssignMachine(w http.ResponseWriter, raw []byte) {
 	// 重新探测配额，让调度能立即看到新指纹下的额度。
 	// 走登记过的批量入口：进程关停时要等这次落盘跑完。
 	s.probeBatchAsync(targets)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
 }
 
 // adminClearProxy 是 assign-proxy 的 clear 分支：把匹配账号的代理置空（回滚用）。
@@ -315,7 +316,7 @@ func (s *Server) adminClearProxy(w http.ResponseWriter, match func(*deepai.Accou
 	if !s.persistOrFail(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
 }
 
 // adminAssignProxy 把注册代理池（PROXY_POOL / PROXY_POOL_FILE）轮询分配给号池账号。
@@ -345,11 +346,11 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 
 	pool, err := loadProxyPool()
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "代理池配置错误: "+err.Error(), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "代理池配置错误: "+err.Error(), "invalid_request_error")
 		return
 	}
 	if pool == nil || pool.Len() == 0 {
-		writeErr(w, http.StatusBadRequest, "未配置代理池（PROXY_POOL / DEEPAI_REGISTER_PROXY_POOL / PROXY_POOL_FILE）", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "未配置代理池（PROXY_POOL / DEEPAI_REGISTER_PROXY_POOL / PROXY_POOL_FILE）", "invalid_request_error")
 		return
 	}
 
@@ -372,7 +373,7 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "assigned": assigned, "pool_size": pool.Len(), "proxies": dist,
 	})
 }
@@ -384,10 +385,10 @@ func (s *Server) adminMarkVerified(w http.ResponseWriter, raw []byte) {
 		return
 	}
 	if err := s.markAccountVerified(body.ID, body.Email); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error(), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusNotFound, err.Error(), "invalid_request_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // adminSetGroup 把账号迁到另一个分组（例如把压测批次并入日常号池）。
@@ -400,7 +401,7 @@ func (s *Server) adminSetGroup(w http.ResponseWriter, raw []byte) {
 	}
 	target := strings.TrimSpace(body.Group)
 	if target == "" {
-		writeErr(w, http.StatusBadRequest, "group 不能为空", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "group 不能为空", "invalid_request_error")
 		return
 	}
 	moved := s.Store.UpdateAccounts(func(a *deepai.Account) bool {
@@ -419,5 +420,5 @@ func (s *Server) adminSetGroup(w http.ResponseWriter, raw []byte) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "moved": moved, "group": target})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "moved": moved, "group": target})
 }

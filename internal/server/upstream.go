@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/logx"
 	"encoding/json"
 	"errors"
@@ -165,7 +166,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		// 形状被拒：上面已经补形状重试过一次（仍失败说明补了也不行）。
 		case actShapeFallback:
 			return nil, acct, httpErr
-		// 车道不对：先用免鉴权的 /models 探一次，命中新车道就换道重试；
+		// 车道不对：先借账号凭据打 /models 探一次，命中新车道就换道重试；
 		// 仍在冷却期 / 探测失败时把 426 原样交给调用方（提示升级网关）。
 		case actProbeLane:
 			before := s.CurrentLane()
@@ -265,20 +266,20 @@ func writeUpstreamErr(w http.ResponseWriter, err error) {
 		if json.Valid(he.Body) && len(he.Body) > 0 {
 			// 走统一的原始 JSON 写出：Content-Type 与状态码只在 writeRawJSON 一处维护，
 			// 避免每个错误分支各拼一遍响应头。写的是 JSON，不是 HTML。
-			writeRawJSON(w, he.Status, he.Body)
+			httpx.WriteRawJSON(w, he.Status, he.Body)
 			return
 		}
-		writeErr(w, he.Status, he.Error(), "upstream_error")
+		httpx.WriteErr(w, he.Status, he.Error(), "upstream_error")
 		return
 	}
 	if errors.Is(err, context.Canceled) {
 		return
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		writeErr(w, http.StatusGatewayTimeout, "上游请求超时", "upstream_error")
+		httpx.WriteErr(w, http.StatusGatewayTimeout, "上游请求超时", "upstream_error")
 		return
 	}
-	writeErr(w, http.StatusBadGateway, err.Error(), "upstream_error")
+	httpx.WriteErr(w, http.StatusBadGateway, err.Error(), "upstream_error")
 }
 
 // writeAnthropicUpstreamErr 按 Anthropic 错误结构回传上游错误。

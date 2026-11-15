@@ -2,11 +2,15 @@
 //
 // 口令来源只有一个：本标签页的 sessionStorage（登录页写入）。控制台不再有
 // 顶部口令输入框，因此这里也不再去读 DOM —— 401 一律清口令并回登录页。
+//
+// 结构：fetch 一次 → decodeResponse 归一 → api() 只负责去重 / 超时 / 重试。
+// 首次请求与重试共用同一条归一链路，避免两处错误文案再次分叉。
 
 import { getLang } from './i18n.js';
 
 const PW_KEY = "deepaicode2api_pw";
 const LOGIN_PATH = "/login";
+const RETRY_DELAY_MS = 300;
 
 const inflight = {};
 
@@ -46,12 +50,80 @@ function toLogin() {
   if (location.pathname !== LOGIN_PATH) location.replace(LOGIN_PATH);
 }
 
-// api(path, opts) 调用管理接口。
+// apiTimeout 超时上限：GET 15s / 其它 90s。
 //
-// 超过 timeoutMs 则中止请求（GET 15s / 其它 90s）：没有超时时一个悬挂的
-// fetch 会让 UI 永久停在旧状态，而 401 也不会再来触发回登录页。
+// 没有超时时一个悬挂的 fetch 会让 UI 永久停在旧状态，而 401 也不会再来
+// 触发回登录页。
 function apiTimeout(method) {
   return method === "GET" ? 15000 : 90000;
+}
+
+// makeError 把一次非 2xx 响应归一成前端 Error（带 status / type / detail）。
+//
+// detail 永远保留后端原文（中文）：英文界面下它只进控制台，方便排查。
+function makeError(status, payload, raw) {
+  var detail = (payload && payload.error && payload.error.message) || raw || ("HTTP " + status);
+  var type = (payload && payload.error && payload.error.type) || "";
+  var msg = detail;
+  if (getLang() === "en") {
+    msg = (ERROR_EN[type] || "Request failed") + " (HTTP " + status + ")";
+    if (msg !== detail) console.warn("[api]", detail);
+  }
+  var err = new Error(msg);
+  err.status = status;
+  err.detail = detail;
+  err.type = type;
+  return err;
+}
+
+// timeoutError 是 AbortError 的可读替身（保留 status=0 供重试判定）。
+function timeoutError() {
+  var e = new Error("请求超时（服务端未在限定时间内响应）");
+  e.status = 0;
+  return e;
+}
+
+// decodeResponse 解析响应体；非 2xx 抛归一后的错误。
+//
+// 401 在这里统一处理：清口令并回登录页，别让控制台一直空转。重试路径也走
+// 这里，因此重试拿到 401 同样会跳登录页（旧实现只在首发路径处理）。
+function decodeResponse(r) {
+  return r.text().then(function (txt) {
+    var j = null;
+    try { j = JSON.parse(txt); } catch { /* 非 JSON 错误体：走原文兜底 */ }
+    if (!r.ok) {
+      if (r.status === 401) {
+        clearPw();
+        toLogin();
+      }
+      throw makeError(r.status, j, txt);
+    }
+    return j;
+  });
+}
+
+// fetchJSON 发一次请求并归一结果（不含重试）。
+function fetchJSON(path, method, headers, signal, body) {
+  return fetch(path, {
+    method: method,
+    headers: headers,
+    signal: signal,
+    body: body
+  }).then(decodeResponse).catch(function (e) {
+    if (e && e.name === "AbortError") throw timeoutError();
+    throw e;
+  });
+}
+
+// isTransient 判断是否值得重试：网络错误（status=0）与 5xx。
+//
+// 401 不在此列 —— decodeResponse 已经清口令并跳登录页。
+function isTransient(e) {
+  return !e || e.status === 0 || e.status >= 500;
+}
+
+function sleep(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
 }
 
 export function api(path, opts) {
@@ -61,88 +133,45 @@ export function api(path, opts) {
   var dedupeKey = method + " " + path;
   if (method === "GET" && inflight[dedupeKey]) return inflight[dedupeKey];
 
-  var h = { "Content-Type": "application/json" };
+  var headers = { "Content-Type": "application/json" };
   var secret = pw();
-  if (secret) h["X-Admin-Password"] = secret;
+  if (secret) headers["X-Admin-Password"] = secret;
+  var body = opts.body ? JSON.stringify(opts.body) : undefined;
 
-  // attempt 是重试次数：GET 是幂等的，网络错误 / 5xx 自动重试一次
-  // （300ms 退避）。POST 不重试：创建密钥、清空日志这类操作重放会出问题。
-  var attempt = 0;
+  // 一次逻辑请求只有一个 AbortController：重试复用同一个中止点。
   var ctrl = typeof AbortController === "function" ? new AbortController() : null;
-  var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, apiTimeout(method)) : null;
+  var signal = ctrl ? ctrl.signal : undefined;
+  var timer = null;
 
-  var p = fetch(path, {
-    method: method,
-    headers: h,
-    signal: ctrl ? ctrl.signal : undefined,
-    body: opts.body ? JSON.stringify(opts.body) : undefined
-  }).then(function (r) {
-    return r.text().then(function (txt) {
-      var j = null;
-      try { j = JSON.parse(txt); } catch { /* 非 JSON 错误体：下面用原文兜底 */ }
-      if (!r.ok) {
-        // 口令错 / 会话里没有口令：清掉并回登录页，别让控制台一直空转 401。
-        if (r.status === 401) {
-          clearPw();
-          toLogin();
-        }
-        var detail = (j && j.error && j.error.message) || txt || ("HTTP " + r.status);
-        var type = (j && j.error && j.error.type) || "";
-        var msg = detail;
-        if (getLang() === "en") {
-          msg = (ERROR_EN[type] || "Request failed") + " (HTTP " + r.status + ")";
-        }
-        var err = new Error(msg);
-        err.status = r.status;
-        err.detail = detail;
-        err.type = type;
-        // 英文界面下原文只进控制台：排查时仍能拿到后端的确切中文原因。
-        if (msg !== detail) console.warn("[api]", detail);
-        throw err;
-      }
-      return j;
-    });
-  }).catch(function (e) {
-    // AbortError 的 message 是英文且对用户无意义，换成可读文案并保留 status=0。
-    if (e && e.name === "AbortError") {
-      var te = new Error("请求超时（服务端未在限定时间内响应）");
-      te.status = 0;
-      throw te;
-    }
-    throw e;
-  }).finally(function () {
+  function arm() {
+    if (!ctrl) return;
     if (timer) clearTimeout(timer);
-  }).catch(function (e) {
-    // GET 的一次性重试：只针对「网络错误 / 5xx」这类瞬时失败。
-    // 401 已经在上面的分支里清口令并跳登录页，不会走到这里重试。
-    var transient = !e || e.status === 0 || e.status >= 500;
-    if (method === "GET" && attempt === 0 && transient) {
-      attempt = 1;
-      return new Promise(function (resolve) { setTimeout(resolve, 300); })
-        .then(function () {
-          // 只重置超时定时器，不重建 AbortController：一次逻辑请求一个中止点。
-          if (ctrl) { clearTimeout(timer); timer = setTimeout(function () { ctrl.abort(); }, apiTimeout(method)); }
-          return fetch(path, {
-            method: method,
-            headers: h,
-            signal: ctrl ? ctrl.signal : undefined
-          }).then(function (r2) {
-            return r2.text().then(function (txt2) {
-              var j2 = null;
-              try { j2 = JSON.parse(txt2); } catch { /* 原文兜底 */ }
-              if (!r2.ok) {
-                var err2 = new Error((j2 && j2.error && j2.error.message) || txt2 || ("HTTP " + r2.status));
-                err2.status = r2.status;
-                err2.detail = (j2 && j2.error && j2.error.message) || txt2;
-                err2.type = (j2 && j2.error && j2.error.type) || "";
-                throw err2;
-              }
-              return j2;
-            });
-          }).finally(function () { if (timer) clearTimeout(timer); });
-        });
-    }
-    throw e;
+    timer = setTimeout(function () { ctrl.abort(); }, apiTimeout(method));
+  }
+  function disarm() {
+    if (timer) { clearTimeout(timer); timer = null; }
+  }
+
+  arm();
+  var p = fetchJSON(path, method, headers, signal, body).then(function (v) {
+    disarm();
+    return v;
+  }, function (e) {
+    disarm();
+    // GET 幂等：网络错误 / 5xx 自动重试一次（300ms 退避）。
+    // POST 不重试：创建密钥、清空日志这类操作重放会出问题。
+    if (method !== "GET" || !isTransient(e)) throw e;
+    return sleep(RETRY_DELAY_MS).then(function () {
+      arm();
+      // 重试不带 body：只有 GET 会走到这里。
+      return fetchJSON(path, method, headers, signal).then(function (v) {
+        disarm();
+        return v;
+      }, function (e2) {
+        disarm();
+        throw e2;
+      });
+    });
   });
 
   if (method === "GET") {

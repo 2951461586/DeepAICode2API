@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 )
 
 // --- Anthropic 请求模型 ---
@@ -21,7 +22,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	start := time.Now()
 
-	req, ok := decodeJSONRequest[anthropicRequest](w, r, func(code int, msg string) {
+	req, ok := httpx.DecodeJSONRequest[anthropicRequest](w, r, func(code int, msg string) {
 		writeAnthropicErr(w, code, "invalid_request_error", msg)
 	})
 	if !ok {
@@ -56,7 +57,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 
 // blockingAnthropic 收集完整回复后按 Anthropic message 结构返回。
 func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
-	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
+	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
 	out, acct, err := s.callJSON(ctx, deepai.PathChat, payload, affinity, s.requestGroup(r), rl.apiKey())
@@ -71,12 +72,12 @@ func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, paylo
 	outLen := anthropicTextLen(msg)
 
 	rl.done(outLen, usage, nil)
-	writeJSON(w, http.StatusOK, msg)
+	httpx.WriteJSON(w, http.StatusOK, msg)
 }
 
 // streamAnthropic 以 Anthropic SSE 事件模型流式返回。
 func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
-	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
+	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
 	body, err := json.Marshal(payload)
@@ -142,12 +143,16 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 		return true
 	})
 
-	block.Close()
 	if streamErr != nil {
+		// 出错时只关闭当前已打开的块，不 flush 工具缓冲：
+		// 参数 JSON 可能只到了一半，当作完整 tool_use 发出去会让客户端解析失败。
+		block.Close()
 		send("error", map[string]any{
 			"type":  "error",
 			"error": map[string]any{"type": "api_error", "message": streamErr.Error()},
 		})
+	} else {
+		block.Finish()
 	}
 	outputTokens := usage.CompletionTokens
 	if outputTokens == 0 {
@@ -175,7 +180,7 @@ func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Reque
 		writeAnthropicErr(w, http.StatusMethodNotAllowed, "invalid_request_error", "仅支持 POST")
 		return
 	}
-	req, ok := decodeJSONRequest[anthropicRequest](w, r, func(code int, msg string) {
+	req, ok := httpx.DecodeJSONRequest[anthropicRequest](w, r, func(code int, msg string) {
 		writeAnthropicErr(w, code, "invalid_request_error", msg)
 	})
 	if !ok {
@@ -187,7 +192,7 @@ func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	rawPayload, _ := json.Marshal(payload)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"input_tokens": estTokens(len(rawPayload)),
 	})
 }
@@ -204,7 +209,7 @@ func estTokens(chars int) int {
 
 // writeAnthropicErr 按 Anthropic 的错误结构返回。
 func writeAnthropicErr(w http.ResponseWriter, code int, typ, msg string) {
-	writeJSON(w, code, map[string]any{
+	httpx.WriteJSON(w, code, map[string]any{
 		"type":  "error",
 		"error": map[string]any{"type": typ, "message": msg},
 	})

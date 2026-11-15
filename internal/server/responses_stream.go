@@ -1,6 +1,7 @@
 package server
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -26,7 +27,16 @@ type responsesStreamGen struct {
 	reasoningBuf  strings.Builder
 	toolItems     map[int]*responsesToolState
 	finishReason  string
-	output        []any
+	// output 按 output_index 记录最终条目：关闭顺序（文本 → 推理 → 工具）与
+	// output_index 不一定同序（上游可能先发工具再发文本），发出前必须按
+	// index 排序，否则 response.output 的顺序与流里报的 output_index 矛盾。
+	output []responsesOutputItem
+}
+
+// responsesOutputItem 是最终 response.output 的一项（带排序键）。
+type responsesOutputItem struct {
+	index int
+	item  map[string]any
 }
 
 type responsesToolState struct {
@@ -45,7 +55,7 @@ func newResponsesStreamGen(sw *sseWriter, model string) *responsesStreamGen {
 		respID:    "resp_" + deepai.RandomHex(12),
 		createdAt: time.Now().Unix(),
 		toolItems: map[int]*responsesToolState{},
-		output:    []any{},
+		output:    []responsesOutputItem{},
 	}
 }
 
@@ -60,7 +70,7 @@ func (g *responsesStreamGen) response(status string, usage Usage) map[string]any
 	resp := map[string]any{
 		"id": g.respID, "object": "response", "created_at": g.createdAt,
 		"status": status, "model": g.model,
-		"output":              g.output,
+		"output":              g.sortedOutput(),
 		"output_text":         g.textBuf.String(),
 		"parallel_tool_calls": true,
 		"tool_choice":         "auto",
@@ -76,6 +86,18 @@ func (g *responsesStreamGen) response(status string, usage Usage) map[string]any
 		}
 	}
 	return resp
+}
+
+// sortedOutput 按 output_index 返回最终输出条目（不改动内部切片）。
+func (g *responsesStreamGen) sortedOutput() []any {
+	items := make([]responsesOutputItem, len(g.output))
+	copy(items, g.output)
+	sort.SliceStable(items, func(i, j int) bool { return items[i].index < items[j].index })
+	out := make([]any, len(items))
+	for i, it := range items {
+		out[i] = it.item
+	}
+	return out
 }
 
 func (g *responsesStreamGen) created() {
@@ -173,7 +195,7 @@ func (g *responsesStreamGen) closeReasoning() {
 		"id": g.reasoningID, "type": "reasoning", "status": "completed",
 		"summary": []any{map[string]any{"type": "summary_text", "text": text}},
 	}
-	g.output = append(g.output, item)
+	g.output = append(g.output, responsesOutputItem{index: g.outputIndex, item: item})
 	g.emit("response.reasoning_summary_text.done", map[string]any{
 		"item_id": g.reasoningID, "output_index": g.outputIndex, "summary_index": 0, "text": text,
 	})
@@ -195,7 +217,7 @@ func (g *responsesStreamGen) closeText() {
 		"role":    "assistant",
 		"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
 	}
-	g.output = append(g.output, item)
+	g.output = append(g.output, responsesOutputItem{index: g.outputIndex, item: item})
 	g.emit("response.output_text.done", map[string]any{
 		"item_id": g.textItemID, "output_index": g.outputIndex, "content_index": 0, "text": text,
 	})
@@ -210,7 +232,15 @@ func (g *responsesStreamGen) closeText() {
 }
 
 func (g *responsesStreamGen) closeTools() {
-	for _, state := range g.toolItems {
+	// map 迭代顺序是随机的；最终 response.output 必须按 output_index 排列，
+	// 否则并行工具调用的输出顺序会随机变化。
+	idxs := make([]int, 0, len(g.toolItems))
+	for idx := range g.toolItems {
+		idxs = append(idxs, idx)
+	}
+	sort.Ints(idxs)
+	for _, idx := range idxs {
+		state := g.toolItems[idx]
 		if state.finished {
 			continue
 		}
@@ -220,7 +250,7 @@ func (g *responsesStreamGen) closeTools() {
 			"id": state.itemID, "type": "function_call", "status": "completed",
 			"call_id": state.callID, "name": state.name, "arguments": args,
 		}
-		g.output = append(g.output, item)
+		g.output = append(g.output, responsesOutputItem{index: state.index, item: item})
 		g.emit("response.function_call_arguments.done", map[string]any{
 			"item_id": state.itemID, "output_index": state.index, "arguments": args,
 		})

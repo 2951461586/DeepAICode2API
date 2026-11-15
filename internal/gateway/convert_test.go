@@ -146,9 +146,15 @@ func TestAnthropicEffort(t *testing.T) {
 		{"预算 4096~16383 → medium", &AnthropicRequest{
 			Thinking: raw(t, map[string]any{"type": "enabled", "budget_tokens": 8000}),
 		}, "medium"},
-		{"预算 ≥ 16384 → high", &AnthropicRequest{
+		{"预算 16384~32767 → high", &AnthropicRequest{
 			Thinking: raw(t, map[string]any{"type": "enabled", "budget_tokens": 32000}),
 		}, "high"},
+		{"预算 32768~65535 → xhigh", &AnthropicRequest{
+			Thinking: raw(t, map[string]any{"type": "enabled", "budget_tokens": 40000}),
+		}, "xhigh"},
+		{"预算 ≥ 65536 → max", &AnthropicRequest{
+			Thinking: raw(t, map[string]any{"type": "enabled", "budget_tokens": 80000}),
+		}, "max"},
 		{"thinking 不是对象", &AnthropicRequest{Thinking: raw(t, "enabled")}, ""},
 		{"未知 type", &AnthropicRequest{
 			Thinking: raw(t, map[string]any{"type": "weird"}),
@@ -215,6 +221,28 @@ func TestAppendAnthropicMessage(t *testing.T) {
 		parts := msgs[0].(map[string]any)["content"].([]any)
 		if got := parts[0].(map[string]any)["text"]; got != "[document] 合同.pdf" {
 			t.Fatalf("降级文本 = %v", got)
+		}
+	})
+
+	// OpenAI 要求 role=tool 紧跟带 tool_calls 的 assistant；Anthropic 常把
+	// tool_result 和后续说明放在同一条 user 消息里，必须先发 tool 再发文本。
+	t.Run("tool_result 先于同条消息的文本", func(t *testing.T) {
+		var msgs []any
+		err := AppendAnthropicMessage(&msgs, AnthropicMessage{Role: "user", Content: raw(t, []any{
+			map[string]any{"type": "text", "text": "补充说明"},
+			map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "结果"},
+		})})
+		if err != nil {
+			t.Fatalf("转换失败: %v", err)
+		}
+		if len(msgs) != 2 {
+			t.Fatalf("消息数 = %d，期望 tool + user: %#v", len(msgs), msgs)
+		}
+		if role := msgs[0].(map[string]any)["role"]; role != "tool" {
+			t.Fatalf("首条应为 tool，实际 %v: %#v", role, msgs)
+		}
+		if role := msgs[1].(map[string]any)["role"]; role != "user" {
+			t.Fatalf("次条应为 user，实际 %v: %#v", role, msgs)
 		}
 	})
 
@@ -451,6 +479,46 @@ func TestResponsesToChatPayload(t *testing.T) {
 	}
 }
 
+// 并行工具调用：连续多个 function_call 必须合并成同一条 assistant 消息，
+// 否则 tool 消息不紧跟带 tool_calls 的 assistant，上游会拒或错配。
+func TestResponsesToChatParallelToolCalls(t *testing.T) {
+	out, err := ResponsesToChatPayload(map[string]any{
+		"input": []any{
+			map[string]any{"type": "function_call", "call_id": "c0", "name": "a", "arguments": `{"x":1}`},
+			map[string]any{"type": "function_call", "call_id": "c1", "name": "b", "arguments": `{"y":2}`},
+			map[string]any{"type": "function_call_output", "call_id": "c0", "output": "r0"},
+			map[string]any{"type": "function_call_output", "call_id": "c1", "output": "r1"},
+		},
+	}, "m")
+	if err != nil {
+		t.Fatalf("转换失败: %v", err)
+	}
+	msgs := out["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("消息数 = %d，期望 assistant + 2×tool: %#v", len(msgs), msgs)
+	}
+	asst := msgs[0].(map[string]any)
+	if asst["role"] != "assistant" {
+		t.Fatalf("首条应为 assistant: %#v", asst)
+	}
+	calls := asst["tool_calls"].([]any)
+	if len(calls) != 2 {
+		t.Fatalf("assistant tool_calls = %d，期望 2: %#v", len(calls), calls)
+	}
+	if id := calls[0].(map[string]any)["id"]; id != "c0" {
+		t.Fatalf("tool_calls[0].id = %v", id)
+	}
+	if id := calls[1].(map[string]any)["id"]; id != "c1" {
+		t.Fatalf("tool_calls[1].id = %v", id)
+	}
+	for i, want := range []string{"c0", "c1"} {
+		tool := msgs[i+1].(map[string]any)
+		if tool["role"] != "tool" || tool["tool_call_id"] != want {
+			t.Fatalf("tool 消息 %d = %#v", i, tool)
+		}
+	}
+}
+
 func TestResponsesToChatPayloadStringInput(t *testing.T) {
 	out, err := ResponsesToChatPayload(map[string]any{"input": "hi"}, "m")
 	if err != nil {
@@ -594,6 +662,62 @@ func TestParseUsage(t *testing.T) {
 	}
 }
 
+// 并行工具调用的参数分片可能交错到达：必须按 tool index 归位，
+// 不能把 tool#1 的分片写进 tool#0 的块里（块一旦 close 就不能再追加）。
+func TestAnthropicBlockWriterInterleavedToolCalls(t *testing.T) {
+	type ev struct {
+		name string
+		body map[string]any
+	}
+	var events []ev
+	b := NewAnthropicBlockWriter(func(name string, v any) {
+		events = append(events, ev{name: name, body: v.(map[string]any)})
+	})
+
+	b.ToolCall(0, "t1", "lookup", `{"a"`)
+	b.ToolCall(1, "t2", "other", `{"b"`)
+	b.ToolCall(0, "", "", `:1}`)
+	b.ToolCall(1, "", "", `:2}`)
+	b.Finish()
+
+	type block struct {
+		id, name, args string
+		closed         bool
+	}
+	var blocks []*block
+	var open *block
+	for _, e := range events {
+		switch e.name {
+		case "content_block_start":
+			cb, _ := e.body["content_block"].(map[string]any)
+			open = &block{id: StrOf(cb["id"]), name: StrOf(cb["name"])}
+			blocks = append(blocks, open)
+		case "content_block_delta":
+			d, _ := e.body["delta"].(map[string]any)
+			if StrOf(d["type"]) == "input_json_delta" && open != nil {
+				open.args += StrOf(d["partial_json"])
+			}
+		case "content_block_stop":
+			if open != nil {
+				open.closed = true
+				open = nil
+			}
+		}
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("工具块数 = %d，期望 2：%#v", len(blocks), blocks)
+	}
+	if blocks[0].id != "t1" || blocks[0].name != "lookup" || blocks[0].args != `{"a":1}` {
+		t.Fatalf("tool#0 = %#v", blocks[0])
+	}
+	if blocks[1].id != "t2" || blocks[1].name != "other" || blocks[1].args != `{"b":2}` {
+		t.Fatalf("tool#1 = %#v", blocks[1])
+	}
+	if !blocks[0].closed || !blocks[1].closed {
+		t.Fatalf("工具块必须全部关闭: %#v", blocks)
+	}
+}
+
 // --- 流式块管理 ---
 
 func TestAnthropicBlockWriter(t *testing.T) {
@@ -612,7 +736,7 @@ func TestAnthropicBlockWriter(t *testing.T) {
 	b.ToolCall(0, "t1", "lookup", `{"q":1}`)
 	b.ToolCall(0, "t1", "lookup", "") // 同一工具块不重复 open
 	b.ToolCall(1, "t2", "other", `{}`)
-	b.Close()
+	b.Finish()
 	b.Close() // 幂等：已关闭不再发事件
 
 	var starts, stops, deltas int
@@ -645,5 +769,33 @@ func TestAnthropicBlockWriter(t *testing.T) {
 		} else {
 			last = idx
 		}
+	}
+}
+
+// TestAnthropicBlockWriterCloseKeepsToolsBuffered 守住「出错路径不 flush 工具」。
+//
+// 流式过程中出错时参数 JSON 可能只到了一半；若把缓冲的工具块当完整块发出，
+// 客户端会拿到无法解析的 input。Close 只关闭已打开的块，Finish 才 flush。
+func TestAnthropicBlockWriterCloseKeepsToolsBuffered(t *testing.T) {
+	var events []string
+	b := NewAnthropicBlockWriter(func(name string, _ any) { events = append(events, name) })
+
+	b.ToolCall(0, "t1", "lookup", `{"a":1`)
+	b.Close()
+	for _, name := range events {
+		if name == "content_block_start" {
+			t.Fatal("Close 不应发出被缓冲的工具块（参数 JSON 可能不完整）")
+		}
+	}
+
+	b.Finish()
+	found := false
+	for _, name := range events {
+		if name == "content_block_start" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Finish 应发出缓冲的工具块")
 	}
 }

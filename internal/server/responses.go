@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 )
 
 // handleResponses 是 /v1/responses 的入口。
@@ -18,13 +19,13 @@ import (
 //     合成为 Responses 对象 / 事件流。
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
 	start := time.Now()
 
-	payload, ok := decodeJSONRequest[map[string]any](w, r, func(code int, msg string) {
-		writeErr(w, code, msg, "invalid_request_error")
+	payload, ok := httpx.DecodeJSONRequest[map[string]any](w, r, func(code int, msg string) {
+		httpx.WriteErr(w, code, msg, "invalid_request_error")
 	})
 	if !ok {
 		return
@@ -32,7 +33,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	model, modelOK := s.resolveModelOK(requestModelName(payload))
 	if !modelOK {
-		writeErr(w, http.StatusNotFound, s.unknownModelMessage(requestModelName(payload)), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusNotFound, s.unknownModelMessage(requestModelName(payload)), "invalid_request_error")
 		return
 	}
 	payload["model"] = model.ID
@@ -49,7 +50,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	chatPayload, err := responsesToChatPayload(payload, model.ID)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
 	}
 	if stream {
@@ -61,7 +62,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 // passthroughResponses 透传上游 /responses。
 func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
-	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
+	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
 	// 同上：上游缺省 stream 时按 SSE 返回，必须显式下发。
@@ -69,7 +70,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 	body, err := json.Marshal(payload)
 	if err != nil {
 		rl.doneStatus(http.StatusBadRequest, 0, Usage{}, err)
-		writeErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")
 		return
 	}
 	resp, acct, err := s.openModel(ctx, deepai.PathResponses, body, affinity, s.requestGroup(r), rl.apiKey(), rl.stream)
@@ -85,7 +86,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 		rawResp, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 		if err != nil {
 			rl.done(0, Usage{}, err)
-			writeErr(w, http.StatusBadGateway, "读取上游响应失败: "+err.Error(), "upstream_error")
+			httpx.WriteErr(w, http.StatusBadGateway, "读取上游响应失败: "+err.Error(), "upstream_error")
 			return
 		}
 		var out map[string]any
@@ -93,7 +94,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 			// 上游回的不是 JSON（HTML 登录页 / SSE 帧 / 纯文本限流提示）。
 			// 保持原样透传 + 200（客户端拿到的与上游一致），但**必须留日志**：
 			// 旧实现在这里直接 return，请求会从控制台日志与统计里彻底消失。
-			writeRawJSON(w, http.StatusOK, rawResp)
+			httpx.WriteRawJSON(w, http.StatusOK, rawResp)
 			rl.doneStatus(http.StatusOK, 0, Usage{},
 				fmt.Errorf("上游响应不是合法 JSON（已原样透传）: %w", err))
 			return
@@ -103,7 +104,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 		outLen := responsesTextLen(out)
 		encoded, _ := json.Marshal(out)
 		rl.done(outLen, usage, nil)
-		writeRawJSON(w, http.StatusOK, encoded)
+		httpx.WriteRawJSON(w, http.StatusOK, encoded)
 		return
 	}
 
@@ -159,7 +160,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 
 // blockingResponsesAsChat 用 Chat Completions 合成 Responses 响应。
 func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog) {
-	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
+	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
 	out, acct, err := s.callJSON(ctx, deepai.PathChat, chatPayload, affinity, s.requestGroup(r), rl.apiKey())
@@ -174,18 +175,18 @@ func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request,
 	outLen := responsesTextLen(respObj)
 
 	rl.done(outLen, usage, nil)
-	writeJSON(w, http.StatusOK, respObj)
+	httpx.WriteJSON(w, http.StatusOK, respObj)
 }
 
 // streamResponsesAsChat 用 Chat Completions 流合成 Responses 事件流。
 func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog) {
-	ctx, cancel := contextWithTimeout(r, s.requestTimeout())
+	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
 	body, err := json.Marshal(chatPayload)
 	if err != nil {
 		rl.doneStatus(http.StatusBadRequest, 0, Usage{}, err)
-		writeErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")
 		return
 	}
 	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, s.requestGroup(r), rl.apiKey(), true)

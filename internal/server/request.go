@@ -3,7 +3,6 @@ package server
 import (
 	"deepaicode2api/internal/deepai"
 	"encoding/json"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -11,6 +10,8 @@ import (
 )
 
 // maxRequestBody 限制入站请求体大小。
+//
+// 实际读取已移到 httpx.ReadBodyWithLimit（同一常量在 httpx.MaxRequestBody）。
 const maxRequestBody = 32 << 20
 
 // affinityPattern 与桌面端一致：只透传安全字符集的会话标识。
@@ -35,11 +36,6 @@ func affinityFor(r *http.Request, payload map[string]any) string {
 //
 // 没有它时，「MaxRetries × Retry-After≤30s」理论上可挂 90s 以上。
 const nonStreamBudget = 90 * time.Second
-
-// readBodyWithLimit 读取入站请求体。
-func readBodyWithLimit(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	return io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
-}
 
 // requestModelName 提取请求里的 model 字段。
 func requestModelName(payload map[string]any) string {

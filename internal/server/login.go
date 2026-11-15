@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 )
 
 // 浏览器登录（RFC 8252 本机回调）与桌面端完全同款：
@@ -147,7 +148,7 @@ func shutdownLoginServer(srv *http.Server) {
 // handleLoginStart 启动一次浏览器登录，返回可打开的 URL。
 func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
 
@@ -196,7 +197,7 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Login.put(session)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"session_id": id,
 		"open_url":   "/login/open?id=" + url.QueryEscape(id),
 		"port":       session.Port,
@@ -223,23 +224,23 @@ func fallbackLoginPort() int {
 // scheme/host/path，绝不使用请求参数拼 URL。
 func (s *Server) handleLoginOpen(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
 		return
 	}
 	session := s.Login.get(strings.TrimSpace(r.URL.Query().Get("id")))
 	if session == nil || session.Port == 0 {
-		writeErr(w, http.StatusNotFound, "登录会话不存在或已过期", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusNotFound, "登录会话不存在或已过期", "invalid_request_error")
 		return
 	}
 	if time.Since(session.Created) > loginTTL {
 		s.Login.remove(session.ID)
 		shutdownLoginServer(session.srv)
-		writeErr(w, http.StatusGone, "登录会话已过期", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusGone, "登录会话已过期", "invalid_request_error")
 		return
 	}
 	target := s.Up.SignInURL(session.State, session.Port)
 	if !isSafeLoginURL(target, s.Up.Origin) {
-		writeErr(w, http.StatusInternalServerError, "登录地址校验失败", "server_error")
+		httpx.WriteErr(w, http.StatusInternalServerError, "登录地址校验失败", "server_error")
 		return
 	}
 	h := w.Header()
@@ -268,38 +269,38 @@ func isSafeLoginURL(raw, origin string) bool {
 // handleLoginPoll 轮询浏览器登录结果。
 func (s *Server) handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
 	var body struct {
 		SessionID string `json:"session_id"`
 	}
-	if !decodeOptionalJSON(w, r, &body) {
+	if !httpx.DecodeOptionalJSON(w, r, &body) {
 		return
 	}
 	if strings.TrimSpace(body.SessionID) == "" {
-		writeErr(w, http.StatusBadRequest, "缺少 session_id", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "缺少 session_id", "invalid_request_error")
 		return
 	}
 
 	session := s.Login.get(body.SessionID)
 	if session == nil {
-		writeErr(w, http.StatusNotFound, "登录会话不存在或已过期", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusNotFound, "登录会话不存在或已过期", "invalid_request_error")
 		return
 	}
 	if time.Since(session.Created) > loginTTL {
 		s.Login.remove(body.SessionID)
 		shutdownLoginServer(session.srv)
-		writeJSON(w, http.StatusOK, map[string]any{"status": "expired"})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "expired"})
 		return
 	}
 
 	result := session.snapshotResult()
 	if result == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "pending"})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "pending"})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.completeLogin(session))
+	httpx.WriteJSON(w, http.StatusOK, s.completeLogin(session))
 }
 
 // handleLoginCallback 用「粘贴回来的回调 URL」完成登录。
@@ -310,7 +311,7 @@ func (s *Server) handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 // code/state 是有效的：本接口替用户把 code 换成 Key 并完成入池，等价于本机回调。
 func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
 	var body struct {
@@ -320,32 +321,32 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		State     string `json:"state"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体不是合法 JSON", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "请求体不是合法 JSON", "invalid_request_error")
 		return
 	}
 	session := s.Login.get(strings.TrimSpace(body.SessionID))
 	if session == nil {
-		writeErr(w, http.StatusNotFound, "登录会话不存在、已结束或已过期（同一个 code 只能兑换一次）", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusNotFound, "登录会话不存在、已结束或已过期（同一个 code 只能兑换一次）", "invalid_request_error")
 		return
 	}
 	if time.Since(session.Created) > loginTTL {
 		s.Login.remove(session.ID)
 		shutdownLoginServer(session.srv)
-		writeJSON(w, http.StatusOK, map[string]any{"status": "expired"})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "expired"})
 		return
 	}
 
 	code, state, err := parseLoginCallback(body.Callback, body.Code, body.State)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
 	}
 	if !secureEqual(state, session.State) {
-		writeErr(w, http.StatusBadRequest, "回调里的 state 与本次登录不匹配：请确认粘贴的是本次登录的地址栏 URL", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "回调里的 state 与本次登录不匹配：请确认粘贴的是本次登录的地址栏 URL", "invalid_request_error")
 		return
 	}
 	if !session.beginExchange() {
-		writeErr(w, http.StatusConflict, "这次登录已经处理过（同一个 code 只能兑换一次），请重新发起登录", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusConflict, "这次登录已经处理过（同一个 code 只能兑换一次），请重新发起登录", "invalid_request_error")
 		return
 	}
 
@@ -356,11 +357,11 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		s.finishLogin(session, nil, xerr)
 		_ = s.completeLogin(session) // 收尾：删会话、关本机监听
 		status, msg := loginExchangeError(xerr)
-		writeErr(w, status, msg, "invalid_request_error")
+		httpx.WriteErr(w, status, msg, "invalid_request_error")
 		return
 	}
 	s.finishLogin(session, creds, nil)
-	writeJSON(w, http.StatusOK, s.completeLogin(session))
+	httpx.WriteJSON(w, http.StatusOK, s.completeLogin(session))
 }
 
 // loginExchangeError 把上游兑换失败翻译成控制台可直接展示的提示。

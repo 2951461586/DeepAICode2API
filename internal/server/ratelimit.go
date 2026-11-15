@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 )
 
 // keyIDOf 把密钥映射成限流桶的键。
@@ -175,6 +176,6 @@ func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
 		secs = 1
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
-	writeErr(w, http.StatusTooManyRequests,
+	httpx.WriteErr(w, http.StatusTooManyRequests,
 		"请求过于频繁（该 API 密钥已触发限流），请在 "+strconv.Itoa(secs)+" 秒后重试", "rate_limit_error")
 }

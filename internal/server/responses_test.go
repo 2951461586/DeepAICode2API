@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -363,5 +366,42 @@ func TestResponsesReasoningEffortMapping(t *testing.T) {
 				t.Fatalf("reasoning_effort = %q，期望 %q", got, c.want)
 			}
 		})
+	}
+}
+
+// TestResponsesOutputSortedByOutputIndex 守住 response.output 的顺序。
+//
+// 上游可能先给工具调用分片、后给正文（工具在前）；而 complete() 的关闭顺序
+// 固定是「文本 → 推理 → 工具」。若不按 output_index 重排，最终 output 会把
+// 文本排到工具前面，与流里报告的 output_index 自相矛盾。
+func TestResponsesOutputSortedByOutputIndex(t *testing.T) {
+	rec := httptest.NewRecorder()
+	g := newResponsesStreamGen(newSSEWriter(rec), "m")
+	g.toolCall(0, "call_a", "a", `{"x":1}`)
+	g.toolCall(1, "call_b", "b", `{"y":2}`)
+	g.textDelta("完成")
+	g.complete(Usage{})
+
+	if len(g.output) != 3 {
+		t.Fatalf("output = %d 项，期望 3", len(g.output))
+	}
+	idxs := make([]int, 0, len(g.output))
+	wantIdx := []int{0, 1, 2}
+	for _, it := range g.output {
+		idxs = append(idxs, it.index)
+	}
+	sort.Ints(idxs)
+	if !slices.Equal(idxs, wantIdx) {
+		t.Fatalf("output_index 集合 = %v，期望 %v", idxs, wantIdx)
+	}
+	types := make([]string, 0, 3)
+	for _, it := range g.sortedOutput() {
+		m, _ := it.(map[string]any)
+		typ, _ := m["type"].(string)
+		types = append(types, typ)
+	}
+	want := []string{"function_call", "function_call", "message"}
+	if strings.Join(types, ",") != strings.Join(want, ",") {
+		t.Fatalf("输出类型顺序 = %v，期望 %v", types, want)
 	}
 }

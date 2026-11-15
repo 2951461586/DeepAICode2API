@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"deepaicode2api/internal/httpx"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,17 +27,17 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 				next(w, r)
 				return
 			}
-			writeErr(w, http.StatusServiceUnavailable,
+			httpx.WriteErr(w, http.StatusServiceUnavailable,
 				"网关尚未签发 API 密钥，请先在本机控制台创建密钥（/admin）", "setup_required")
 			return
 		}
 		key := extractKey(r)
 		if key == "" {
-			writeErr(w, http.StatusUnauthorized, "缺少 API 密钥", "invalid_request_error")
+			httpx.WriteErr(w, http.StatusUnauthorized, "缺少 API 密钥", "invalid_request_error")
 			return
 		}
 		if !s.Store.ValidKey(key) {
-			writeErr(w, http.StatusUnauthorized, "API 密钥无效或已停用", "invalid_request_error")
+			httpx.WriteErr(w, http.StatusUnauthorized, "API 密钥无效或已停用", "invalid_request_error")
 			return
 		}
 		// 按密钥隔离的限流：令牌桶（RPS）+ 在途并发。默认 0 = 不限。
@@ -66,12 +67,12 @@ func (s *Server) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			if !secureEqual(adminPasswordFrom(r), pw) {
 				s.noteAdminAuthFailure(r)
-				writeErr(w, http.StatusUnauthorized, "管理密码缺失或错误", "invalid_request_error")
+				httpx.WriteErr(w, http.StatusUnauthorized, "管理密码缺失或错误", "invalid_request_error")
 				return
 			}
 			s.noteAdminAuthSuccess(r)
 		} else if !isLoopbackAddr(r.RemoteAddr) {
-			writeErr(w, http.StatusForbidden, "未设置管理密码，管理接口仅允许本机访问", "invalid_request_error")
+			httpx.WriteErr(w, http.StatusForbidden, "未设置管理密码，管理接口仅允许本机访问", "invalid_request_error")
 			return
 		}
 
@@ -79,7 +80,7 @@ func (s *Server) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 		default:
 			if !s.adminSameOrigin(r) {
-				writeErr(w, http.StatusForbidden, "跨站请求被拒绝", "invalid_request_error")
+				httpx.WriteErr(w, http.StatusForbidden, "跨站请求被拒绝", "invalid_request_error")
 				return
 			}
 		}
@@ -173,8 +174,8 @@ func extractKey(r *http.Request) string {
 // 能进到这里就说明口令是对的。刻意不返回口令、不返回设置项，只说 ok。
 func (s *Server) handleAdminAuth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

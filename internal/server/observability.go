@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/logx"
 )
 
@@ -245,7 +246,7 @@ func (s *Server) poolSnapshot() poolSnapshot {
 // 挂 withAdminAuth：里面含号池规模与请求量，和 /admin/api/* 同级。
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
 		return
 	}
 	m := s.metrics

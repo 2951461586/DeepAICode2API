@@ -1,6 +1,7 @@
 package server
 
 import (
+	"deepaicode2api/internal/server/web"
 	"path"
 	"regexp"
 	"strings"
@@ -45,8 +46,8 @@ type consoleModule struct {
 func loadConsoleModules(t *testing.T) map[string]*consoleModule {
 	t.Helper()
 	mods := make(map[string]*consoleModule, 16)
-	for _, name := range consoleScriptNames() {
-		raw, err := consoleAssets.ReadFile(name)
+	for _, name := range web.ScriptNames() {
+		raw, err := web.Read(name)
 		if err != nil {
 			t.Fatalf("读取脚本 %s: %v", name, err)
 		}
@@ -122,7 +123,7 @@ func TestConsoleModulesImportWhatTheyCall(t *testing.T) {
 	}
 
 	calls := 0
-	for _, name := range consoleScriptNames() {
+	for _, name := range web.ScriptNames() {
 		m := mods[name]
 		for symbol := range owner {
 			if owner[symbol] == name {
@@ -157,7 +158,7 @@ func TestConsoleImportsResolve(t *testing.T) {
 	mods := loadConsoleModules(t)
 
 	checked := 0
-	for _, name := range consoleScriptNames() {
+	for _, name := range web.ScriptNames() {
 		m := mods[name]
 		for _, im := range m.imports {
 			checked++

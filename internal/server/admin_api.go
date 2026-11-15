@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/registry"
 	"deepaicode2api/internal/store"
 )
@@ -54,7 +55,7 @@ func accountView(a *deepai.Account) map[string]any {
 // 账号列表请走 /admin/api/accounts（支持分页与过滤）。
 func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
 		return
 	}
 	settings := s.Store.Settings()
@@ -97,7 +98,7 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 // 响应：{items, total, offset, limit}，并带 ETag。
 func (s *Server) handleAdminAccountsPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
 		return
 	}
 	q := r.URL.Query()
@@ -153,7 +154,7 @@ func logFilterFromQuery(r *http.Request) store.QueryFilter {
 func writeJSONCached(w http.ResponseWriter, r *http.Request, code int, v any) {
 	raw := jsonEvent(v)
 	if raw == nil {
-		writeErr(w, http.StatusInternalServerError, "响应序列化失败", "server_error")
+		httpx.WriteErr(w, http.StatusInternalServerError, "响应序列化失败", "server_error")
 		return
 	}
 	sum := sha256.Sum256(raw)
@@ -165,7 +166,7 @@ func writeJSONCached(w http.ResponseWriter, r *http.Request, code int, v any) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	writeRawJSON(w, code, raw)
+	httpx.WriteRawJSON(w, code, raw)
 }
 
 // etagMatches 判断 If-None-Match 里是否包含目标 ETag（支持逗号分隔与弱校验前缀）。

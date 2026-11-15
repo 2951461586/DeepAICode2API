@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 )
 
 // handleTranscriptions 对应 OpenAI /v1/audio/transcriptions。
@@ -17,29 +18,29 @@ import (
 // 这里保留客户端原始字节与 MIME，仅做字段映射。
 func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
 	start := time.Now()
 
 	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeErr(w, http.StatusBadRequest, "multipart 解析失败: "+err.Error(), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "multipart 解析失败: "+err.Error(), "invalid_request_error")
 		return
 	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "缺少 file 字段", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "缺少 file 字段", "invalid_request_error")
 		return
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, 8<<20+1))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "读取音频失败: "+err.Error(), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "读取音频失败: "+err.Error(), "invalid_request_error")
 		return
 	}
 	if len(data) > 8<<20 {
-		writeErr(w, http.StatusRequestEntityTooLarge, "音频超过 8 MB", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusRequestEntityTooLarge, "音频超过 8 MB", "invalid_request_error")
 		return
 	}
 
@@ -57,10 +58,10 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 
 	acct := s.nextAccount(r)
 	if acct == nil {
-		writeErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
 		return
 	}
-	ctx, cancel := contextWithTimeout(r, 60*time.Second)
+	ctx, cancel := httpx.ContextWithTimeout(r, 60*time.Second)
 	text, err := s.clientFor(acct).Transcribe(ctx, acct, header.Filename, contentType, data)
 	cancel()
 	rl := s.newReqLog(key, acct, "whisper-1", "audio", false, start, len(data))
@@ -79,7 +80,7 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(text))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"text": text})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"text": text})
 }
 
 // handleWebSearch 代理上游联网搜索能力。
@@ -94,28 +95,28 @@ func (s *Server) handleFindService(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) proxyExtension(w http.ResponseWriter, r *http.Request, path string) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
 	start := time.Now()
 	key := extractKey(r)
 	endpoint := strings.TrimPrefix(path, "/")
-	body, err := readBodyWithLimit(w, r)
+	body, err := httpx.ReadBodyWithLimit(w, r)
 	if err != nil {
-		writeErr(w, http.StatusRequestEntityTooLarge, "请求体过大", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusRequestEntityTooLarge, "请求体过大", "invalid_request_error")
 		return
 	}
 	if !json.Valid(body) {
-		writeErr(w, http.StatusBadRequest, "请求体必须是合法 JSON", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "请求体必须是合法 JSON", "invalid_request_error")
 		return
 	}
 
 	acct := s.nextAccount(r)
 	if acct == nil {
-		writeErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
 		return
 	}
-	ctx, cancel := contextWithTimeout(r, 60*time.Second)
+	ctx, cancel := httpx.ContextWithTimeout(r, 60*time.Second)
 	defer cancel()
 
 	var raw []byte
@@ -154,7 +155,7 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	key := extractKey(r)
 	acct := s.nextAccount(r)
 	if acct == nil {
-		writeErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
 		return
 	}
 	force := r.URL.Query().Get("force") == "1"
@@ -162,7 +163,7 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 		time.Since(time.Unix(acct.Theos.CheckedAt, 0)) < theosCacheTTL {
 		rl := s.newReqLog(key, acct, "-", "theos", false, start, 0)
 		rl.done(0, Usage{}, nil)
-		writeJSON(w, http.StatusOK, map[string]any{
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"account":  acct.ID,
 			"username": acct.Username,
 			"theos":    acct.Theos,
@@ -170,7 +171,7 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	ctx, cancel := contextWithTimeout(r, 30*time.Second)
+	ctx, cancel := httpx.ContextWithTimeout(r, 30*time.Second)
 	defer cancel()
 	al, err := s.clientFor(acct).Theos(ctx, acct)
 	rl := s.newReqLog(key, acct, "-", "theos", false, start, 0)
@@ -183,7 +184,7 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	s.Store.SetAccountAllowance(acct.ID, al, nil)
 	rl.done(0, Usage{}, nil)
 	s.persist()
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"account":  acct.ID,
 		"username": acct.Username,
 		"theos":    al,
@@ -196,10 +197,10 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	key := extractKey(r)
 	acct := s.nextAccount(r)
 	if acct == nil {
-		writeErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusServiceUnavailable, "没有可用账号", "invalid_request_error")
 		return
 	}
-	ctx, cancel := contextWithTimeout(r, 30*time.Second)
+	ctx, cancel := httpx.ContextWithTimeout(r, 30*time.Second)
 	defer cancel()
 	usage, err := s.clientFor(acct).UsageSummary(ctx, acct)
 	rl := s.newReqLog(key, acct, "-", "usage", false, start, 0)
@@ -211,7 +212,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Store.MarkAccountResult(acct.ID, true, "")
 	rl.done(0, Usage{}, nil)
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"account":  acct.ID,
 		"username": acct.Username,
 		"usage":    usage,

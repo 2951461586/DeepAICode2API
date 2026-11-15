@@ -6,13 +6,6 @@ import (
 	"net/http"
 )
 
-// writeRawJSON 直接写出已生成的 JSON 字节。
-func writeRawJSON(w http.ResponseWriter, code int, raw []byte) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	_, _ = w.Write(raw)
-}
-
 // sseWriter 统一 SSE 响应头与 flush。
 type sseWriter struct {
 	w       http.ResponseWriter

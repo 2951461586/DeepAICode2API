@@ -1,6 +1,7 @@
 package server
 
 import (
+	"deepaicode2api/internal/server/web"
 	"regexp"
 	"strings"
 	"testing"
@@ -24,12 +25,12 @@ var bareRefreshRe = regexp.MustCompile(`(^|[^\w.$])refresh\s*\(`)
 // actions.js 与 render/*.js 里不允许出现裸 refresh(。
 func TestConsoleModulesUseInjectedReload(t *testing.T) {
 	checked := 0
-	for _, name := range consoleScriptNames() {
-		if name != "web/js/actions.js" && !strings.HasPrefix(name, "web/js/render/") {
+	for _, name := range web.ScriptNames() {
+		if name != "js/actions.js" && !strings.HasPrefix(name, "js/render/") {
 			continue
 		}
 		checked++
-		raw, err := consoleAssets.ReadFile(name)
+		raw, err := web.Read(name)
 		if err != nil {
 			t.Fatalf("读取 %s 失败: %v", name, err)
 		}
@@ -48,7 +49,7 @@ func TestConsoleModulesUseInjectedReload(t *testing.T) {
 // TestConsoleActionsInjectsReload 确认注入点在 actions.js 里仍然成立：
 // 有 setReload 导出、有默认空实现，且收尾用的是 reload()。
 func TestConsoleActionsInjectsReload(t *testing.T) {
-	raw, err := consoleAssets.ReadFile("web/js/actions.js")
+	raw, err := web.Read("web/js/actions.js")
 	if err != nil {
 		t.Fatalf("读取 web/js/actions.js 失败: %v", err)
 	}

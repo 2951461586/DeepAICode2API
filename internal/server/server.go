@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/proxy"
 	"deepaicode2api/internal/registry"
 	"deepaicode2api/internal/store"
@@ -118,10 +119,10 @@ func New(st *store.Store) *Server {
 		adminGuard:         newAdminGuard(),
 		metrics:            newMetrics(),
 	}
-	// 上次探测到的车道优先（跨重启保留），但较新的编译期默认值优先于更旧的探测值：
-	// 否则升级到对齐新客户端的版本后，还会用旧车道跑到下一轮探测。
+	// 上次探测到的车道优先（跨重启保留）；CurrentLane 会区分「本次构建验证过
+	// 的探测值」与「旧版本残留」，后者才用较新的编译期默认值兜底。
 	if lane := strings.TrimSpace(st.Settings().Lane); lane != "" {
-		s.Up.SetLane(newerLane(lane))
+		s.Up.SetLane(s.CurrentLane())
 	}
 	s.applyRuntimeSettings()
 	return s
@@ -213,7 +214,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.handleRoot)
 
 	// 压缩在最内层：外层（观测）看到的是压缩后的字节数。
-	return s.withCORS(s.withObservability(withGzip(mux)))
+	return s.withCORS(s.withObservability(httpx.WithGzip(mux)))
 }
 
 // RefreshModels 从上游拉取模型目录并落盘。
@@ -247,7 +248,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// 与 /metrics 共用 poolSnapshot，避免两处给出互相矛盾的数。
 	pool := s.poolSnapshot()
 	models := s.catalog()
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":        "ok",
 		"version":       s.currentVersion(),
 		"accounts":      pool.Total,
@@ -268,7 +269,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
 		return
 	}
 	catalog := s.catalog()
@@ -295,13 +296,13 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
 // handleRoot 返回控制台单页；其余未知路径返回 404。
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		writeErr(w, http.StatusNotFound, "未找到该路径", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusNotFound, "未找到该路径", "invalid_request_error")
 		return
 	}
 	serveConsole(w, r)

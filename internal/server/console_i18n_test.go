@@ -1,6 +1,7 @@
 package server
 
 import (
+	"deepaicode2api/internal/server/web"
 	"regexp"
 	"strings"
 	"testing"
@@ -124,7 +125,7 @@ func i18nDictionary(t *testing.T, src string) map[string]string {
 // 只允许 i18nMissingAllowlist 里列出的结构性片段缺席。
 func TestConsoleI18nCoverage(t *testing.T) {
 	markup := consoleMarkup()
-	script := consoleJS()
+	script := web.Scripts()
 	dict := i18nDictionary(t, script)
 
 	candidates := map[string]string{} // 文案 → 出处
@@ -183,7 +184,7 @@ func TestConsoleI18nCoverage(t *testing.T) {
 //
 // JS 对象里重复键不报错，后者静默覆盖前者——表现是「改了词条但不生效」。
 func TestConsoleI18nNoDuplicateKeys(t *testing.T) {
-	html := consoleJS()
+	html := web.Scripts()
 	body := i18nDictBlock(t, html)
 
 	seen := map[string]int{}
@@ -208,7 +209,7 @@ func TestConsoleI18nNoDuplicateKeys(t *testing.T) {
 // 字典里形如 {"a\":\"b\"} 的转义键先反转义再匹配，避免因为 JSON 示例里的
 // 反斜杠误判成死词条。
 func TestConsoleI18nNoDeadEntries(t *testing.T) {
-	script := consoleJS()
+	script := web.Scripts()
 	dict := i18nDictionary(t, script)
 	// 挖掉字典：否则每个键都能在字典声明处匹配到自己。
 	// 同时去掉注释：注释里顺带提到某个词条（例如“阶段 A 的搬家”）不算文案在用 ——

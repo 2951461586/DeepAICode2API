@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/httpx"
 )
 
 // handleChatCompletions 是 /v1/chat/completions 的主入口。
@@ -17,25 +18,25 @@ import (
 // 透明代理”：改写模型名、注入 DeepAI 鉴权头、归一化思维链字段、记录用量。
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
 		return
 	}
 	start := time.Now()
 
-	payload, ok := decodeJSONRequest[map[string]any](w, r, func(code int, msg string) {
-		writeErr(w, code, msg, "invalid_request_error")
+	payload, ok := httpx.DecodeJSONRequest[map[string]any](w, r, func(code int, msg string) {
+		httpx.WriteErr(w, code, msg, "invalid_request_error")
 	})
 	if !ok {
 		return
 	}
 	if msgs, ok := payload["messages"].([]any); !ok || len(msgs) == 0 {
-		writeErr(w, http.StatusBadRequest, "messages 不能为空", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "messages 不能为空", "invalid_request_error")
 		return
 	}
 
 	model, modelOK := s.resolveModelOK(requestModelName(payload))
 	if !modelOK {
-		writeErr(w, http.StatusNotFound, s.unknownModelMessage(requestModelName(payload)), "invalid_request_error")
+		httpx.WriteErr(w, http.StatusNotFound, s.unknownModelMessage(requestModelName(payload)), "invalid_request_error")
 		return
 	}
 	payload["model"] = model.ID
@@ -49,7 +50,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")
+		httpx.WriteErr(w, http.StatusBadRequest, "请求序列化失败", "invalid_request_error")
 		return
 	}
 	key := extractKey(r)
@@ -79,7 +80,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	rawResp, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
 		rl.done(0, Usage{}, err)
-		writeErr(w, http.StatusBadGateway, "读取上游响应失败: "+err.Error(), "upstream_error")
+		httpx.WriteErr(w, http.StatusBadGateway, "读取上游响应失败: "+err.Error(), "upstream_error")
 		return
 	}
 	var out map[string]any
@@ -89,7 +90,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		log.Printf("上游响应解析失败：account=%s status=%d ct=%q len=%d head=%q",
 			acctLabel(acct), resp.StatusCode, resp.Header.Get("Content-Type"), len(rawResp), headOf(rawResp, 160))
 		rl.done(0, Usage{}, err)
-		writeErr(w, http.StatusBadGateway, "上游响应不是合法 JSON", "upstream_error")
+		httpx.WriteErr(w, http.StatusBadGateway, "上游响应不是合法 JSON", "upstream_error")
 		return
 	}
 	transformChatResponse(out, model.ID)
@@ -98,11 +99,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	encoded, err := json.Marshal(out)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "响应序列化失败", "server_error")
+		httpx.WriteErr(w, http.StatusInternalServerError, "响应序列化失败", "server_error")
 		return
 	}
 	rl.done(outLen, usage, nil)
-	writeRawJSON(w, http.StatusOK, encoded)
+	httpx.WriteRawJSON(w, http.StatusOK, encoded)
 }
 
 // transformChatResponse 归一化非流式响应。

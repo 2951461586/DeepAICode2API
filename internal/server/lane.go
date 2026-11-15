@@ -18,13 +18,18 @@ import (
 // 就会把每个失败请求都变成一次 /models 探测。
 const laneProbeCooldown = 60 * time.Second
 
-// CurrentLane 返回当前生效的车道：探测结果优先，否则用编译期默认值。
+// CurrentLane 返回当前生效的车道。
 //
-// 持久化的探测值可能比编译期默认值旧（例如网关升级到对齐 0.3.36 的车道 5，
-// 而状态文件里还留着上一版探测到的 4）：此时以编译期默认值为准，
-// 否则升级完还得等一次 426 才会真正换道。
+// 探测结果由**当前构建**验证过（LaneBuild == 编译期车道）时无条件信任它，
+// 即使它比编译值旧 —— 上游可能只剩旧车道可用，此时继续发编译值会一直 426。
+// 否则退回 newerLane：状态文件可能来自旧版本，升级后要直接用较新的编译值。
 func (s *Server) CurrentLane() string {
-	return newerLane(s.Store.Settings().Lane)
+	st := s.Store.Settings()
+	lane := strings.TrimSpace(st.Lane)
+	if lane != "" && st.LaneBuild == deepai.LaneVersion {
+		return lane
+	}
+	return newerLane(lane)
 }
 
 // newerLane 返回持久化车道值与编译期默认值中较新的一个。
@@ -49,8 +54,8 @@ func newerLane(stored string) string {
 
 // RefreshLane 探测一次可用车道并落盘，返回最终使用的车道。
 //
-// 探测打 /models（不消耗 Theos、不触发签到），按 LaneCandidates 顺序试到
-// 2xx 为止 —— 上游抬车道后网关自动跟上，不用改代码。**2026-11-14 起
+// 探测打 /models（不消耗 Theos、不触发签到），按 deepai.Client 的候选序列
+// （编译期车道优先）试到 2xx 为止 —— 上游抬车道后网关自动跟上，不用改代码。**2026-11-14 起
 // /models 要求 Api-Key**，所以探测要借一个账号的凭据；没有账号时探测器
 // 只会拿到 401，直接跳过探测（编译期 LaneVersion + 426 兜底仍然有效）。
 // 冷却期内直接返回当前值；探测失败时保留旧值并把错误交给调用方。
@@ -93,7 +98,10 @@ func (s *Server) applyLane(lane string) {
 	}
 	prev := s.CurrentLane()
 
-	s.Store.UpdateSettings(func(st *store.Settings) { st.Lane = lane })
+	s.Store.UpdateSettings(func(st *store.Settings) {
+		st.Lane = lane
+		st.LaneBuild = deepai.LaneVersion
+	})
 	if err := s.Store.Save(); err != nil {
 		log.Printf("保存车道版本失败: %v", err)
 	}
