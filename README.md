@@ -24,7 +24,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 双协议 | OpenAI `/v1/chat/completions`、`/v1/responses`；Anthropic `/v1/messages` |
-| 协议对齐 | 车道 6 + `X-DeepAI-Code-Instance` + `/theos` 签到；区分 `social_login_required` / `machine_required` / `lane_version_unsupported` |
+| 协议对齐 | 车道 7 + `X-DeepAI-Code-Instance` + `/theos` 签到；区分 `social_login_required` / `machine_required` / `lane_version_unsupported` |
 | 号池治理 | 分组轮询、失败换号、容量退避、按账号配额调度、策略拦截自动跳过 |
 | 账号接入 | 浏览器登录（Google / Apple / 邮箱密码）、桌面端凭据导入、手工 API Key；入池自动分配机器指纹与代理 |
 | 控制台 | 单页内嵌 UI：账号 / 密钥 / 日志 / 统计 / 设置 |
@@ -47,9 +47,10 @@
 
 ## 一、逆向结论
 
-DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.37**，车道 6；
-0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 的 wire protocol 逐项比对：
-**0.3.37 只抬了车道（5 → 6），其余请求头 / 指纹 / 签到 / 端点未变**）。
+DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.41**，车道 7；
+0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 的 wire protocol 逐项比对：
+**0.3.41 只抬了车道（6 → 7），其余请求头 / 指纹 / 签到 / 推理端点未变**；
+新增的 `sessions/save_records` 只服务历史备份，不进推理链路）。
 真正干活的不是桌面壳，而是 `resources/server.asar` 里的 t3code server；
 它把上游能力封装成本地回环 HTTP 服务，再交给 Pi（编码 agent）调用。
 
@@ -69,7 +70,7 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.
 | 语音转写 | `POST https://api.deepai.org/speech_to_text`（字段 `voiceRecording`） |
 | 联网搜索 | `POST https://api.deepai.org/deepai_code/web_search` |
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
-| 协议头 | `X-DeepAI-Code-Theos: 6`（计费车道版本；0.3.37 起为 6，推理端点 5 / 6 都接受，`/models` 放宽到 1–6，见 `docs/recon.md` §3） |
+| 协议头 | `X-DeepAI-Code-Theos: 7`（计费车道版本；0.3.41 起为 7，0.3.41 发布当天实测 6 及以下 / 8 及以上全部 426，见 `docs/recon.md` §3） |
 | 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每个出口代理随机一次，随该代理的所有 JSON 请求发出；桌面端是每进程一次） |
 | 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1`（`focus` 只在焦点状态已知时才追加） |
 | **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
@@ -113,10 +114,12 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 ## 二、支持的模型
 
 模型目录**完全由上游下发**：网关只做缓存与别名，上游新增或下线模型都无需改代码。
-下表是 2026-11-14 从线上 `/v1/models` 导出的**实时目录**（27 个：11 免费 / 16 付费），
+下表是 2026-11-18 从线上 `/v1/models` 重新导出的**实时目录**（27 个：11 免费 / 16 付费），
 `Theos/次` 取自上游 `theosPerRequest`（字符串），`0` 即免费。控制台「模型目录」页读的是同一份数据。
-（上一版快照里的 `crouton-alpha` 已被上游下线；`gpt-oss-120b` 客户端会主动过滤，网关也不展示。
- 相比 2026-11-13 的快照，本轮新增 6 个、无下线：`muse-ember`（免费）、`kimi-k3.1-pro`、
+（与 2026-11-14 的快照相比：**模型集合、名称、价格均未变**，只有 `glyph-cluster`
+ 的 `contextWindow` 从 320,000 变为 256,000。更早的 `crouton-alpha` 已下线；
+ `gpt-oss-120b` 客户端会主动过滤，网关也不展示。
+ 2026-11-14 那轮相对 11-13 新增 6 个、无下线：`muse-ember`（免费）、`kimi-k3.1-pro`、
  `gpt-6.1-terra`、`gemini-4-hydrogen`、`gemini-4-carbon`、`claude-sonnet-5-5`。）
 
 | ID | 名称 | 上下文 | 最大输出 | Theos/次 | 说明 |
@@ -124,7 +127,7 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 | `deepai-cyber` | DeepAI Cyber | 320,000 | 131,072 | **0** | 免费，纯文本 |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 320,000 | 131,072 | **0** | 免费（上游下拉是 `DeepSeek V4.1 Flash 1017`，桌面端会把旧名改写成它） |
 | `glm-5.3-flash` | GLM 5.3 Flash | 320,000 | 131,072 | **0** | 免费，默认模型 |
-| `glyph-cluster` | Glyph Cluster | 320,000 | 131,072 | **0** | 免费，纯文本 |
+| `glyph-cluster` | Glyph Cluster | 256,000 | 131,072 | **0** | 免费，纯文本 |
 | `gpt-6-luna` | GPT-6 Luna | 320,000 | 128,000 | **0** | 免费 |
 | `mimo-2.6-flash` | MiMo 2.6 Flash | 320,000 | 131,072 | **0** | 免费 |
 | `mimo-2.6-pro` | MiMo 2.6 Pro | 320,000 | 131,072 | **0** | 免费 |
@@ -153,8 +156,9 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 
 - 只有 `deepai-cyber` / `glm-5.3` / `glyph-cluster` / `solar-mini-4` / `minimax-m3` 是纯文本
   （`input: [text]`），其余都接受图片输入（`input: [text, image]`）；全部支持推理（`reasoning`）；
-- **车道 6 的目录把 `contextWindow` 统一收敛到 320,000**（0.3.37 起；车道 5 还是各模型
-  的真实上限 1M / 991k / 512k…）。这是新版客户端的压缩预算，网关按上游原样透传；
+- **车道 7 的目录把 `contextWindow` 统一收敛到 320,000，只有 `glyph-cluster`
+  是 256,000**（0.3.41 起的线上目录；0.3.37 的车道 6 曾把 27 个模型全部压到
+  320,000，车道 5 还是各模型的真实上限 1M / 991k / 512k…）。网关按上游原样透传；
 - **2026-11-14 起上游 `/deepai_code/models` 要求 `Api-Key`**：不带 Key 一律 401
   `auth_required`（此前「带不带都返回同一份目录」的结论已失效）。网关的目录刷新与
   车道探测因此都借用号池里一个账号的凭据；运维上要知道的坑见 §10.1；
@@ -633,9 +637,9 @@ docker run -d --name deepaicode2api \
   deepaicode2api
 ```
 
-> `X-DeepAI-Code-Theos: 6` 是当前客户端（0.3.37）的车道：`/chat/completions` 上
-> 5 / 6 都回 200，更旧的 2–4 与更高的 7+ 回 `426 lane_version_unsupported`
-> （`/models` 放宽到 1–6，见 `docs/recon.md` §3）。
+> `X-DeepAI-Code-Theos: 7` 是当前客户端（0.3.41）的车道：`/chat/completions`、
+> `/models`、`/theos` 上 7 回 200，6 及以下与 8 及以上回
+> `426 lane_version_unsupported`（0.3.41 发布当天实测，见 `docs/recon.md` §3）。
 > `X-DeepAI-Code-Machine` 仍是计量模型的必需头：缺失时返回 `400 machine_required`。
 > 容器里通常读不到宿主机的 SMBIOS UUID，因此 `DEEPAI_MACHINE_ID` 在容器部署时**必填**。
 > 填桌面端所在机器的原始 UUID 即可复用同一份每日免费额度。
@@ -684,9 +688,9 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 
 ## 十、限制与说明
 
-- `X-DeepAI-Code-Theos` 必须发 `6`（0.3.37 起，2026-11-15 复核；元数据端点 1–6 都接受，推理端点 5 / 6 都接受，别用 `/models` 判断上游可用性）；推理端点车道不符返回 426 `lane_version_unsupported`；
-- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.37**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
-- 车道探测结果由**当前构建**验证过（`Settings.LaneBuild == deepai.LaneVersion`）时无条件信任，即使它比编译值旧；否则按 `max(存储值, 编译值)` 取较新值。探测序列从编译期车道开始，**不能先试旧车道**（`/models` 对旧车道仍然宽容）；
+- `X-DeepAI-Code-Theos` 必须发 `7`（0.3.41 起，2026-11-18 复核；`/models`、`/theos`、`/chat/completions` 都只接受 7，6 及以下 / 8 及以上回 426）；
+- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.41**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
+- 车道探测结果由**当前构建**验证过（`Settings.LaneBuild == deepai.LaneVersion`）时无条件信任，即使它比编译值旧；否则按 `max(存储值, 编译值)` 取较新值。探测序列从编译期车道开始，**不能先试旧车道**；
 - 请求体形状拒绝除匹配两版文案外，还兜底 `400 + code=invalid_request_error`；补形状重试仍失败时回传第二个错误；
 - Anthropic `budget_tokens` 按量级映射到 `low/medium/high/xhigh/max`（4k/16k/32k/64k 分界），`output_config.effort` 原样透传；2026-11-15 实测上游接受六档；
 - 推理请求按桌面端实测值发 `user-agent: node` + `accept: */*`，**不带** Chrome UA / `sec-ch-ua` / `Accept-Language`（推理侧只发桌面端请求头）；

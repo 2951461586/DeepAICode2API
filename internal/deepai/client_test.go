@@ -186,8 +186,8 @@ func TestClientSendsRequiredHeaders(t *testing.T) {
 	if v := got.Get(HeaderLane); v != LaneVersion {
 		t.Fatalf("%s = %q，期望 %q", HeaderLane, v, LaneVersion)
 	}
-	if LaneVersion != "6" {
-		t.Fatalf("车道版本 = %q，0.3.37 客户端使用 6", LaneVersion)
+	if LaneVersion != "7" {
+		t.Fatalf("车道版本 = %q，0.3.41 客户端使用 7", LaneVersion)
 	}
 	if inst := got.Get(HeaderInstance); len(inst) != 32 || strings.Trim(inst, "0123456789abcdef") != "" {
 		t.Fatalf("%s = %q，期望 32 位小写 hex", HeaderInstance, inst)
@@ -906,8 +906,9 @@ func TestDetectLanePicksAcceptedLane(t *testing.T) {
 
 // 探测必须从编译期车道开始，不能先试旧车道。
 //
-// `/models` 对旧车道很宽容（0.3.37 时代 5 / 6 都 200），若候选序列以旧值开头，
-// DetectLane 第一次就命中旧车道，网关会一直冒充旧客户端。
+// `/models` 对旧车道曾经很宽容（0.3.37 时代 5 / 6 都 200；0.3.41 起 6 及以下
+// 一律 426），若候选序列以旧值开头，DetectLane 会先命中旧车道，网关就会
+// 继续冒充旧客户端。
 func TestDetectLaneStartsAtCompiledLane(t *testing.T) {
 	want := laneCandidates()
 	if len(want) == 0 || want[0] != LaneVersion {

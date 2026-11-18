@@ -37,26 +37,29 @@ const (
 	// LaneVersion 是本网关对齐的 Theos 计费车道版本。
 	//
 	// 0.3.17 → 0.3.19 上游把车道从 2 提到 4；0.3.36（2026-11-13）提到 5；
-	// 0.3.37（2026-11-14）又提到 6：桌面端发 `X-DeepAI-Code-Theos: 6`，
-	// `/theos` 也回 `lane_version: 6`。车道不符时回 426
-	// lane_version_unsupported（"This version of DeepAI Code is no longer
-	// supported"）。2026-11-15 实测：`/models` 车道 6 → 200、7 → 426；
-	// `/theos` 车道 5 / 6 都 200、4 → 426；推理端点 5 / 6 都 200。
-	// 注意 `/models` 对旧车道很宽容（5 仍 200），所以探测必须从 6 开始试，
-	// 否则会一直钉在旧车道上（见 client.go 的 laneCandidates）。
-	LaneVersion = "6"
+	// 0.3.37（2026-11-14）提到 6；0.3.41（2026-11-18）又提到 7：桌面端发
+	// `X-DeepAI-Code-Theos: 7`，`/theos` 也回 `lane_version: 7`。车道不符时回
+	// 426 lane_version_unsupported（"This version of DeepAI Code is no longer
+	// supported"）。2026-11-18 实测（0.3.41 发布当天）：`/models` 车道 7 →
+	// 200、6 / 8 → 426；`/theos` 车道 7 → 200、6 / 8 → 426；
+	// `/chat/completions` 车道 7 → 200、6 → 426。
+	// 与 0.3.37 时代不同，这一次旧车道也**不再被接受**：车道 6 的目录 / 推理
+	// / 配额全部 426，所以网关必须发 7 才能工作。探测仍从编译期车道开始试，
+	// 向上猜新车道、向下兜底旧值（见 client.go 的 laneCandidates），以防上游
+	// 先抬车道再发客户端。
+	LaneVersion = "7"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
 	//
-	// 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 逐项白盒核对。
-	// 0.3.36 → 0.3.37（2026-11-14 发布）的 `server.asar` 全量 diff 只有 27 个
-	// hunk，落在推理协议面上的**只有车道 5 → 6**：端点集合、5 个
-	// `X-DeepAI-Code-*` 头、实例号粒度、机器指纹、签到 / beacon 形态、聊天
-	// 请求体字段全部未变（pi 运行时仍 1.3.0）。其余差异是长会话压缩、
-	// 工具失败去重、Codex 审批、SQLite 索引与 `thinkingLevelMap`（后者只影响
-	// 桌面端下拉，不是 wire protocol）。
+	// 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 逐项白盒核对。
+	// 0.3.37 → 0.3.41（2026-11-18 发布）的 `server.asar` 差异落在推理协议面上的
+	// **只有车道 6 → 7**：端点集合（推理 / 目录 / 配额 / 签到 / 搜索）与 5 个
+	// `X-DeepAI-Code-*` 头、实例号粒度、机器指纹、签到 / beacon 形态、聊天请求体
+	// 字段全部未变（pi 运行时仍 1.3.0）。其余差异都在协议面之外：登录失败诊断与
+	// 错误页、Sentry 用户上下文、历史备份 20 KB 截断与 `sessions/save_records`
+	// 增量快照、pi stderr 诊断、长会话压缩预算、Git Bash 探测（`T3CODE_GIT_CYGPATH`）。
 	// 只有心跳里的版本号需要跟上，否则 /theos 上自报的是旧客户端。
-	AppVersion = "0.3.37"
+	AppVersion = "0.3.41"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。
@@ -141,9 +144,13 @@ const (
 	PathSessionsGet  = "/sessions/get"
 	PathSessionsDel  = "/sessions/delete"
 	PathSessionsSave = "/sessions/save" // 0.3.20 新增：云端会话 / 偏好上传
-	PathSessionTurn  = "/session_turn"
-	PathSignIn       = "/desktop_auth/"
-	PathExchange     = "/desktop_auth/exchange/"
+	// PathSessionsSaveRecords 是 0.3.41 新增的历史增量快照端点（元数据 + 追加记录，
+	// 超出 20,000 条 / 32 MiB / 64 KiB 元数据时回落到 /sessions/save）。
+	// 网关不实现云端会话同步，只在这里登记端点集合。
+	PathSessionsSaveRecords = "/sessions/save_records"
+	PathSessionTurn         = "/session_turn"
+	PathSignIn              = "/desktop_auth/"
+	PathExchange            = "/desktop_auth/exchange/"
 
 	// 根路径（不在 /deepai_code 之下）。
 	PathUsageSummary      = "/get_usage_summary"

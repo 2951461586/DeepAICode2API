@@ -3672,3 +3672,86 @@ go test -coverpkg=./internal/... ./...                    84.1%（基线 84.0%�
 
 覆盖率热点（未被覆盖的主要是错误分支）：`deepai/client.go`、`store/store_accounts.go`、
 `server/login.go`、`server/metrics.go`、`server/probe.go`。
+
+---
+
+## 66. 2026-11-18 复核：客户端 0.3.41（车道 6 → 7，v0.1.6+）
+
+**触发**：例行扫描。官方更新源 `latest.yml` 从 **0.3.37** 变为 **0.3.41**
+（`releaseDate` 2026-11-18T04:27Z；本机当时仍停在 0.3.37）。这次客户端真的更新了，
+按惯例拆包做 wire protocol 比对。
+
+### 66.1 结论：推理协议面只有车道一处变更
+
+下载 `DeepAI-Code-0.3.41-x64.exe`（sha512 与 `latest.yml` 一致）→ 7z 解 NSIS 的
+`$PLUGINSDIR/app-64.7z` → `resources/server.asar` → `apps/server/dist/binCli-DAkBc9bP.mjs`
+（14.8 MB），与 0.3.37 的 `binCli-BIPvs5sY.mjs` 做全量 diff。原始 diff 有 709 个 hunk，
+但绝大多数是 pnpm patch hash 与打包分块导致的标识符改号（`format$1 → format$2`）；
+归一化后约 45 处真实差异，其中：
+
+| 区域 | 0.3.41 的差异 | 是否协议面 |
+| --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` | `X-DeepAI-Code-Theos: "6"` → **`"7"`** | **是（唯一一处）** |
+| `deepAIBeacon` | 未改；`v=` 仍取打包的 `version$2`（0.3.41） | 否（只是版本号跟着走） |
+| `src/deepai/signInDiagnostic.ts` | 新增登录失败分类（dns / tls / proxy / timeout …）与失败 HTML 页 | 否（登录链路） |
+| `sessions/save_records` | 新增历史增量快照端点；备份工具输入/输出各截断到 20 KB | 否（云端历史，不进推理） |
+| pi 运行时 | 仍 1.3.0；新增 `deepai-diagnostics.mjs`（stderr 崩溃上报）与 Git Bash 探测 | 否 |
+| 其它 | Sentry 用户上下文、长会话压缩预算、provider 错误边界、HTTP 观测 | 否 |
+
+端点集合（推理 / 目录 / 配额 / 签到 / 搜索）、5 个 `X-DeepAI-Code-*` 头、
+实例号粒度（每进程 `randomBytes(16).hex`）、机器指纹、签到 / beacon 形态、
+聊天请求体字段与 `/models` 解码全部未变。
+
+### 66.2 实测：0.3.41 只接受车道 7
+
+单账号、每格一次请求（2026-11-18）：
+
+| 端点 | lane 5 | lane 6 | **lane 7** | lane 8 | lane 9 / 10 |
+| --- | --- | --- | --- | --- | --- |
+| `GET /deepai_code/models` | 426 | 426 | **200** | 426 | 426 |
+| `GET /deepai_code/theos` | 426 | 426 | **200**（`lane_version: 7`） | 426 | 未测 |
+| `POST /deepai_code/chat/completions` | 未测 | 426 | **200** | 未测 | 未测 |
+
+与 0.3.37 时代不同，这次旧车道**不再被宽容**：车道 6 的目录 / 配额 / 推理全部 426
+`lane_version_unsupported`。也就是说车道 7 是硬门槛，不是“建议值”。
+
+模型目录仍是 **27 个（11 免费 / 16 付费）**，`default` 仍是 `glm-5.3-flash`；
+ID、名称、`theosPerRequest`、`maxTokens` 与 11-14 快照完全一致，唯一变化是
+`glyph-cluster` 的 `contextWindow` 从 320,000 变成 **256,000**（其余仍 320,000）。
+
+### 66.3 代码同步
+
+- `deepai.LaneVersion` `6` → `7`，`deepai.AppVersion` `0.3.37` → `0.3.41`；
+- `types.go` 登记 0.3.41 新增的 `PathSessionsSaveRecords`（`/sessions/save_records`），
+  仅用于端点清单，网关仍不实现云端会话同步；
+- 测试里的车道锚点：`TestClientSendsRequiredHeaders` 断言 `7`；
+  `internal/server/lane_test.go` 把“探测到更新车道”的场景改成 7 → 8，
+  “旧状态文件”场景改成真实的 6 → 7 升级；
+- 其余模块（请求头、机器指纹、签到、模型解析、协议翻译）无需改代码：
+  车道探测从 6 改成 7 即可，候选序列仍是“编译期车道优先 → 向上猜 → 向下兜底”。
+
+### 66.4 验证
+
+```text
+gofmt -l ./internal ./cmd ./main.go ./tasks.go ./env.go   无输出
+go vet ./...                        无输出
+go test ./... -count=1              10 个含测试的包全绿
+go test -race ./internal/deepai ./internal/server  全绿
+go test ./... -list '^Test' | grep -c  468 个顶层用例（总数仍 616）
+```
+
+### 66.5 客户端升级与清理
+
+用官方安装包静默升级本机桌面端：`0.3.37 → 0.3.41`（sha512 与 `latest.yml` 一致）。
+安装后 `DeepAI Code.exe` 文件版本 0.3.41、`resources/app.asar` 时间
+2026-11-18T12:27Z、`t3codeCommitHash` `937fcf1858f1`；`~/.deepai-code` 里的登录凭据
+与设置保留。
+
+清理了旧安装包、解包目录、`deepai-code-desktop-updater` 缓存里的 `installer.exe`，
+以及 `/f/tmp` 下残留的 0.3.41 下载/解包产物和旧网关二进制，共约 1.5 GB。
+
+### 66.6 遗留
+
+- 车道 7 的目录 `glyph-cluster` 为何单独回到 256k 未知，网关按上游原样透传，
+  上游再变时目录刷新会自动跟上；
+- 本机仍无真实进程抓包；下次可直接对比运行中的 `/theos` beacon 与包内代码。

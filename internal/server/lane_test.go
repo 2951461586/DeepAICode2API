@@ -15,12 +15,13 @@ import (
 func TestLaneUnsupportedRefreshesAndRetries(t *testing.T) {
 	var mu sync.Mutex
 	var chatLanes []string
+	// 上游只接受 8（编译期车道 7 的下一档），模拟“先抬车道、后发客户端”。
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		lane := r.Header.Get("X-DeepAI-Code-Theos")
 		mu.Lock()
 		chatLanes = append(chatLanes, lane)
 		mu.Unlock()
-		if lane != "7" {
+		if lane != "8" {
 			w.WriteHeader(http.StatusUpgradeRequired)
 			_, _ = io.WriteString(w, `{"error":{"code":"lane_version_unsupported","message":"old build"}}`)
 			return
@@ -36,17 +37,17 @@ func TestLaneUnsupportedRefreshesAndRetries(t *testing.T) {
 	})
 	s, key := newTestServer(t, u)
 
-	if got := s.CurrentLane(); got == "7" {
-		t.Fatalf("初始车道不应是 7: %q", got)
+	if got := s.CurrentLane(); got == "8" {
+		t.Fatalf("初始车道不应是 8: %q", got)
 	}
 	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key, chatProbeBody)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("换道后应成功，实际 %d: %s", rec.Code, rec.Body.String())
 	}
-	if s.CurrentLane() != "7" {
+	if s.CurrentLane() != "8" {
 		t.Fatalf("探测到的车道应生效，实际 %q", s.CurrentLane())
 	}
-	if got := s.Store.Settings().Lane; got != "7" {
+	if got := s.Store.Settings().Lane; got != "8" {
 		t.Fatalf("车道应落盘，实际 %q", got)
 	}
 	if got := s.Store.Settings().LaneBuild; got != deepai.LaneVersion {
@@ -64,7 +65,7 @@ func TestLaneUnsupportedRefreshesAndRetries(t *testing.T) {
 	mu.Lock()
 	added := chatLanes[before:]
 	mu.Unlock()
-	if len(added) != 1 || added[0] != "7" {
+	if len(added) != 1 || added[0] != "8" {
 		t.Fatalf("第二次应只用新车道打一次，实际 %v", added)
 	}
 }
@@ -77,7 +78,7 @@ func TestNewPrefersNewerCompiledLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	st.UpdateSettings(func(s *store.Settings) { s.Lane = "5" })
+	st.UpdateSettings(func(s *store.Settings) { s.Lane = "6" })
 	if err := st.Save(); err != nil {
 		t.Fatalf("保存状态: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestNewTrustsLowerLaneVerifiedByThisBuild(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	st.UpdateSettings(func(s *store.Settings) {
-		s.Lane = "5"
+		s.Lane = "6"
 		s.LaneBuild = deepai.LaneVersion
 	})
 	if err := st.Save(); err != nil {
@@ -108,11 +109,11 @@ func TestNewTrustsLowerLaneVerifiedByThisBuild(t *testing.T) {
 	}
 
 	s := New(st)
-	if got := s.CurrentLane(); got != "5" {
-		t.Fatalf("车道 = %q，期望本次构建验证过的 5", got)
+	if got := s.CurrentLane(); got != "6" {
+		t.Fatalf("车道 = %q，期望本次构建验证过的 6", got)
 	}
-	if got := s.Up.Lane(); got != "5" {
-		t.Fatalf("客户端车道 = %q，期望 5", got)
+	if got := s.Up.Lane(); got != "6" {
+		t.Fatalf("客户端车道 = %q，期望 6", got)
 	}
 }
 
@@ -124,8 +125,8 @@ func TestNewPrefersCompiledOverProbeFromOlderBuild(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	st.UpdateSettings(func(s *store.Settings) {
-		s.Lane = "5"
-		s.LaneBuild = "5" // 写这条状态时的编译期车道
+		s.Lane = "6"
+		s.LaneBuild = "6" // 写这条状态时的编译期车道
 	})
 	if err := st.Save(); err != nil {
 		t.Fatalf("保存状态: %v", err)
@@ -143,13 +144,13 @@ func TestNewKeepsNewerProbedLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	st.UpdateSettings(func(s *store.Settings) { s.Lane = "7" })
+	st.UpdateSettings(func(s *store.Settings) { s.Lane = "8" })
 	if err := st.Save(); err != nil {
 		t.Fatalf("保存状态: %v", err)
 	}
 
-	if got := New(st).CurrentLane(); got != "7" {
-		t.Fatalf("车道 = %q，期望保留探测到的 7", got)
+	if got := New(st).CurrentLane(); got != "8" {
+		t.Fatalf("车道 = %q，期望保留探测到的 8", got)
 	}
 }
 
