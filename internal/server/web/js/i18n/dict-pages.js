@@ -118,6 +118,8 @@ export const PAGES_DICT = {
   "尝试 {a} · 阻塞 {b} · 超时 {x}":"Attempts {a} · blocked {b} · timed out {x}",
   "形状兜底":"Shape fallbacks", "次「补 system」重试":"system-patch retries",
   "上游错误 Top":"Top upstream error", "暂无样本":"No samples yet",
+  "消息":"Msgs", "回喂消息数：{n}（{s}）":"History messages: {n} ({s})",
+  "带系统提示":"with system prompt", "无系统提示":"no system prompt",
   "上游车道":"Upstream lane", "网关发出的 / 上游回报的":"sent by gateway / reported by upstream",
   "上游领先 {n}：客户端已抬车道，请升级网关":"Upstream is {n} ahead: the client already moved lanes — upgrade the gateway",
   "进程内指标，重启清零":"In-process metrics; reset on restart",

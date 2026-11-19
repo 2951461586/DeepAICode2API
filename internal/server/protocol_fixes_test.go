@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -359,5 +361,206 @@ func TestSessionAffinitySkipsBareRequests(t *testing.T) {
 	}
 	if got := sessionAffinity(nil, withTools); got == "" {
 		t.Fatal("带 tools 的请求应派生 affinity")
+	}
+}
+
+// --- issue #5：上下文 / 失忆 ---
+
+// TestResponsesStatefulRejectedOnTranslatedModel 锁住「不再静默丢历史」。
+//
+// 非 openai-responses 模型走 chat 合成路径，只有 input 里的内容；
+// previous_response_id 若被忽略，客户端以为续接成功，实际模型只看得到本轮。
+func TestResponsesStatefulRejectedOnTranslatedModel(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("不应打到上游，路径 %s", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	})
+	s, key := newTestServer(t, u)
+
+	rec := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"glm-5.3-flash","previous_response_id":"resp_abc","input":"What is CODE?"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d，期望 400：%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unsupported_parameter") ||
+		!strings.Contains(rec.Body.String(), "previous_response_id") {
+		t.Fatalf("错误应点名字段与类型: %s", rec.Body.String())
+	}
+	if n := s.metrics.statefulReject.Load(); n != 1 {
+		t.Fatalf("拒绝计数 = %d，期望 1", n)
+	}
+}
+
+// TestResponsesStatefulForwardedOnResponsesModel 验证透传分支不改写字段。
+//
+// gpt-6-astra 这类模型由上游 /responses 处理，网关原样转发、只记日志：
+// 能否续接由上游决定（2026-11-19 该模型一直 429，尚未验证）。
+func TestResponsesStatefulForwardedOnResponsesModel(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_2","object":"response","status":"completed","output_text":"ok"}`)
+	})
+	s, key := newTestServer(t, u)
+	s.Store.SetModels([]deepai.Model{{ID: "resp-model", API: "openai-responses"}}, "resp-model")
+
+	rec := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"resp-model","previous_response_id":"resp_1","input":"and then?"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	last := u.last(t)
+	if last.Path != deepai.ModelBasePath+deepai.PathResponses {
+		t.Fatalf("应透传到上游 /responses，实际 %q", last.Path)
+	}
+	if got, _ := last.Payload["previous_response_id"].(string); got != "resp_1" {
+		t.Fatalf("previous_response_id 被改写/丢弃: %#v", last.Payload["previous_response_id"])
+	}
+	if n := s.metrics.statefulPrevID.Load(); n != 1 {
+		t.Fatalf("previous_response_id 计数 = %d，期望 1", n)
+	}
+}
+
+// TestChatMultiTurnHistoryPreserved 验证多轮历史逐字透传（网关不改写、不截断）。
+func TestChatMultiTurnHistoryPreserved(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ALPHA-7"}}]}`)
+	})
+	s, key := newTestServer(t, u)
+
+	body := `{"model":"glm-5.3-flash","stream":false,"messages":[
+	  {"role":"system","content":"Remember CODE=ALPHA-7."},
+	  {"role":"user","content":"What is CODE?"},
+	  {"role":"assistant","content":"ALPHA-7"},
+	  {"role":"user","content":"Again?"}]}`
+	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	msgs, _ := u.last(t).Payload["messages"].([]any)
+	if len(msgs) != 4 {
+		t.Fatalf("上游收到 %d 条消息，期望 4（历史被截断）：%s", len(msgs), string(u.last(t).Body))
+	}
+	first, _ := msgs[0].(map[string]any)
+	if strOf(first["content"]) != "Remember CODE=ALPHA-7." {
+		t.Fatalf("system 内容被改写: %v", first["content"])
+	}
+}
+
+// TestAnthropicMultiTurnToolsPreserved 覆盖 Anthropic 多轮 + 工具结果的转换。
+func TestAnthropicMultiTurnToolsPreserved(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	})
+	s, key := newTestServer(t, u)
+
+	body := `{"model":"claude-sonnet-5-5","max_tokens":64,"messages":[
+	  {"role":"user","content":"查天气"},
+	  {"role":"assistant","content":[
+	    {"type":"text","text":"我查一下"},
+	    {"type":"tool_use","id":"call_1","name":"get_weather","input":{"city":"上海"}}]},
+	  {"role":"user","content":[
+	    {"type":"tool_result","tool_use_id":"call_1","content":"晴 26℃"},
+	    {"type":"text","text":"那要带伞吗？"}]}]}`
+	rec := do(t, s, http.MethodPost, "/v1/messages", key, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	msgs, _ := u.last(t).Payload["messages"].([]any)
+	if len(msgs) != 4 {
+		t.Fatalf("上游收到 %d 条消息，期望 4（user/assistant(tool_use)/tool/user）：%s", len(msgs), string(u.last(t).Body))
+	}
+	assistant, _ := msgs[1].(map[string]any)
+	if _, ok := assistant["tool_calls"]; !ok {
+		t.Fatalf("assistant 消息缺少 tool_calls: %v", assistant)
+	}
+	tool, _ := msgs[2].(map[string]any)
+	if strOf(tool["role"]) != "tool" || strOf(tool["tool_call_id"]) != "call_1" {
+		t.Fatalf("tool 消息不合法: %v", tool)
+	}
+	last, _ := msgs[3].(map[string]any)
+	if strOf(last["role"]) != "user" {
+		t.Fatalf("tool_result 之后的文本应成为 user 消息: %v", last)
+	}
+}
+
+// TestHistoryStats 覆盖日志里的历史规模统计（不含正文）。
+func TestHistoryStats(t *testing.T) {
+	msgs, sys := historyStats(map[string]any{
+		"messages": []any{
+			map[string]any{"role": "system", "content": "s"},
+			map[string]any{"role": "user", "content": "u"},
+		},
+	})
+	if msgs != 2 || !sys {
+		t.Fatalf("messages 形态: msgs=%d sys=%v", msgs, sys)
+	}
+
+	msgs, sys = historyStats(map[string]any{
+		"instructions": "s",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "u"},
+			map[string]any{"type": "function_call", "call_id": "c", "name": "f"},
+		},
+	})
+	if msgs != 1 || !sys {
+		t.Fatalf("responses 形态: msgs=%d sys=%v", msgs, sys)
+	}
+
+	msgs, sys = historyStats(map[string]any{"input": "hi"})
+	if msgs != 1 || sys {
+		t.Fatalf("input 简写: msgs=%d sys=%v", msgs, sys)
+	}
+}
+
+// TestShapeFallbackKeepsHistory 验证「补形状重试」不会吃掉历史。
+//
+// 兜底路径会裁剪白名单字段（user 之类会被丢掉），但 messages 必须原样保留 ——
+// 否则一次 400 兜底就能把多轮对话截断成单轮，看起来又像“失忆”。
+func TestShapeFallbackKeepsHistory(t *testing.T) {
+	var calls atomic.Int64
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, deepai.PathTheos) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"enabled":true,"lane_version":7}`)
+			return
+		}
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"This request is not one DeepAI Code sends.",`+
+				`"code":"invalid_request_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	})
+	s, key := newTestServer(t, u)
+
+	body := `{"model":"glm-5.3-flash","stream":false,"messages":[
+	  {"role":"user","content":"turn-1"},
+	  {"role":"assistant","content":"reply-1"},
+	  {"role":"user","content":"turn-2"}],"user":"u1"}`
+	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("应重试一次，实际 %d 次", calls.Load())
+	}
+	msgs, _ := u.last(t).Payload["messages"].([]any)
+	if len(msgs) != 4 {
+		t.Fatalf("兜底重试后 %d 条消息，期望 4（3 条历史 + 补的 system）：%s", len(msgs), string(u.last(t).Body))
+	}
+	// 顺序：system 在最前，其余原序（不能打乱轮次）。
+	wantRoles := []string{"system", "user", "assistant", "user"}
+	for i, mv := range msgs {
+		m, _ := mv.(map[string]any)
+		if got := strOf(m["role"]); got != wantRoles[i] {
+			t.Fatalf("第 %d 条角色 = %q，期望 %q", i, got, wantRoles[i])
+		}
+	}
+	if got := strOf(msgs[2].(map[string]any)["content"]); got != "reply-1" {
+		t.Fatalf("历史正文被改写: %q", got)
 	}
 }

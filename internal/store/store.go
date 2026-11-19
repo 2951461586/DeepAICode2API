@@ -90,7 +90,14 @@ type LogEntry struct {
 	// CachedTokens 是上游报告的前缀缓存命中 token 数（无此字段时为 0）。
 	CachedTokens int     `json:"cached_tokens,omitempty"`
 	Cost         float64 `json:"cost"`
-	Err          string  `json:"err,omitempty"`
+	// Messages / Sys 是本次请求回喂给上游的历史规模（不含任何正文）。
+	//
+	// 排障时第一眼要回答的问题就是「是客户端没给历史，还是网关把历史弄丢了」：
+	// Messages=1 通常说明调用方只发了本轮（典型是依赖 previous_response_id 续接
+	// 却走了无状态的 chat 合成路径），Sys=false 则说明连系统提示都没发。
+	Messages int    `json:"messages,omitempty"`
+	Sys      bool   `json:"system,omitempty"`
+	Err      string `json:"err,omitempty"`
 }
 
 // Stats 是累计统计。

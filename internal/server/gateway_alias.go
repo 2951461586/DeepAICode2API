@@ -20,6 +20,9 @@ type (
 	anthropicMessage     = gateway.AnthropicMessage
 	anthropicTool        = gateway.AnthropicTool
 	anthropicBlockWriter = gateway.AnthropicBlockWriter
+
+	// statefulParamError 表示请求依赖上游保存的响应状态（合成路径会拒绝它）。
+	statefulParamError = gateway.StatefulParamError
 )
 
 var (
@@ -33,6 +36,9 @@ var (
 
 	// errNoMessages 表示转换后没有可用消息（映射成 400）。
 	errNoMessages = gateway.ErrNoMessages
+
+	// statefulParam 返回请求里第一个「需要上游状态」的字段名。
+	statefulParam = gateway.StatefulParam
 
 	// Anthropic ⇄ Chat 映射。
 	firstString              = gateway.FirstString

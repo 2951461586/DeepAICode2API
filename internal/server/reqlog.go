@@ -23,6 +23,9 @@ type reqLog struct {
 	stream   bool
 	start    time.Time
 	inLen    int
+	// inMsgs / hasSys 是回喂历史的规模（消息数 / 是否带系统提示），不含正文。
+	inMsgs int
+	hasSys bool
 
 	// state 是「是否已记录」的共享标记。reqLog 是值类型（各 handler 按值传递），
 	// 所以标记必须放在指针后面：done 可能被不同分支各调一次，只有第一次生效
@@ -42,6 +45,14 @@ func (s *Server) newReqLog(key string, acct *deepai.Account, model, endpoint str
 		endpoint: endpoint, stream: stream, start: start, inLen: inLen,
 		state: &reqLogState{},
 	}
+}
+
+// withHistory 记录回喂历史的规模（消息数 / 是否带系统提示）。
+//
+// 不含任何正文：只用于在日志里区分「客户端没给历史」与「网关把历史弄丢了」。
+func (l reqLog) withHistory(payload map[string]any) reqLog {
+	l.inMsgs, l.hasSys = historyStats(payload)
+	return l
 }
 
 // done 落一条请求日志；err 为 nil 视为成功（HTTP 200），否则按错误取状态码。
@@ -74,6 +85,8 @@ func (l reqLog) doneStatus(status int, outLen int, usage Usage, err error) {
 		LatencyMS:    time.Since(l.start).Milliseconds(),
 		PromptLen:    l.inLen,
 		OutputLen:    outLen,
+		Messages:     l.inMsgs,
+		Sys:          l.hasSys,
 		TokensIn:     usage.PromptTokens,
 		TokensOut:    usage.CompletionTokens,
 		CachedTokens: usage.CachedTokens,

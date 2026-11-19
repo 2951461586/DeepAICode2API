@@ -192,6 +192,24 @@ func (m *metrics) observeAdmissionWait(d time.Duration) {
 // addFallback 记录一次「请求体形状被拒 → 补形状重试」。
 func (m *metrics) addFallback() { m.fallbackTotal.Add(1) }
 
+// addStateful 记录一次依赖上游响应状态的请求。
+//
+// rejected=true 表示网关没有转发，而是回 400：合成路径（chat/completions）
+// 只有 input 里的内容，静默忽略续接字段就等于把上下文截断。
+func (m *metrics) addStateful(param string, rejected bool) {
+	switch param {
+	case "previous_response_id":
+		m.statefulPrevID.Add(1)
+	case "conversation":
+		m.statefulConv.Add(1)
+	case "item_reference":
+		m.statefulItemRef.Add(1)
+	}
+	if rejected {
+		m.statefulReject.Add(1)
+	}
+}
+
 // metricsSnapshot 是给控制台概览的聚合视图。
 type metricsSnapshot struct {
 	Latency      histogramView            `json:"latency"`

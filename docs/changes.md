@@ -22,6 +22,7 @@
 | v0.1.6 | 65 | 结构治理：抽出 `internal/httpx` / `internal/server/web`、重构 `api.js`、0.3.37 复核修补（响应顺序 / 流式出错）+ race 与覆盖率基线 |
 | v0.1.7 | 66 | 客户端 0.3.41 同步：车道 6 → 7（唯一协议面变更）+ `sessions/save_records` 登记 |
 | v0.1.8 | 67 | 上游放宽车道门槛（≤7 全通）：车道漂移观测、Anthropic 出错即终止、缓存用量三处补齐、会话粘性落到账号 |
+| v0.1.9 | 68 | issue #5 上下文/失忆：`/responses` 续接字段不再静默忽略（显式 400）+ 历史规模可观测 + 多轮/工具历史回归用例 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -53,6 +54,7 @@
 - 65 结构治理与 0.3.37 复核收尾：拆 `httpx` / `web` 包（14.6k → 7.0k 行）、`api.js` 重构、`response.output` 按 `output_index` 排序、流式出错不 flush 工具（v0.1.6）
 - 66 客户端 0.3.41 同步：车道 6 → 7（唯一协议面变更）+ 桌面端升级（v0.1.7）
 - 67 上游放宽车道门槛（≤7 全通）+ 车道漂移观测、Anthropic 出错即终止、缓存用量补齐、会话粘性（v0.1.8）
+- 68 issue #5 上下文/失忆：`/responses` 续接字段显式 400、历史规模可观测、多轮与工具历史回归（v0.1.9）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -3894,3 +3896,80 @@ node --input-type=module --check（全部 JS） + console-smoke.mjs  通过
 `TestPreferredAccountHonorsEligibility`、`TestUpstreamLaneDrift`、
 `TestSessionAffinityDerivation`；`TestMetricsEndpointExposition` /
 `TestOverviewIncludesRuntimeHealth` 补了车道字段断言。
+
+---
+
+## 68. 2026-11-19 issue #5：上下文 / 失忆（v0.1.9）
+
+**触发**：线上 issue #5（`Context/amnesia: conversation history not preserved`）。
+按“先证伪、再改代码”的顺序查了四层：客户端源码 → 网关翻译层 → 网关路由 → 上游行为。
+
+### 68.1 结论：网关是（也应该继续是）无状态代理
+
+| 层 | 证据 | 结论 |
+| --- | --- | --- |
+| 桌面端（0.3.41） | `binCli-DAkBc9bP.mjs` 全文 0 处 `previous_response_id`；4 处 `/chat/completions` 调用都是完整 `messages` 数组 | 官方客户端从不链式续接 |
+| 网关 chat / messages | 多轮历史逐条透传，只有「补形状兜底」会裁剪白名单字段（`messages` 始终保留） | 不丢历史（新增 3 个回归用例锁定） |
+| 网关 responses（合成） | `previous_response_id` / `conversation` / `item_reference` **被静默忽略** | **真 bug**：客户端以为续接成功，模型只看得到本轮 |
+| 网关 responses（透传） | `gpt-6-astra` 原样转发 | 能否续接由上游决定，未验证（见下） |
+| 上游 `/responses` | 2026-11-19 多次请求均 429 `rate_limit_exceeded`（单发 / 8s 重试） | 链式续接**无实测证据**，不能写进文档当能力 |
+
+### 68.2 修复：不再静默丢上下文
+
+- `gateway.StatefulParam(payload)` 识别三种真正携带状态的形态（空串 / null
+  视为未设置，不误伤习惯性填空的客户端）：`previous_response_id`、`conversation`、
+  `input[].type == "item_reference"`；
+- `ResponsesToChatPayload` 遇到它们直接返回 `*StatefulParamError`；
+- `/v1/responses` 合成路径映射成 **400 `unsupported_parameter`**，错误文案点名字段
+  并给出两条出路（把完整历史放进 `input` 重发 / 改用透传模型）；
+- 透传路径保持原样转发，但留一条 `WARN` 日志，便于事后判断“是不是上游没续接”；
+- 指标：`gateway_stateful_requests_total{param=…}` +
+  `gateway_stateful_rejected_total{reason="stateless_translation"}`。
+
+顺带把 `responsesInputMessages` 从 `ResponsesToChatPayload` 里抽出来（复杂度
+28 → 23），并补上默认分支的注释：`web_search_call` / `code_interpreter_call` 这类
+**输出侧**条目本来就不是对话历史，跳过它们不影响用户可见上下文。
+
+### 68.3 可观测性：区分「没发历史」与「丢了历史」
+
+请求日志新增两个**不含正文**的字段：
+
+| 字段 | 含义 | 怎么用 |
+| --- | --- | --- |
+| `messages` | 本次回喂给上游的消息条数 | 条数为 1 通常说明调用方只发了本轮（典型是想用 `previous_response_id` 续接） |
+| `system` | 是否带 system / developer 提示 | 与「上游要求桌面端形状」的 400 对照看 |
+
+控制台日志页新增「消息」列（`12 · sys` 形式，悬停显示完整说明）。JSONL /
+`/admin/api/logs` 里同名字段，便于脚本统计。
+
+### 68.4 验证
+
+```text
+gofmt / go vet / go test ./... -count=1 / -race（server,store,pool,gateway）
++ node --check（全部 JS）+ console-smoke   全绿
+顶层用例 483 → 492（+9）
+```
+
+新增用例：`TestStatefulParam`（8 个子用例，覆盖空值变体）、
+`TestResponsesToChatRejectsStateful`、`TestResponsesInputMessagesPreservesHistory`、
+`TestResponsesStatefulRejectedOnTranslatedModel`、
+`TestResponsesStatefulForwardedOnResponsesModel`、`TestChatMultiTurnHistoryPreserved`、
+`TestAnthropicMultiTurnToolsPreserved`、`TestShapeFallbackKeepsHistory`、
+`TestHistoryStats`；`TestConsoleBackendParity` 改为断言 `countCell` 契约。
+
+### 68.5 对 issue 的回应要点
+
+1. `/responses` 的 `previous_response_id` 确实没实现 —— 现在显式 400，不再假装续接；
+2. 客户端需要发完整历史（这与官方客户端行为一致），`/v1/messages`、`/chat/completions`
+   的多轮 + 工具历史逐条透传，已补回归用例；
+3. `gpt-6-astra` 的透传路径是否支持链式续接，需要上游恢复可用后实测再定
+   （当前 429）；文档已注明“未验证”，不把它当能力承诺。
+
+### 68.6 遗留
+
+- 上游 `/responses` 的 `previous_response_id` / `conversation` 行为待实测
+  （需要 `gpt-6-astra` 不再 429）；若确认支持，再把「透传 + 会话粘性同号」写进文档；
+- 若将来要支持「合成路径的链式续接」，只能由网关自己存响应 → 回放历史（需要
+  持久化 + TTL + 同号路由），本次不做：无状态契约已经能覆盖官方客户端；
+- 未知 `input` 条目类型仍按「输出侧条目」跳过（`web_search_call` 等），
+  若上游将来用条目承载上下文，需要重新评估。

@@ -33,14 +33,6 @@ func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
 type requestIDKey struct{}
 
-// requestID 从上下文取 request id（没有则返回空串）。
-func requestID(ctx context.Context) string {
-	if v, ok := ctx.Value(requestIDKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
-
 // newRequestID 生成 16 位 hex 的请求号。
 func newRequestID() string {
 	var b [8]byte
@@ -121,7 +113,14 @@ type metrics struct {
 	// upstreamLane 是 /theos 回报的上游车道（0 = 尚未观测到）。
 	// 与网关实际发出的车道对比，用来发现「客户端已抬车道」。
 	upstreamLane atomic.Int64
-	extra        *extraMetrics
+
+	// stateful* 统计依赖上游响应状态的请求（previous_response_id /
+	// conversation / item_reference）。rejected 只统计网关拒绝的那部分。
+	statefulPrevID  atomic.Int64
+	statefulConv    atomic.Int64
+	statefulItemRef atomic.Int64
+	statefulReject  atomic.Int64
+	extra           *extraMetrics
 }
 
 func newMetrics() *metrics { return &metrics{extra: newExtraMetrics()} }
@@ -331,6 +330,16 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	)
 	counter("gateway_fallback_total", "请求体形状被拒后按桌面端形状重试的次数",
 		[2]string{`gateway_fallback_total{reason="body_shape"}`, itoa64(m.fallbackTotal.Load())},
+	)
+	// 依赖上游响应状态的请求：这些是「上下文看起来丢了」的第一现场。
+	// 合成路径（chat）会直接拒绝，透传路径交给上游（其能否续接尚未验证）。
+	counter("gateway_stateful_requests_total", "依赖上游保存响应状态的请求（按字段）",
+		[2]string{`gateway_stateful_requests_total{param="previous_response_id"}`, itoa64(m.statefulPrevID.Load())},
+		[2]string{`gateway_stateful_requests_total{param="conversation"}`, itoa64(m.statefulConv.Load())},
+		[2]string{`gateway_stateful_requests_total{param="item_reference"}`, itoa64(m.statefulItemRef.Load())},
+	)
+	counter("gateway_stateful_rejected_total", "因合成路径无状态而拒绝的续接请求",
+		[2]string{`gateway_stateful_rejected_total{reason="stateless_translation"}`, itoa64(m.statefulReject.Load())},
 	)
 	errSamples := make([][2]string, 0, len(snap.UpstreamErrs))
 	for _, e := range snap.UpstreamErrs {

@@ -193,7 +193,7 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 | --- | --- | --- |
 | GET | `/v1/models` | 模型目录（含 `deepai` 元信息） |
 | POST | `/v1/chat/completions` | 流式 / 非流式；支持 tools、图片、`prompt_cache_key` |
-| POST | `/v1/responses` | `openai-responses` 模型透传；其余模型自动翻译 |
+| POST | `/v1/responses` | `openai-responses` 模型透传；其余模型自动翻译（**无状态**：续接字段见下） |
 | POST | `/v1/audio/transcriptions` | 转发上游语音转写（webm / mp4） |
 | POST | `/v1/audio/translations` | 同上（别名） |
 
@@ -203,6 +203,23 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 | --- | --- | --- |
 | POST | `/v1/messages` | 流式 / 非流式，支持 `tool_use`、`thinking`、图片 |
 | POST | `/v1/messages/count_tokens` | 本地估算（上游不提供） |
+
+#### 上下文契约：网关是**无状态**的
+
+三套协议都按「调用方每轮发完整历史」工作（和桌面端一致）：网关不存对话，
+也不会替你补上一轮。具体到 `/v1/responses`：
+
+- `openai-responses` 模型（如 `gpt-6-astra`）：请求**原样透传**到上游
+  `/responses`，`previous_response_id` / `conversation` 能否续接取决于上游
+  （2026-11-19 该模型持续 429，尚未验证；桌面端自身从不使用链式续接）；
+- 其余模型：网关把 `input` 翻译成 chat messages。此时**凡是依赖上游保存状态
+  的请求会直接返回 400 `unsupported_parameter`**，而不是静默丢掉上下文：
+  `previous_response_id`、`conversation`、`input` 里的 `item_reference`。
+  修法：把完整历史放进 `input` 重发，或改用透传模型。
+
+排障：请求日志（控制台日志页「消息」列 / `<数据文件>-logs.jsonl` 的 `messages`、
+`system` 字段）记录每次请求回喂的消息条数与是否带系统提示，不含正文——
+条数 1 通常说明调用方只发了本轮。
 
 Claude Code 只需：
 
@@ -689,6 +706,9 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 
 ## 十、限制与说明
 
+- 网关是**无状态代理**：不存对话，也不补历史。`/v1/responses` 的续接字段
+  （`previous_response_id` / `conversation` / `item_reference`）在合成路径直接回 400
+  `unsupported_parameter`，在透传路径交给上游（详见「上下文契约」一节）；
 - `X-DeepAI-Code-Theos` 发 `7`（0.3.41 起）。上游门槛可能放宽：2026-11-19 实测 ≤7 全通过、
   8 及以上 426，此时旧车道「能用」并不代表车道是对的 —— 与上游当前车道的差异由
   `/theos` 的 `lane_version` 观测（`Server.UpstreamLane` / `LaneDrift`，控制台概览可见）；

@@ -25,3 +25,48 @@ func (e *ClientError) Error() string { return e.Message }
 
 // ErrNoMessages 表示转换后没有任何可用消息。
 var ErrNoMessages = &ClientError{Message: "input 不能为空"}
+
+// StatefulParamError 表示请求依赖**上游保存的响应状态**。
+//
+// 典型字段：`previous_response_id`（续接上一轮）、`conversation`（服务端会话）、
+// 以及 `input` 里的 `item_reference`（引用一个已存条目）。
+// 这类请求只能由上游 /responses 完成；网关把 Responses 翻译成 Chat Completions
+// 时无法重建那份状态，**静默忽略字段就等于把对话截成一问一答**（用户感知为
+// “模型失忆”），所以必须显式报错。
+type StatefulParamError struct {
+	// Param 是触发拒绝的字段名。
+	Param string
+}
+
+func (e *StatefulParamError) Error() string {
+	return "`" + e.Param + "` 依赖上游保存的响应状态，但该模型走的是 chat/completions " +
+		"合成路径（无状态）：请把完整历史放进 `input` 重发，或改用 api=openai-responses 的模型"
+}
+
+// StatefulParam 返回请求里第一个「需要上游状态」的字段名（没有则返回空串）。
+//
+// 只认真正携带状态的形态：空字符串的 `previous_response_id` / 空 `conversation`
+// 与不传等价，不能因为客户端习惯性填了 null 就拒绝。
+func StatefulParam(payload map[string]any) string {
+	if StrOf(payload["previous_response_id"]) != "" {
+		return "previous_response_id"
+	}
+	switch c := payload["conversation"].(type) {
+	case string:
+		if c != "" {
+			return "conversation"
+		}
+	case map[string]any:
+		if len(c) > 0 {
+			return "conversation"
+		}
+	}
+	if items, ok := payload["input"].([]any); ok {
+		for _, it := range items {
+			if m, ok := it.(map[string]any); ok && StrOf(m["type"]) == "item_reference" {
+				return "item_reference"
+			}
+		}
+	}
+	return ""
+}

@@ -260,9 +260,15 @@ func TestConsoleBackendParity(t *testing.T) {
 		!strings.Contains(html, `fmtCompact(s.total_tokens_in)`) {
 		t.Error("概览的字符 / Token 应改用 fmtCompact")
 	}
-	for _, needle := range []string{`fmtCompact(l.prompt_len)`, `fmtCompact(l.output_len)`, `fmtCompact(l.tokens_in)`, `fmtCompact(l.tokens_out)`} {
+	// 日志的字符 / Token 两列走 countCell（内部用 fmtCompact 压缩）——
+	// 直接打印原始数字会把行宽撞爆。
+	if !strings.Contains(html, `function countCell(`) ||
+		!strings.Contains(html, `fmtCompact(a) + " / " + fmtCompact(b)`) {
+		t.Error("日志的计数列应改用 countCell + fmtCompact")
+	}
+	for _, needle := range []string{`countCell(l.prompt_len, l.output_len)`, `countCell(l.tokens_in, l.tokens_out)`} {
 		if !strings.Contains(html, needle) {
-			t.Errorf("日志应改用 fmtCompact：%s", needle)
+			t.Errorf("日志计数列缺少 %s", needle)
 		}
 	}
 

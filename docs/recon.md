@@ -230,6 +230,32 @@
 `glm-5.3-flash`；**车道 5 / 6 / 7 的目录逐字段一致**（`glyph-cluster` 256,000，
 其余 320,000）—— 0.3.37 时代的分车道上下文差异已消失。
 
+### 2.3 上下文续接：桌面端从不使用 `previous_response_id`【源码级 0.3.41，2026-11-19 复核】
+
+issue #5（“模型失忆”）要回答的第一个问题是「上游/客户端到底支持不支持链式续接」。
+把 0.3.41 的 `apps/server/dist/binCli-DAkBc9bP.mjs`（14.8 MB，即 t3code server
+真实代码）解出来扫全文：
+
+| 搜的字符串 | 命中 | 含义 |
+| --- | ---: | --- |
+| `previous_response_id` | **0** | 桌面端从不链式续接 |
+| `conversation`（上下文字段） | 0（其余 170 次都是 UI 里的“对话”文案 / 类型声明） | — |
+| `/chat/completions` 调用点 | 4 | 均为「完整 `messages` 数组」形态（含 `context.messages.slice(-6)` 这类显式截断） |
+
+（`server.asar` 里能 grep 到的 `previous_response_id` 全部来自内置的 **OpenAI SDK
+类型声明**，属于 `api.openai.com` 那条传输，不是 DeepAI 推理链路。）
+
+结论：
+
+1. **契约是“每轮发完整历史”**：桌面端自己就是这么干的；网关因此也是无状态代理，
+   不会也不应该替调用方保存对话；
+2. **上游 `/responses` 的链式续接能力未验证**：唯一走 `/responses` 的模型是
+   `gpt-6-astra`，2026-11-19 多次实测都回 429 `rate_limit_exceeded`（单次尝试与
+   8s 后重试都一样），所以 `previous_response_id` 在上游究竟是支持、忽略还是报错，
+   目前**没有实测证据**；
+3. 因此网关的处理是：透传路径原样转发（由上游决定），合成路径（chat 模型）
+   直接 400 `unsupported_parameter` —— 静默忽略等于把对话截成一问一答。
+
 ## 3. 请求头【源码级 0.3.41】
 
 | 头 | 值 | 作用 |

@@ -199,3 +199,60 @@ func (s *Server) clientFor(acct *deepai.Account) *deepai.Client {
 	s.proxyClients[acct.Proxy] = c
 	return c
 }
+
+// historyStats 统计本次请求回喂给上游的历史规模：消息条数与是否带系统提示。
+//
+// 只数条数与角色，不碰正文。用途是把 issue #5 里那三类原因分开：
+//   - 客户端没给历史（messages 只有 1 条）→ 调用方问题；
+//   - 网关把历史弄丢了（客户端发了 N 条、日志里却是 1 条）→ 网关 bug；
+//   - 上游忽略历史（日志里条数正常、回答仍失忆）→ 上游行为。
+//
+// 兼容两种形状：chat 的 messages 与 Responses 的 instructions + input。
+func historyStats(payload map[string]any) (msgs int, hasSystem bool) {
+	if v, ok := payload["messages"].([]any); ok {
+		for _, mv := range v {
+			m, ok := mv.(map[string]any)
+			if !ok {
+				continue
+			}
+			role := strOf(m["role"])
+			if role == "" {
+				if _, isStr := m["content"].(string); isStr {
+					msgs++ // 省略 role 的字面量消息（OpenAI 允许）
+				}
+				continue
+			}
+			msgs++
+			if role == "system" || role == "developer" {
+				hasSystem = true
+			}
+		}
+		return msgs, hasSystem
+	}
+	if ins := strOf(payload["instructions"]); ins != "" {
+		hasSystem = true
+	}
+	if v, ok := payload["input"].([]any); ok {
+		for _, mv := range v {
+			m, ok := mv.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t := strOf(m["type"]); t != "" && t != "message" {
+				continue
+			}
+			role := strOf(m["role"])
+			if role == "" {
+				role = "user"
+			}
+			msgs++
+			if role == "system" || role == "developer" {
+				hasSystem = true
+			}
+		}
+	}
+	if msgs == 0 && strOf(payload["input"]) != "" {
+		msgs = 1 // Responses 的字符串简写等价于一条 user 消息
+	}
+	return msgs, hasSystem
+}

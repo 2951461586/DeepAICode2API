@@ -9,6 +9,7 @@ import (
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
+	"deepaicode2api/internal/logx"
 )
 
 // handleResponses 是 /v1/responses 的入口。
@@ -42,7 +43,20 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	key := extractKey(r)
 	promptLen := estimatePromptLen(payload)
 
-	rls := s.newReqLog(key, nil, model.ID, "responses", stream, start, promptLen)
+	rls := s.newReqLog(key, nil, model.ID, "responses", stream, start, promptLen).withHistory(payload)
+	if p := statefulParam(payload); p != "" {
+		// 依赖上游保存的响应状态：合成路径无法重建，必须明说；透传路径
+		// 原样交给上游（能不能续接由上游决定），但留一条日志。
+		if !model.IsResponses() {
+			s.metrics.addStateful(p, true)
+			httpx.WriteErr(w, http.StatusBadRequest,
+				(&statefulParamError{Param: p}).Error(), "unsupported_parameter")
+			return
+		}
+		s.metrics.addStateful(p, false)
+		logx.Warn("上游 /responses 透传带状态字段：续接能力取决于上游",
+			"param", p, "model", model.ID)
+	}
 	if model.IsResponses() {
 		s.passthroughResponses(w, r, payload, affinity, rls)
 		return

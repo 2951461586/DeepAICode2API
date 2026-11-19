@@ -24,7 +24,14 @@ func ResponsesReasoningEffort(payload map[string]any) string {
 }
 
 // ResponsesToChatPayload 把 Responses 请求翻译成 Chat Completions。
+//
+// 依赖上游响应状态的请求（`previous_response_id` / `conversation` /
+// `item_reference`）在这里直接报错：合成路径只有 `input` 里的内容，
+// 静默忽略这些字段会让客户端以为“续接成功”，实际上下文被截断。
 func ResponsesToChatPayload(payload map[string]any, modelID string) (map[string]any, error) {
+	if p := StatefulParam(payload); p != "" {
+		return nil, &StatefulParamError{Param: p}
+	}
 	out := map[string]any{
 		"model":  modelID,
 		"stream": BoolOf(payload["stream"]),
@@ -47,6 +54,46 @@ func ResponsesToChatPayload(payload map[string]any, modelID string) (map[string]
 		out["reasoning_effort"] = effort
 	}
 
+	messages := responsesInputMessages(payload)
+	if len(messages) == 0 {
+		return nil, ErrNoMessages
+	}
+	out["messages"] = messages
+
+	if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+		converted := make([]any, 0, len(tools))
+		for _, tv := range tools {
+			t, ok := tv.(map[string]any)
+			if !ok || StrOf(t["type"]) != "function" {
+				continue
+			}
+			fn := map[string]any{"name": StrOf(t["name"])}
+			if d := StrOf(t["description"]); d != "" {
+				fn["description"] = d
+			}
+			if p, ok := t["parameters"]; ok {
+				fn["parameters"] = p
+			}
+			converted = append(converted, map[string]any{"type": "function", "function": fn})
+		}
+		if len(converted) > 0 {
+			out["tools"] = converted
+			if tc, ok := payload["tool_choice"]; ok {
+				out["tool_choice"] = ConvertResponsesToolChoice(tc)
+			}
+		}
+	}
+	return out, nil
+}
+
+// responsesInputMessages 把 Responses 的 instructions + input 展开为 chat messages。
+//
+// 单独抽出来只为可读性与复杂度：这里是「历史会不会被弄丢」的核心，
+// 每条分支都对应一种 item 形态（message / function_call / function_call_output）。
+// 未识别的 item 类型（web_search_call、code_interpreter_call 等**输出侧**条目）
+// 跳过：chat/completions 无法表达它们，而其中的用户可见结论通常已在
+// message 项里；真正会导致上下文缺失的 item_reference 已在入口处报错。
+func responsesInputMessages(payload map[string]any) []any {
 	messages := make([]any, 0, 4)
 	if instructions, ok := payload["instructions"].(string); ok && strings.TrimSpace(instructions) != "" {
 		messages = append(messages, map[string]any{"role": "system", "content": instructions})
@@ -81,42 +128,16 @@ func ResponsesToChatPayload(payload map[string]any, modelID string) (map[string]
 					"content":      ResponsesToolOutput(item["output"]),
 				})
 			case "reasoning":
-				// 历史推理内容不再回喂上游。
+				// 历史推理内容不再回喂上游（与客户端一致）。
+			default:
+				// 其余是输出侧条目（web_search_call / code_interpreter_call / …），
+				// chat 无法表达；跳过不影响用户可见历史。
 			}
 		}
 	}
-	if len(messages) == 0 {
-		return nil, ErrNoMessages
-	}
-	out["messages"] = messages
-
-	if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
-		converted := make([]any, 0, len(tools))
-		for _, tv := range tools {
-			t, ok := tv.(map[string]any)
-			if !ok || StrOf(t["type"]) != "function" {
-				continue
-			}
-			fn := map[string]any{"name": StrOf(t["name"])}
-			if d := StrOf(t["description"]); d != "" {
-				fn["description"] = d
-			}
-			if p, ok := t["parameters"]; ok {
-				fn["parameters"] = p
-			}
-			converted = append(converted, map[string]any{"type": "function", "function": fn})
-		}
-		if len(converted) > 0 {
-			out["tools"] = converted
-			if tc, ok := payload["tool_choice"]; ok {
-				out["tool_choice"] = ConvertResponsesToolChoice(tc)
-			}
-		}
-	}
-	return out, nil
+	return messages
 }
 
-// ResponsesInputContent 转换 Responses 的 content 字段。
 func ResponsesInputContent(v any) any {
 	switch c := v.(type) {
 	case string:
