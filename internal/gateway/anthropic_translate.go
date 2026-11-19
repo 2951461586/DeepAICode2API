@@ -406,7 +406,6 @@ func ChatToAnthropicMessage(out map[string]any, publicModel string) map[string]a
 		content = append(content, map[string]any{"type": "text", "text": ""})
 	}
 
-	usage := ParseUsage(out["usage"])
 	return map[string]any{
 		"id":            "msg_" + deepai.RandomHex(12),
 		"type":          "message",
@@ -415,11 +414,35 @@ func ChatToAnthropicMessage(out map[string]any, publicModel string) map[string]a
 		"content":       content,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  usage.PromptTokens,
-			"output_tokens": usage.CompletionTokens,
-		},
+		"usage":         AnthropicUsage(ParseUsage(out["usage"])),
 	}
+}
+
+// AnthropicUsage 把归一化用量映射成 Anthropic 的 usage 字段。
+//
+// Anthropic 的 `input_tokens` 只统计**未命中缓存**的输入，命中量单列在
+// `cache_read_input_tokens`；上游给的是 prompt_tokens 总数，所以这里做减法，
+// 保证 input + cache_read 仍等于调用方看到的上下文长度。
+//
+// 之前这里只回 input/output 两个字段，缓存命中量在上游明明有
+// （`prompt_tokens_details.cached_tokens`，流式末帧也带），却被丢掉了：
+// Claude Code 一类客户端会据此显示“缓存未命中”，控制台也只能看到 0。
+func AnthropicUsage(u Usage) map[string]any {
+	input := u.PromptTokens
+	usage := map[string]any{
+		"output_tokens":               u.CompletionTokens,
+		"cache_creation_input_tokens": 0,
+	}
+	if u.CachedTokens > 0 {
+		if input > u.CachedTokens {
+			input -= u.CachedTokens
+		} else {
+			input = 0
+		}
+		usage["cache_read_input_tokens"] = u.CachedTokens
+	}
+	usage["input_tokens"] = input
+	return usage
 }
 
 // AnthropicStopReason 映射 OpenAI finish_reason → Anthropic stop_reason。

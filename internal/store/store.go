@@ -37,8 +37,10 @@ type Settings struct {
 
 	// Lane 是探测到的 Theos 车道版本（空 = 用编译期默认值）。
 	//
-	// 上游抬车道时旧值一律回 426；网关启动时会借账号凭据探测一次 /models，
-	// 命中就写在这里，升级不用改代码。
+	// 网关启动时会借账号凭据探测一次 /models，命中就写在这里，升级不用改代码。
+	// 它存的是「探测命中的车道」，**不保证等于上游当前车道**：2026-11-19 上游
+	// 放宽门槛后 <=7 全部回 200，探测只能证明那一档能用；上游实际车道见
+	// Server.UpstreamLane（来自 /theos 的 lane_version）。
 	Lane string `json:"lane,omitempty"`
 
 	// LaneBuild 是写入 Lane 时的编译期车道（deepai.LaneVersion）。
@@ -158,10 +160,13 @@ type Store struct {
 	st    *State
 	sched *pool.Scheduler
 
-	// statsPath / logsPath 是由主路径派生的旁路文件。
-	statsPath string
-	logsPath  string
-	logs      *logStore
+	// statsPath / logsPath / stickyPath 是由主路径派生的旁路文件。
+	statsPath  string
+	logsPath   string
+	stickyPath string
+	logs       *logStore
+	// stickyLast 是上次写入绑定表的明文，用于跳过无变化的重复写盘。
+	stickyLast []byte
 
 	// masterKey 非空时状态文件整体加密（AES-256-GCM）。
 	masterKey []byte

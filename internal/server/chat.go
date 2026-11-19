@@ -45,7 +45,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 而 OpenAI 规范里缺省等价于 false，两者不一致会导致非流式请求拿到
 	// `data: {...}` 无法解析。
 	payload["stream"] = stream
-	affinity := affinityFor(r, payload)
+	affinity := sessionAffinity(r, payload)
 	group := s.requestGroup(r)
 
 	body, err := json.Marshal(payload)

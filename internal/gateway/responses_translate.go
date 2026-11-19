@@ -273,7 +273,7 @@ func ChatToResponsesObject(chat map[string]any, publicModel string) map[string]a
 			"input_tokens":          usage.PromptTokens,
 			"output_tokens":         usage.CompletionTokens,
 			"total_tokens":          usage.TotalTokens,
-			"input_tokens_details":  map[string]any{"cached_tokens": 0},
+			"input_tokens_details":  map[string]any{"cached_tokens": usage.CachedTokens},
 			"output_tokens_details": map[string]any{"reasoning_tokens": usage.ReasoningTokens},
 		},
 	}

@@ -39,6 +39,9 @@ func (s *Server) Close(ctx context.Context) {
 		log.Printf("[shutdown] 后台任务未在期限内收尾，继续退出（未落盘的探测结果会丢失）")
 	}
 
+	// 粘性绑定攒批写盘，退出前必须补一次（否则重启后所有会话重新学一遍）。
+	s.FlushSticky()
+
 	s.closeIdleConnections()
 }
 

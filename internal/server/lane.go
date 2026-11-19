@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/logx"
 	"deepaicode2api/internal/store"
 )
 
@@ -17,6 +18,57 @@ import (
 // 车道不对时 426 会成批出现（所有请求同时撞上）；没有冷却，一次车道升级
 // 就会把每个失败请求都变成一次 /models 探测。
 const laneProbeCooldown = 60 * time.Second
+
+// atoiOr 把十进制字符串转成 int，失败时返回 def。
+func atoiOr(v string, def int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// UpstreamLane 返回 /theos 回报的上游车道（0 = 尚未观测到）。
+func (s *Server) UpstreamLane() int { return int(s.upstreamLane.Load()) }
+
+// LaneDrift 返回「上游车道 − 网关当前车道」。
+//
+// 正数表示客户端已经抬了车道而网关还在发旧值：2026-11-19 起上游对 ≤7 全放行，
+// 请求仍然能成功，所以这条路径只在观测层面报警（日志 / 指标 / 控制台），
+// 不自动换车道 —— 新车道可能伴随请求体形状变化，必须白盒复核后再升。
+// 0 或负数表示没有漂移（或尚未观测）。
+func (s *Server) LaneDrift() int {
+	up := s.UpstreamLane()
+	if up <= 0 {
+		return 0
+	}
+	return up - atoiOr(s.CurrentLane(), 0)
+}
+
+// noteUpstreamLane 记录一次 /theos 回报的上游车道，并在变化时留痕。
+//
+// 由 deepai.Client.LaneHook 在每次 /theos 成功解析后调用，调用频率与额度
+// 探测一致（低频）；只在**数值变化**时打日志，所以稳态下没有噪声。
+func (s *Server) noteUpstreamLane(v int) {
+	if v <= 0 {
+		return
+	}
+	s.metrics.setUpstreamLane(int64(v))
+	prev := s.upstreamLane.Swap(int64(v))
+	if prev == int64(v) {
+		return
+	}
+	compiled := atoiOr(deepai.LaneVersion, 0)
+	switch {
+	case prev == 0:
+		log.Printf("[lane] 上游车道: %d（网关当前发 %s，编译期 %s）", v, s.CurrentLane(), deepai.LaneVersion)
+	case v > compiled:
+		logx.Warn("上游车道领先网关：客户端已抬车道，建议升级网关",
+			"upstream", v, "gateway", deepai.LaneVersion, "lane", s.CurrentLane())
+	default:
+		log.Printf("[lane] 上游车道变化: %d → %d（网关当前发 %s）", prev, v, s.CurrentLane())
+	}
+}
 
 // CurrentLane 返回当前生效的车道。
 //

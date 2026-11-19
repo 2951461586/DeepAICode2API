@@ -38,7 +38,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	payload["model"] = model.ID
 	stream, _ := payload["stream"].(bool)
-	affinity := affinityFor(r, payload)
+	affinity := sessionAffinity(r, payload)
 	key := extractKey(r)
 	promptLen := estimatePromptLen(payload)
 

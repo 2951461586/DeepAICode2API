@@ -118,10 +118,16 @@ type metrics struct {
 	checkinBlocked  atomic.Int64
 	checkinTimeouts atomic.Int64
 	fallbackTotal   atomic.Int64
-	extra           *extraMetrics
+	// upstreamLane 是 /theos 回报的上游车道（0 = 尚未观测到）。
+	// 与网关实际发出的车道对比，用来发现「客户端已抬车道」。
+	upstreamLane atomic.Int64
+	extra        *extraMetrics
 }
 
 func newMetrics() *metrics { return &metrics{extra: newExtraMetrics()} }
+
+// setUpstreamLane 记录 /theos 回报的上游车道（Prometheus gauge）。
+func (m *metrics) setUpstreamLane(v int64) { m.upstreamLane.Store(v) }
 
 // observe 记录一次请求（status + 耗时 + 端点分布）。
 func (m *metrics) observe(endpoint string, status int, d time.Duration) {
@@ -290,6 +296,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		[2]string{"gateway_log_failed_total", itoa64(stats.FailedRequests)})
 	gauge("gateway_keys", "有效 API 密钥数量",
 		[2]string{"gateway_keys", itoa64(int64(len(s.Store.Keys())))})
+	// 上游车道：与 gateway_lane 对比即可发现协议漂移（上游 > 网关 = 该升级了）。
+	gauge("gateway_lane", "网关当前发出的 Theos 车道",
+		[2]string{"gateway_lane", itoa64(int64(atoiOr(s.CurrentLane(), 0)))},
+		[2]string{`gateway_lane{source="compiled"}`, itoa64(int64(atoiOr(deepai.LaneVersion, 0)))},
+	)
+	gauge("gateway_upstream_lane", "上游 /theos 回报的车道（0 = 尚未观测）",
+		[2]string{"gateway_upstream_lane", itoa64(int64(s.UpstreamLane()))})
 	gauge("go_goroutines", "当前 goroutine 数",
 		[2]string{"go_goroutines", itoa64(int64(runtime.NumGoroutine()))})
 	var ms runtime.MemStats

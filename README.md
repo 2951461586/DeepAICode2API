@@ -70,11 +70,11 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.
 | 语音转写 | `POST https://api.deepai.org/speech_to_text`（字段 `voiceRecording`） |
 | 联网搜索 | `POST https://api.deepai.org/deepai_code/web_search` |
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
-| 协议头 | `X-DeepAI-Code-Theos: 7`（计费车道版本；0.3.41 起为 7，0.3.41 发布当天实测 6 及以下 / 8 及以上全部 426，见 `docs/recon.md` §3） |
+| 协议头 | `X-DeepAI-Code-Theos: 7`（计费车道版本；0.3.41 起为 7）。**车道门槛是服务端行为**：2026-11-18（0.3.41 发布当天）只有 7 通过，2026-11-19 复测已放宽为 ≤7 全通过、8 及以上 426（`docs/recon.md` §3） |
 | 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每个出口代理随机一次，随该代理的所有 JSON 请求发出；桌面端是每进程一次） |
 | 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1`（`focus` 只在焦点状态已知时才追加） |
 | **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
-| 会话粘性 | `X-Session-Affinity`（body 里的 `prompt_cache_key` 也会被上游使用） |
+| 会话粘性 | `X-Session-Affinity`（body 里的 `prompt_cache_key` 也会被上游使用）；网关另把它绑定到具体账号，让同一会话的前缀缓存留在同一个号上（见 §十） |
 | 容量拒绝 | `409 {"error":{"code":"session_busy"}}` + `Retry-After` |
 | 账号策略 | `403 social_login_required`：0.3.19 的阶段性收窄，2026-11-09 复测已解除；网关仍按 `blocked` 终态处理（见 `docs/recon.md` §4.1） |
 | 浏览器登录 | `GET /deepai_code/desktop_auth/?state=…&port=…` → 本机 `/auth-callback?code=…` → `POST /deepai_code/desktop_auth/exchange/` |
@@ -157,8 +157,8 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 - 只有 `deepai-cyber` / `glm-5.3` / `glyph-cluster` / `solar-mini-4` / `minimax-m3` 是纯文本
   （`input: [text]`），其余都接受图片输入（`input: [text, image]`）；全部支持推理（`reasoning`）；
 - **车道 7 的目录把 `contextWindow` 统一收敛到 320,000，只有 `glyph-cluster`
-  是 256,000**（0.3.41 起的线上目录；0.3.37 的车道 6 曾把 27 个模型全部压到
-  320,000，车道 5 还是各模型的真实上限 1M / 991k / 512k…）。网关按上游原样透传；
+  是 256,000**（0.3.41 起的线上目录）。**2026-11-19 复测：车道 5 / 6 / 7 拿到的目录
+  完全一致**（27 个模型零差异），0.3.37 时代的分车道差异已消失；网关按上游原样透传；
 - **2026-11-14 起上游 `/deepai_code/models` 要求 `Api-Key`**：不带 Key 一律 401
   `auth_required`（此前「带不带都返回同一份目录」的结论已失效）。网关的目录刷新与
   车道探测因此都借用号池里一个账号的凭据；运维上要知道的坑见 §10.1；
@@ -637,9 +637,10 @@ docker run -d --name deepaicode2api \
   deepaicode2api
 ```
 
-> `X-DeepAI-Code-Theos: 7` 是当前客户端（0.3.41）的车道：`/chat/completions`、
-> `/models`、`/theos` 上 7 回 200，6 及以下与 8 及以上回
-> `426 lane_version_unsupported`（0.3.41 发布当天实测，见 `docs/recon.md` §3）。
+> `X-DeepAI-Code-Theos: 7` 是当前客户端（0.3.41）的车道。车道门槛由上游随时调整：
+> 2026-11-18 是「只有 7」，2026-11-19 已放宽成「≤7 全通过、8 及以上 426
+> `lane_version_unsupported`」（见 `docs/recon.md` §3）。发旧车道**仍能跑通**，
+> 所以判断协议是否跟进要看 `/theos` 回的 `lane_version`（控制台概览的「上游车道」）。
 > `X-DeepAI-Code-Machine` 仍是计量模型的必需头：缺失时返回 `400 machine_required`。
 > 容器里通常读不到宿主机的 SMBIOS UUID，因此 `DEEPAI_MACHINE_ID` 在容器部署时**必填**。
 > 填桌面端所在机器的原始 UUID 即可复用同一份每日免费额度。
@@ -688,7 +689,9 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 
 ## 十、限制与说明
 
-- `X-DeepAI-Code-Theos` 必须发 `7`（0.3.41 起，2026-11-18 复核；`/models`、`/theos`、`/chat/completions` 都只接受 7，6 及以下 / 8 及以上回 426）；
+- `X-DeepAI-Code-Theos` 发 `7`（0.3.41 起）。上游门槛可能放宽：2026-11-19 实测 ≤7 全通过、
+  8 及以上 426，此时旧车道「能用」并不代表车道是对的 —— 与上游当前车道的差异由
+  `/theos` 的 `lane_version` 观测（`Server.UpstreamLane` / `LaneDrift`，控制台概览可见）；
 - 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.41**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
 - 车道探测结果由**当前构建**验证过（`Settings.LaneBuild == deepai.LaneVersion`）时无条件信任，即使它比编译值旧；否则按 `max(存储值, 编译值)` 取较新值。探测序列从编译期车道开始，**不能先试旧车道**；
 - 请求体形状拒绝除匹配两版文案外，还兜底 `400 + code=invalid_request_error`；补形状重试仍失败时回传第二个错误；

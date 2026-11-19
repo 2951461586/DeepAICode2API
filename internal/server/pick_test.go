@@ -35,7 +35,7 @@ func TestPickFreeAccountAllocationsBounded(t *testing.T) {
 
 	const budget = 40 // 远小于 500（旧实现至少 500×2 次分配）
 	got := testing.AllocsPerRun(50, func() {
-		a, ok, _ := s.pickFreeAccount("")
+		a, ok, _ := s.pickFreeAccount("", "")
 		if !ok || a == nil {
 			t.Fatalf("应当选到账号")
 		}
@@ -55,7 +55,7 @@ func TestPickFreeAccountSkipsBusy(t *testing.T) {
 	// 每个账号最多 maxInFlightPerAccount 个并发；先占满全部。
 	var held []string
 	for i := 0; i < 2*maxInFlightPerAccount; i++ {
-		a, ok, candidates := s.pickFreeAccount("")
+		a, ok, candidates := s.pickFreeAccount("", "")
 		if !ok {
 			t.Fatalf("第 %d 次应仍有空槽（candidates=%v）", i, candidates)
 		}
@@ -65,13 +65,13 @@ func TestPickFreeAccountSkipsBusy(t *testing.T) {
 		t.Fatalf("应占满 2 个账号 × %d 个槽位，实际 %d", maxInFlightPerAccount, len(held))
 	}
 	// 槽位全满：拿不到账号，但 candidates 必须为 true（池里有号，只是忙）。
-	if a, ok, candidates := s.pickFreeAccount(""); ok || a != nil || !candidates {
+	if a, ok, candidates := s.pickFreeAccount("", ""); ok || a != nil || !candidates {
 		t.Fatalf("全忙时不应选中账号：a=%v ok=%v candidates=%v", a, ok, candidates)
 	}
 	for _, id := range held {
 		s.releaseAccount(id)
 	}
-	if a, ok, _ := s.pickFreeAccount(""); !ok || a == nil {
+	if a, ok, _ := s.pickFreeAccount("", ""); !ok || a == nil {
 		t.Fatal("槽位释放后应能重新选到账号")
 	}
 }
@@ -82,7 +82,7 @@ func TestPickFreeAccountEmptyPool(t *testing.T) {
 	for _, a := range s.Store.Accounts() {
 		s.Store.RemoveAccount(a.ID)
 	}
-	if a, ok, candidates := s.pickFreeAccount(""); ok || a != nil || candidates {
+	if a, ok, candidates := s.pickFreeAccount("", ""); ok || a != nil || candidates {
 		t.Fatalf("空池应返回 (nil,false,false)，实际 (%v,%v,%v)", a, ok, candidates)
 	}
 }

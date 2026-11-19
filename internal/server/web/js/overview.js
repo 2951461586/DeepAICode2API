@@ -100,6 +100,17 @@ export function renderRuntime(d) {
     fmtNum(d.fallback_total || 0),
     t("次「补 system」重试")));
 
+  // 车道漂移：2026-11-19 起上游对 ≤7 全部放行，所以「请求还能跑通」不再
+  // 意味着车道是对的——只有 /theos 回的 lane_version 能看出客户端已经抬了车道。
+  var drift = Number(d.lane_drift || 0);
+  box.appendChild(runtimeItem(
+    t("上游车道"),
+    (d.lane || "—") + " / " + (d.lane_upstream || "—"),
+    drift > 0
+      ? t("上游领先 {n}：客户端已抬车道，请升级网关", { n: drift })
+      : t("网关发出的 / 上游回报的"),
+    drift > 0 ? "warn" : ""));
+
   box.appendChild(runtimeItem(
     t("上游错误 Top"),
     top ? top.code : t("无"),

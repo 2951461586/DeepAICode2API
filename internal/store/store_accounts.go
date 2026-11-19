@@ -40,6 +40,29 @@ func (s *Store) Account(id string) *deepai.Account {
 	return nil
 }
 
+// PreferredAccount 返回 id 对应账号的副本，前提是它在 group 下仍然可调度。
+//
+// 用于会话粘性：先把请求送回同一把 Key 上次用的号（上游前缀缓存与会话上下文
+// 都在那个号上）。不可调度时返回 nil，调用方回退常规选号。
+// 与 PickAccount 同量级开销：一次读锁 + 一个账号的拷贝，不做全池复制。
+func (s *Store) PreferredAccount(id, group string) *deepai.Account {
+	if id == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.st.Accounts {
+		if a == nil || a.ID != id {
+			continue
+		}
+		if !s.sched.Eligible(a, group) {
+			return nil
+		}
+		return a.Clone()
+	}
+	return nil
+}
+
 // AccountPage 是一次账号分页查询的结果。
 type AccountPage struct {
 	Items []*deepai.Account

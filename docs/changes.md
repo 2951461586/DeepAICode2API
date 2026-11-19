@@ -20,6 +20,8 @@
 | v0.1.5 | 63 | 文档整理与仓库清理（验收基线重算、索引状态列、dist 与陈旧状态文件）+ 发版 |
 | v0.1.6 | 64 | 客户端 0.3.37 同步：车道 5 → 6（唯一协议面变更）+ 探测序列改为从编译期车道开始 |
 | v0.1.6 | 65 | 结构治理：抽出 `internal/httpx` / `internal/server/web`、重构 `api.js`、0.3.37 复核修补（响应顺序 / 流式出错）+ race 与覆盖率基线 |
+| v0.1.7 | 66 | 客户端 0.3.41 同步：车道 6 → 7（唯一协议面变更）+ `sessions/save_records` 登记 |
+| v0.1.8 | 67 | 上游放宽车道门槛（≤7 全通）：车道漂移观测、Anthropic 出错即终止、缓存用量三处补齐、会话粘性落到账号 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -49,6 +51,8 @@
 - 63 文档整理（验收基线重算、索引加状态列）+ 仓库清理（dist 旧产物、根目录陈旧状态文件）+ v0.1.5 发版
 - 64 客户端 0.3.37 同步：车道 5 → 6（唯一协议面变更）+ 车道探测顺序修复（v0.1.6）
 - 65 结构治理与 0.3.37 复核收尾：拆 `httpx` / `web` 包（14.6k → 7.0k 行）、`api.js` 重构、`response.output` 按 `output_index` 排序、流式出错不 flush 工具（v0.1.6）
+- 66 客户端 0.3.41 同步：车道 6 → 7（唯一协议面变更）+ 桌面端升级（v0.1.7）
+- 67 上游放宽车道门槛（≤7 全通）+ 车道漂移观测、Anthropic 出错即终止、缓存用量补齐、会话粘性（v0.1.8）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -3755,3 +3759,138 @@ go test ./... -list '^Test' | grep -c  468 个顶层用例（总数仍 616）
 - 车道 7 的目录 `glyph-cluster` 为何单独回到 256k 未知，网关按上游原样透传，
   上游再变时目录刷新会自动跟上；
 - 本机仍无真实进程抓包；下次可直接对比运行中的 `/theos` beacon 与包内代码。
+
+---
+
+## 67. 2026-11-19 巡检：上游放宽车道门槛 + 协议修补（v0.1.8）
+
+**触发**：例行扫描。官方更新源 `latest.yml` 仍是 **0.3.41**（`releaseDate`
+2026-11-18T04:27Z，sha512 与 §66 记录一致），本机桌面端也停在 0.3.41 ——
+**客户端没有更新**。但用单账号复跑车道矩阵时发现**上游服务端行为变了**。
+
+### 67.1 结论：车道门槛从「只接受 7」放宽为「≤7 全接受」
+
+单账号、每格一次请求（2026-11-19）：
+
+| 端点 | lane 2 | 4 | 5 | 6 | **7** | 8 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `GET /deepai_code/models` | 200 | 200 | 200 | 200 | **200** | 426 |
+| `GET /deepai_code/theos` | 200 | 200 | 200 | 200 | **200** | 426 |
+| `POST .../chat/completions` | 未测 | 未测 | 200 | 200 | **200** | 未测 |
+
+与 §66.2（0.3.41 发布当天只有 lane 7 通过）相比，硬门槛只维持了一天。其余观察：
+
+- `/theos` **无论请求发几都回 `lane_version: 7`** —— 这是服务端当前车道，
+  不是对请求车道的回显；
+- `/models` 仍强制 `Api-Key`（不带 → 401 `auth_required`），未变；
+- **车道 5 / 6 / 7 的目录逐字段一致**（27 个模型零差异，`glyph-cluster` 256k、
+  其余 320k）：0.3.37 时代的分车道上下文差异已消失；
+- 前缀缓存确实生效：同一段 2,687 token 前缀第二次调用 `cached_tokens=2560`；
+  且 `prompt_cache_key` 会**分区**缓存（换 key 立即 miss）。
+
+**对网关的影响**：编译期车道 7 仍被接受，不需要改协议面。但两件事必须记下来：
+
+1. 「旧车道一律 426」的安全网没有了 —— 发旧车道也能跑通，所以**请求成功不再
+   证明车道是对的**；
+2. 车道探测（打 `/models`）从此只能回答「这一档能用」，再也分不出当前车道，
+   也发现不了上游已经抬到 8。
+
+### 67.2 缓存用量：三处丢弃点
+
+上游的 `prompt_tokens_details.cached_tokens` 一直都有（**流式末帧也带**，不需要
+`stream_options.include_usage`；2026-11-19 实测确认），`ParseUsage` 也解析了，
+但三个出口把它丢了：
+
+| 位置 | 问题 | 处理 |
+| --- | --- | --- |
+| `gateway/responses_translate.go` | `input_tokens_details.cached_tokens` 写死 0 | 改为 `usage.CachedTokens` |
+| `server/responses_stream.go` | 同上（流式 `response.completed`） | 同上 |
+| `gateway/anthropic_translate.go` | `usage` 只有 input/output，没有缓存字段 | 新增 `AnthropicUsage`：`input_tokens` 只算未命中部分，命中量进 `cache_read_input_tokens`，并补 `cache_creation_input_tokens: 0` |
+
+Anthropic 的语义是 `input_tokens` 为「未命中缓存」的输入、命中量单列，所以这里
+对上游的 `prompt_tokens` 做减法，保证 `input + cache_read` 仍等于上下文长度。
+
+### 67.3 Anthropic 流式出错即终止
+
+`streamAnthropic` 出错时先发 `error`，之后**仍然补发 `message_delta` +
+`message_stop`**（`stop_reason` 被写成 `end_turn`）。Anthropic 的事件模型里
+`error` 是终止事件：多发的 `message_delta` 会把一次中途失败的流派告成正常结束，
+客户端可能把只到一半的工具调用当成功。现在出错分支发完 `error` 直接收尾。
+
+### 67.4 车道漂移观测（不再依赖探测）
+
+- `deepai.Client.LaneHook`：`/theos` 成功解析出 `lane_version` 时回调
+  （直连与代理桶的 Client 都挂上）；
+- `Server.noteUpstreamLane` 记下上游车道，只在数值变化时留痕；
+  `UpstreamLane()` / `LaneDrift()` 对外暴露；
+- `/health` 增 `lane` / `lane_compiled` / `lane_upstream` / `lane_drift`；
+  `/admin/api/overview` 同名字段；`/metrics` 增 `gateway_lane{source=compiled}`
+  与 `gateway_upstream_lane`；控制台「运行健康」多一张「上游车道」小卡，
+  漂移 > 0 时标黄提示升级；
+- **不自动换车道**：lane 8 的请求体形状没有白盒复核过，自动跳等于拿协议面赌。
+
+### 67.5 会话粘性真正落到账号
+
+`affinity`（`X-Session-Affinity` / `prompt_cache_key`）此前只作为请求头透传给上游，
+选号仍然只看分组。几百个号的池子里，同一会话的连续请求会落到不同账号上，而前缀
+缓存是按前缀分区的（见 §67.1 末条）—— 换号就等于每次都冷启动。
+
+| 层 | 改动 |
+| --- | --- |
+| `internal/pool` | 新增导出的 `Scheduler.Eligible`（启用 / 未拦截 / 额度未用尽 / 分组匹配），`PickFiltered` 复用它 |
+| `internal/store` | 新增 `PreferredAccount(id, group)`：一次读锁 + 单账号拷贝，不可调度时返回 nil |
+| `internal/server/sticky.go` | affinity → 账号绑定表（TTL 10 分钟、上限 2048，超限先回收过期再整表清空） |
+| `internal/server/accounts.go` | `pickFreeAccount(group, prefer)` 先试绑定号，忙/不可用静默回退 |
+| `internal/server/upstream.go` | 只在**首次尝试**用绑定；2xx 后 `bindSticky`；拦截 / 额度用尽时 `dropSticky` |
+| `internal/server/request.go` | 新增 `anthropicAffinity`：Claude Code 不发会话头，用「模型 + system + tools」的稳定哈希派生（不含 messages 正文，否则每轮都变） |
+
+粘性永远不是硬约束：绑定号并发已满、被拦、额度用尽、或超过 TTL 都会回退常规轮询。
+
+### 67.6 验证（首轮）
+
+```text
+gofmt -l ./internal ./cmd ./main.go ./tasks.go ./env.go   无输出
+go vet ./...                                              无输出
+go test ./... -count=1                                    11 个含测试的包全绿
+go test -race ./internal/server ./internal/store ./internal/pool ./internal/gateway  全绿
+node --input-type=module --check（全部 JS） + console-smoke.mjs  通过
+顶层用例 468 → 479（+11）
+```
+
+新增用例：`TestAnthropicStreamErrorOmitsTerminalEvents`、
+`TestResponsesStreamCachedTokens`、`TestAnthropicUsageCarriesCacheTokens`、
+`TestChatToAnthropicMessageCachedUsage`、`TestChatToResponsesObjectCachedTokens`、
+`TestStickyPickPrefersBoundAccount`、`TestStickyDropsOnBlockAndExpiry`、
+`TestStickyTableBounded`、`TestUpstreamLaneDrift`、`TestAnthropicAffinityDerivation`、
+`TestPreferredAccountHonorsEligibility`；`TestMetricsEndpointExposition` /
+`TestOverviewIncludesRuntimeHealth` 补了车道字段断言。
+
+### 67.7 遗留项收尾（同日）
+
+| 遗留 | 处理 |
+| --- | --- |
+| lane 8 未白盒 | **已复核到现有证据的尽头**：本机 0.3.41 `server.asar` 里只有一个车道字面量 `"X-DeepAI-Code-Theos": "7"`（无 lane 8 代码路径）；实测 lane 8 在 `/models`、`/theos`、`/chat/completions` 全部 426，伪造 `X-DeepAI-Code-Beacon: v=0.3.42` 或换 `User-Agent` 都不改变。→ lane 8 目前既不存在于客户端也不被上游接受，「漂移只告警、不自动换道」是当前唯一正确策略 |
+| affinity 只给 Anthropic 派生 | 推广成 `sessionAffinity`：OpenAI `messages` 与 Responses `instructions` / `input` 两种形状共用同一实现；chat / responses / messages 三条入口全部接上。调用方自己给的头或 `prompt_cache_key` 仍然优先 |
+| 绑定表不持久化 | 落盘到旁路文件 `<base>-sticky.json`（与主状态文件同一把主密钥封存）：进程内改动只标脏，后台 30s 与退出前各 flush 一次（无改动跳过），启动时载入并剔除过期项；`-seal` 一并封存。不塞进主文件是为了不把「内容未变则跳过」打穿（`docs/optimization-plan-r2.md` §0.4） |
+| `dist/` 残留 v0.1.7 产物 | 已清空（发版脚本打包前还会再清一次） |
+
+### 67.8 验证（收尾）
+
+```text
+gofmt -l ./internal ./cmd ./main.go ./tasks.go ./env.go   无输出
+go vet ./...                                              无输出
+go test ./... -count=1                                    11 个含测试的包全绿
+go test -race ./internal/server ./internal/store ./internal/pool ./internal/gateway  全绿
+node --input-type=module --check（全部 JS） + console-smoke.mjs  通过
+顶层用例 468 → 482（+14）
+```
+
+新增用例（共 14）：`TestAnthropicStreamErrorOmitsTerminalEvents`、
+`TestResponsesStreamCachedTokens`、`TestAnthropicUsageCarriesCacheTokens`、
+`TestChatToAnthropicMessageCachedUsage`、`TestChatToResponsesObjectCachedTokens`、
+`TestStickyPickPrefersBoundAccount`、`TestStickyDropsOnBlockAndExpiry`、
+`TestStickyTableBounded`、`TestStickyPersistsAcrossRestart`、
+`TestStickySkipsExpiredOnLoad`、`TestStickySidecarRoundTrip`、
+`TestPreferredAccountHonorsEligibility`、`TestUpstreamLaneDrift`、
+`TestSessionAffinityDerivation`；`TestMetricsEndpointExposition` /
+`TestOverviewIncludesRuntimeHealth` 补了车道字段断言。

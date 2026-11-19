@@ -1,18 +1,18 @@
 package server
 
 import (
+	"crypto/sha256"
 	"deepaicode2api/internal/deepai"
+	"encoding/hex"
 	"encoding/json"
+	"hash"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 )
 
-// maxRequestBody 限制入站请求体大小。
-//
-// 实际读取已移到 httpx.ReadBodyWithLimit（同一常量在 httpx.MaxRequestBody）。
-const maxRequestBody = 32 << 20
+// 入站请求体上限已移到 httpx.MaxRequestBody（由 httpx.ReadBodyWithLimit 使用）。
 
 // affinityPattern 与桌面端一致：只透传安全字符集的会话标识。
 var affinityPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,256}$`)
@@ -30,6 +30,86 @@ func affinityFor(r *http.Request, payload map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// sessionAffinity 解析会话粘性标识：调用方显式给的最优先，否则从稳定前缀派生。
+//
+// 两类客户端都不带会话头：
+//   - Claude Code（Anthropic `/v1/messages`）不发 `X-Session-Affinity`，也不送
+//     `prompt_cache_key`，只在 system / tools 上打 `cache_control`；
+//   - 多数 OpenAI SDK 调用方不送 `prompt_cache_key`。
+//
+// 派生键 = 模型 + 系统提示 + tools（**不含对话正文**：会话每轮都在增长，
+// 含进去会让 id 每轮都变，粘性与缓存分区都会失效）。兼容两种请求形状：
+// chat 的 `messages` 与 Responses 的 `instructions` / `input`。
+//
+// 同前缀 → 同一把 affinity → 上游前缀缓存落在同一个分区（实测换 key 即 miss），
+// 选号层据此把同一会话钉在同一个账号上（见 sticky.go）。
+// 只当 affinity 用（→ `X-Session-Affinity` 头），不改请求体。
+func sessionAffinity(r *http.Request, payload map[string]any) string {
+	if a := affinityFor(r, payload); a != "" {
+		return a
+	}
+	h := sha256.New()
+	h.Write([]byte(strOf(payload["model"])))
+	// 只有「有可缓存前缀」的请求才派生：没有 system / tools 的裸请求
+	// （例如一句 "hi"）本来就没有前缀可命中，派生只会把大量互不相关的
+	// 短请求钉到同一个号上，白白把负载集中。
+	hasPrefix := false
+	// Responses 的系统提示通常在顶层 instructions；chat 在 messages 里。
+	if ins := strOf(payload["instructions"]); ins != "" {
+		h.Write([]byte(ins))
+		hasPrefix = true
+	}
+	if hashSystemMessages(h, payload["messages"]) {
+		hasPrefix = true
+	}
+	if hashSystemMessages(h, payload["input"]) {
+		hasPrefix = true
+	}
+	if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+		if raw, err := json.Marshal(tools); err == nil {
+			h.Write(raw)
+			hasPrefix = true
+		}
+	}
+	if !hasPrefix {
+		return ""
+	}
+	return "aa1-" + hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+// hashSystemMessages 把 system / developer 角色的消息内容写进哈希，
+// 返回是否写入了任何内容。
+//
+// 其余角色一律跳过：用户 / 助手正文每轮都变，参与哈希等于每轮换一个会话。
+func hashSystemMessages(h hash.Hash, v any) bool {
+	msgs, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	wrote := false
+	for _, mv := range msgs {
+		m, ok := mv.(map[string]any)
+		if !ok {
+			continue
+		}
+		role := strOf(m["role"])
+		if role != "system" && role != "developer" {
+			continue
+		}
+		switch c := m["content"].(type) {
+		case string:
+			h.Write([]byte(c))
+			wrote = true
+		default:
+			if raw, err := json.Marshal(c); err == nil {
+				h.Write(raw)
+				wrote = true
+			}
+		}
+	}
+	return wrote
 }
 
 // nonStreamBudget 是非流式请求的整体预算（选号 + 重试 + 读体）。
@@ -110,6 +190,9 @@ func (s *Server) clientFor(acct *deepai.Account) *deepai.Client {
 		return c
 	}
 	c := deepai.NewClientWithProxy(acct.Proxy)
+	// 代理出口的客户端也要上报上游车道，否则走代理的账号探到的 lane_version
+	// 就到不了控制台（s.Up 只覆盖直连）。
+	c.LaneHook = s.noteUpstreamLane
 	if budget := time.Duration(s.Store.Settings().CheckinBlockMS) * time.Millisecond; budget > 0 {
 		c.SetCheckInBudget(budget)
 	}

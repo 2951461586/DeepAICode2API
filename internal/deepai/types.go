@@ -38,15 +38,21 @@ const (
 	//
 	// 0.3.17 → 0.3.19 上游把车道从 2 提到 4；0.3.36（2026-11-13）提到 5；
 	// 0.3.37（2026-11-14）提到 6；0.3.41（2026-11-18）又提到 7：桌面端发
-	// `X-DeepAI-Code-Theos: 7`，`/theos` 也回 `lane_version: 7`。车道不符时回
-	// 426 lane_version_unsupported（"This version of DeepAI Code is no longer
-	// supported"）。2026-11-18 实测（0.3.41 发布当天）：`/models` 车道 7 →
-	// 200、6 / 8 → 426；`/theos` 车道 7 → 200、6 / 8 → 426；
-	// `/chat/completions` 车道 7 → 200、6 → 426。
-	// 与 0.3.37 时代不同，这一次旧车道也**不再被接受**：车道 6 的目录 / 推理
-	// / 配额全部 426，所以网关必须发 7 才能工作。探测仍从编译期车道开始试，
-	// 向上猜新车道、向下兜底旧值（见 client.go 的 laneCandidates），以防上游
-	// 先抬车道再发客户端。
+	// `X-DeepAI-Code-Theos: 7`，`/theos` 也回 `lane_version: 7`。
+	//
+	// 车道门槛是**服务端行为，不是常数**，已观察到两种形态：
+	//
+	//   - 硬门槛（0.3.41 发布当天 2026-11-18 实测）：只有 7 通过，6 及以下 / 8
+	//     及以上全部 426 lane_version_unsupported；
+	//   - 放宽（2026-11-19 实测）：`/models`、`/theos` 的 2 / 4 / 5 / 6 / 7 全部 200，
+	//     8 仍 426；`/chat/completions` 的 5 / 6 / 7 也 200。`/theos` 无论请求发几
+	//     都回 `lane_version: 7`，即**服务端当前车道**，不是回显。
+	//
+	// 放宽形态带来的两个后果：
+	//   1. 发旧车道不会失败，所以「请求能跑通」不再证明车道是对的；
+	//   2. 车道探测（打 `/models`）再也分不出当前车道，也发现不了上游已抬到 8 ——
+	//      只能靠 `/theos` 的 lane_version，见 Client.LaneHook 与
+	//      internal/server 的 UpstreamLane / LaneDrift。
 	LaneVersion = "7"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。

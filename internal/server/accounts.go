@@ -30,7 +30,11 @@ func (b *releaseBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
-// pickFreeAccount 扫一圈号池，找一个还有在途槽位的账号。
+// pickFreeAccount 扇一圈号池，找一个还有在途槽位的账号。
+//
+// prefer 非空时先试那个账号（会话粘性，见 sticky.go）：它仍然可调度且有
+// 空槽就用它。失败（被拦 / 额度用尽 / 并发已满）静默回退常规轮询 ——
+// 粘性永远不是硬约束。
 //
 // 不能用 max_retries 次贪心选号：饱和时几次尝试大概率全撞在忙号上，
 // 于是对外 429 而池里其实还有空槽（docs/performance.md §14）。
@@ -39,7 +43,12 @@ func (b *releaseBody) Close() error {
 //
 // 实现要点：选号在 store 里一次读完（只拷贝被选中的那个），忙号通过纯谓词
 // 排除；acquireAccount 只处理「检查到占用」的窄竞态，失败就排除后重试。
-func (s *Server) pickFreeAccount(group string) (*deepai.Account, bool, bool) {
+func (s *Server) pickFreeAccount(group, prefer string) (*deepai.Account, bool, bool) {
+	if prefer != "" {
+		if a := s.Store.PreferredAccount(prefer, group); a != nil && s.acquireAccount(a.ID) {
+			return a, true, true
+		}
+	}
 	// excluded 用切片而不是 map：重试只在「检查与占用撞车」时发生，通常 0~1 次，
 	// 切片比 map 少一次分配，而选号是每个请求一次的热路径。
 	var excluded []string

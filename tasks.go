@@ -60,6 +60,8 @@ func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
 			if err := st.Save(); err != nil {
 				log.Printf("定期保存状态失败: %v", err)
 			}
+			// 会话粘性绑定：无改动时这里是空操作（dirty 标记）。
+			srv.FlushSticky()
 		case <-modelTick.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			models, err := srv.RefreshModels(ctx)

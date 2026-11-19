@@ -45,6 +45,7 @@ var (
 	anthropicToolResultText  = gateway.AnthropicToolResultText
 	anthropicToolChoice      = gateway.AnthropicToolChoice
 	chatToAnthropicMessage   = gateway.ChatToAnthropicMessage
+	anthropicUsage           = gateway.AnthropicUsage
 	anthropicStopReason      = gateway.AnthropicStopReason
 	anthropicTextLen         = gateway.AnthropicTextLen
 	newAnthropicBlockWriter  = gateway.NewAnthropicBlockWriter

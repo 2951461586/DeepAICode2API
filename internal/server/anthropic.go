@@ -43,7 +43,9 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	affinity := affinityFor(r, nil)
+	// 会话级 affinity：客户端给了就用，没给就用稳定前缀派生（见 request.go）。
+	// 既保上游前缀缓存分区，也让选号把同一会话钉在同一个账号上。
+	affinity := sessionAffinity(r, payload)
 	key := extractKey(r)
 	promptLen := estimatePromptLen(payload)
 
@@ -151,24 +153,28 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 			"type":  "error",
 			"error": map[string]any{"type": "api_error", "message": streamErr.Error()},
 		})
-	} else {
-		block.Finish()
+		// Anthropic 的事件模型里 error 是终止事件：后面不能再跟 message_delta /
+		// message_stop。旧实现在 error 之后照样补一条 message_delta
+		// （stop_reason=end_turn），把“出错的流”宣告成正常结束，客户端可能把
+		// 半截工具调用当成功。
+		rl.done(outLen, usage, streamErr)
+		return
 	}
+	block.Finish()
 	outputTokens := usage.CompletionTokens
 	if outputTokens == 0 {
 		outputTokens = estTokens(outLen)
 	}
+	usageDelta := anthropicUsage(usage)
+	usageDelta["output_tokens"] = outputTokens
 	send("message_delta", map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
-		"usage": map[string]any{
-			"input_tokens":  usage.PromptTokens,
-			"output_tokens": outputTokens,
-		},
+		"usage": usageDelta,
 	})
 	send("message_stop", map[string]any{"type": "message_stop"})
 
-	rl.done(outLen, usage, streamErr)
+	rl.done(outLen, usage, nil)
 }
 
 // handleAnthropicCountTokens 返回粗略的输入 token 估算。

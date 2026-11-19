@@ -83,6 +83,12 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 		"settings":       sanitizedSettings(settings),
 		"stats":          s.Store.Stats(),
 		"upstream":       s.Up.Origin,
+		// 车道：网关发出的 / 编译期 / 上游回报 / 漂移。漂移 > 0 说明客户端
+		// 已经抬了车道，控制台据此提示升级（不自动换道）。
+		"lane":          s.CurrentLane(),
+		"lane_compiled": deepai.LaneVersion,
+		"lane_upstream": s.UpstreamLane(),
+		"lane_drift":    s.LaneDrift(),
 		// 运行健康：延迟分位、签到、兜底与上游错误码（metrics.go）。
 		"latency":             latencySummary(snap.Latency),
 		"latency_by_endpoint": byEndpoint,

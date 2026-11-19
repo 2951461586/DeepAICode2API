@@ -285,6 +285,14 @@ type Client struct {
 	// 控制台的「签到阻塞预算」通过 SetCheckInBudget 写它。
 	CheckInBudget time.Duration
 
+	// LaneHook 在 /theos 成功解析出 lane_version 时被调用（可为 nil）。
+	//
+	// 只用于观测「上游车道 > 网关编译期车道」的漂移：那意味着客户端已经
+	// 抬了车道，而网关还在发旧值。上游在 2026-11-19 放宽了门槛（≤7 全接受），
+	// 所以 /models 探测再也发现不了这件事，只能靠 /theos 回的 lane_version。
+	// 不参与协议决策：换车道仍走 DetectLane / 升级网关。
+	LaneHook func(int)
+
 	// checkIns 缓存每个 API Key 的签到挑战与心跳时间。
 	checkIns *checkInStore
 }
@@ -439,9 +447,12 @@ const laneGuessAhead = 6
 // laneCandidates 返回车道探测序列：编译期默认值优先，其次向上猜更新的车道，
 // 最后用旧车道兜底。
 //
-// 顺序不能反过来：车道探测必须从编译期车道开始试。0.3.37 时代 `/models` 对旧
-// 车道很宽容（5 / 6 都回 200），从旧值开始试会把网关钉在旧车道上；0.3.41 起
-// 车道 6 及以下一律 426，但“先向上猜”仍然是抬车道当天的正确顺序。
+// 顺序不能反过来：探测必须从编译期车道开始试。0.3.37 时代 `/models` 对旧车道
+// 很宽容（5 / 6 都回 200），从旧值开始试会把网关钉在旧车道上。
+//
+// 注意探测的局限（2026-11-19 上游放宽门槛后更明显）：≤7 全部回 200，所以探测
+// 只能回答“哪一档能用”，不能回答“当前车道是几”，也看不到上游已经抬到 8。
+// 后者只能靠 /theos 回的 lane_version（见 Client.LaneHook）。
 func laneCandidates() []string {
 	base, err := strconv.Atoi(LaneVersion)
 	if err != nil {
@@ -662,6 +673,11 @@ func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 		return nil, fmt.Errorf("Theos 响应解析失败: %w", err)
 	}
 	out.CheckedAt = time.Now().Unix()
+	// 上游回的 lane_version 是**服务端当前车道**，与本次请求发的车道无关：
+	// 这是唯一能看出「客户端已经抬车道」的信号（/models 对旧车道也回 200）。
+	if out.LaneVersion > 0 && c.LaneHook != nil {
+		c.LaneHook(out.LaneVersion)
+	}
 	return &out, nil
 }
 

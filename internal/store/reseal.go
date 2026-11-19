@@ -86,6 +86,20 @@ func (s *Store) Reseal() (ResealReport, error) {
 		rep.Files = append(rep.Files, rotated)
 	}
 
+	// 会话粘性绑定表也是旁路文件，里面是会话标识 → 账号 ID，一并封存。
+	if sticky, err := s.LoadSticky(); err != nil {
+		return rep, fmt.Errorf("读取绑定表失败: %w", err)
+	} else if len(sticky) > 0 {
+		rawSticky, merr := json.MarshalIndent(sticky, "", "  ")
+		if merr != nil {
+			return rep, merr
+		}
+		if werr := writeAtomicSealed(s.stickyPath, rawSticky, key); werr != nil {
+			return rep, fmt.Errorf("重写绑定表失败: %w", werr)
+		}
+		rep.Files = append(rep.Files, s.stickyPath)
+	}
+
 	if err := verifySealedStateFile(s.path, key); err != nil {
 		return rep, fmt.Errorf("封存校验失败: %w", err)
 	}

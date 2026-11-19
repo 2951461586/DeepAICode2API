@@ -48,9 +48,13 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		lastErr error
 		used    *deepai.Account
 	)
+	// 会话粘性：同一会话优先回上次用过的号（前缀缓存 / 上游会话上下文都在那）。
+	// 只在第一次尝试时生效 —— 重试必须换号，否则会在一把坏号上打转。
+	prefer := s.stickyAccount(affinity)
 	deadline := time.Now().Add(s.admissionWait)
 	for i := 0; i < maxTries; i++ {
-		acct, ok, candidates := s.pickFreeAccount(group)
+		acct, ok, candidates := s.pickFreeAccount(group, prefer)
+		prefer = ""
 		if !candidates {
 			// 池里没有可调度账号（全被拦 / 分组为空）：交给 noAccountError 说明原因。
 			break
@@ -107,6 +111,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 
 		if resp.StatusCode/100 == 2 {
 			s.Store.MarkAccountResult(acct.ID, true, "")
+			s.bindSticky(affinity, acct.ID)
 			resp.Body = s.holdResponseBody(resp.Body, acct.ID, stream)
 			return resp, acct, nil
 		}
@@ -131,6 +136,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 				if retry, err2 := client.OpenModel(ctx, acct, path, alt, affinity); err2 == nil {
 					if retry.StatusCode/100 == 2 {
 						s.Store.MarkAccountResult(acct.ID, true, "")
+						s.bindSticky(affinity, acct.ID)
 						retry.Body = s.holdResponseBody(retry.Body, acct.ID, stream)
 						return retry, acct, nil
 					}
@@ -153,11 +159,13 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		// 标记后继续试下一个号（下次 /theos 成功会自动解封）；
 		// 不要把它当普通 403 反复重试。
 		case actBlockAndRetry:
+			s.dropSticky(affinity, acct.ID)
 			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
 			lastErr = httpErr
 			continue
 		// 账号级策略拦截：记 blocked 后直接回传（下一次请求调度会跳过它）。
 		case actBlockAndReturn:
+			s.dropSticky(affinity, acct.ID)
 			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
 			return nil, acct, httpErr
 		// 缺机器指纹 / 请求本身的问题：换号没用，直接回传。
@@ -178,6 +186,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		// 当日额度用完：标记到 refresh_at，换号；同一账号不再白撞 403。
 		case actQuotaExhausted:
 			until := httpErr.QuotaResetAt(quotaExhaustedFallback, time.Now())
+			s.dropSticky(affinity, acct.ID)
 			s.Store.MarkQuotaExhausted(acct.ID, until)
 			logx.Warn("账号当日额度用完", "account", acctLabel(acct), "until", until.Format(time.RFC3339))
 			lastErr = httpErr

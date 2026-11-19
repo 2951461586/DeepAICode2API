@@ -38,15 +38,16 @@ func deriveSidePaths(path string) (statsPath, logsPath string) {
 
 // OpenWithKey 用指定主密钥载入状态文件（key 为 nil 表示不加密）。
 //
-// 主文件之外还有两个旁路文件（由主路径派生）：
+// 主文件之外还有三个旁路文件（由主路径派生）：
 //   - <base>-stats.json   累计统计（几百字节，每 30s 写一次）
 //   - <base>-logs.jsonl   请求日志（append-only，按大小轮转）
+//   - <base>-sticky.json  会话粘性绑定（affinity → 账号，随重启保留）
 //
 // 旧版本把 logs / stats 内嵌在主文件里，载入时自动迁出并重写主文件。
 func OpenWithKey(path string, key []byte) (*Store, error) {
 	statsPath, logsPath := deriveSidePaths(path)
 	s := &Store{
-		path: path, statsPath: statsPath, logsPath: logsPath,
+		path: path, statsPath: statsPath, logsPath: logsPath, stickyPath: deriveStickyPath(path),
 		st: &State{Settings: DefaultSettings()}, masterKey: key, sched: pool.New(),
 	}
 

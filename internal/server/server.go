@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"deepaicode2api/internal/deepai"
@@ -48,6 +49,19 @@ type Server struct {
 	// 没有冷却就会把一次车道升级变成一轮探测风暴。
 	laneMu        sync.Mutex
 	laneCheckedAt time.Time
+
+	// upstreamLane 是 /theos 回报的上游车道（0 = 尚未观测）。
+	//
+	// 2026-11-19 起上游对 ≤7 的车道全部放行，所以「车道探测命中」再也不能
+	// 说明当前车道是哪一个，也看不出上游是否已经抬到 8。/theos 的
+	// lane_version 是唯一信号，记下来给控制台 / 指标做升级提示。
+	upstreamLane atomic.Int64
+
+	// stickyMu / sticky 是会话粘性绑定（affinity → 账号），见 sticky.go。
+	// stickyDirty 标记绑定表有变化，等待 FlushSticky 攒批写盘。
+	stickyMu    sync.Mutex
+	sticky      map[string]store.StickyBinding
+	stickyDirty atomic.Bool
 
 	// admissionWait 是「槽位全满」时的排队上限（测试可注入 0 立即 429）。
 	admissionWait time.Duration
@@ -118,12 +132,17 @@ func New(st *store.Store) *Server {
 		limiter:            newKeyRateLimiter(),
 		adminGuard:         newAdminGuard(),
 		metrics:            newMetrics(),
+		sticky:             map[string]store.StickyBinding{},
 	}
 	// 上次探测到的车道优先（跨重启保留）；CurrentLane 会区分「本次构建验证过
 	// 的探测值」与「旧版本残留」，后者才用较新的编译期默认值兜底。
 	if lane := strings.TrimSpace(st.Settings().Lane); lane != "" {
 		s.Up.SetLane(s.CurrentLane())
 	}
+	// 上游车道漂移的观测钩子：所有 /theos 成功都会回传 lane_version。
+	s.Up.LaneHook = s.noteUpstreamLane
+	// 会话粘性绑定随重启保留（旁路文件，丢失不影响正确性）。
+	s.loadSticky()
 	s.applyRuntimeSettings()
 	return s
 }
@@ -257,6 +276,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"blocked":       pool.Blocked,
 		"quota_fresh":   pool.QuotaFresh,
 		"quota_due":     pool.QuotaDue,
+		"lane":          s.CurrentLane(),
+		"lane_compiled": deepai.LaneVersion,
+		"lane_upstream": s.UpstreamLane(),
+		"lane_drift":    s.LaneDrift(),
 		"models":        len(models),
 		"default_model": s.Store.DefaultModel(),
 		"strict_model":  s.Store.Settings().StrictModel,

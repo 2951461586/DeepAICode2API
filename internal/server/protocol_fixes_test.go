@@ -1,0 +1,363 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/store"
+)
+
+// ctxT 返回一个带超时的测试上下文。
+func ctxT(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// timeAgo 返回 d 之前的时间点（用于制造过期绑定）。
+func timeAgo(d time.Duration) time.Time { return time.Now().Add(-d) }
+
+// httptestRequestWithHeader 构造一个只带指定请求头的请求。
+func httptestRequestWithHeader(name, value string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set(name, value)
+	return req
+}
+
+// --- 协议修补的回归测试（v0.1.8）---
+
+// TestAnthropicStreamErrorOmitsTerminalEvents 锁住「出错即终止」的语义。
+//
+// Anthropic 的事件模型里 `error` 是终止事件：后面不能再跟 message_delta /
+// message_stop。旧实现在 error 之后照样补一条 message_delta（stop_reason
+// 被写成 end_turn），等于把一次中途失败的流宣告成正常结束 —— 客户端会把
+// 只到一半的工具调用当成功处理。
+func TestAnthropicStreamErrorOmitsTerminalEvents(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// 声明比实际写出的长度更长：客户端读到 io.ErrUnexpectedEOF，
+		// 与上游中途断连时的形态一致。
+		w.Header().Set("Content-Length", "4096")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"半截\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+	})
+	s, key := newTestServer(t, u)
+
+	body := `{"model":"claude-sonnet-4","max_tokens":64,"stream":true,
+	  "messages":[{"role":"user","content":"hi"}]}`
+	rec := do(t, s, http.MethodPost, "/v1/messages", key, body)
+
+	events := sseEvents(t, rec.Body.String())
+	names := eventNames(events)
+	sawError := false
+	for _, n := range names {
+		switch n {
+		case "error":
+			sawError = true
+		case "message_delta", "message_stop":
+			t.Fatalf("出错后不应再发 %q: %v", n, names)
+		}
+	}
+	if !sawError {
+		t.Fatalf("流中断应产生 error 事件: %v", names)
+	}
+}
+
+// TestResponsesStreamCachedTokens 验证缓存命中量透传到 Responses 的 usage。
+//
+// 上游在末帧给 `prompt_tokens_details.cached_tokens`，旧实现把它硬编码成 0，
+// 于是所有走 Responses 协议的客户端看到的缓存命中率永远是 0。
+func TestResponsesStreamCachedTokens(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunks := []string{
+			`{"choices":[{"index":0,"delta":{"content":"hi"}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11,"prompt_tokens_details":{"cached_tokens":6}}}`,
+			`[DONE]`,
+		}
+		for _, c := range chunks {
+			_, _ = io.WriteString(w, "data: "+c+"\n\n")
+			w.(http.Flusher).Flush()
+		}
+	})
+	s, key := newTestServer(t, u)
+
+	body := `{"model":"glm-5.3-flash","stream":true,"input":"hi"}`
+	rec := do(t, s, http.MethodPost, "/v1/responses", key, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+
+	var cached float64 = -1
+	for _, e := range sseEvents(t, rec.Body.String()) {
+		m := e.JSON(t)
+		// response.completed 把 usage 嵌在 response 对象里。
+		resp, ok := m["response"].(map[string]any)
+		if !ok {
+			continue
+		}
+		usage, ok := resp["usage"].(map[string]any)
+		if !ok {
+			continue
+		}
+		details, ok := usage["input_tokens_details"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if v, ok := details["cached_tokens"].(float64); ok {
+			cached = v
+		}
+	}
+	if cached != 6 {
+		t.Fatalf("input_tokens_details.cached_tokens = %v，期望 6（上游已回传）", cached)
+	}
+}
+
+// TestStickyPickPrefersBoundAccount 验证会话粘性只影响「先试谁」。
+func TestStickyPickPrefersBoundAccount(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	fillPool(t, s, 2)
+
+	s.bindSticky("sess-1", "acc-1")
+	if got := s.stickyAccount("sess-1"); got != "acc-1" {
+		t.Fatalf("绑定 = %q，期望 acc-1", got)
+	}
+	a, ok, _ := s.pickFreeAccount("", s.stickyAccount("sess-1"))
+	if !ok || a == nil || a.ID != "acc-1" {
+		t.Fatalf("应优先选到绑定的 acc-1，实际 %+v ok=%v", a, ok)
+	}
+	s.releaseAccount(a.ID)
+
+	// 绑定的号忙时静默回退，不阻塞请求。
+	for i := 0; i < maxInFlightPerAccount; i++ {
+		if !s.acquireAccount("acc-1") {
+			t.Fatalf("第 %d 次占用 acc-1 应成功", i)
+		}
+	}
+	a2, ok, _ := s.pickFreeAccount("", s.stickyAccount("sess-1"))
+	if !ok || a2 == nil || a2.ID == "acc-1" {
+		t.Fatalf("acc-1 已满仍被选中: %+v", a2)
+	}
+}
+
+// TestStickyDropsOnBlockAndExpiry 覆盖绑定的两种失效路径。
+func TestStickyDropsOnBlockAndExpiry(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	fillPool(t, s, 2)
+
+	s.bindSticky("sess-2", "acc-0")
+	s.dropSticky("sess-2", "acc-1") // 不匹配的账号不应误删
+	if got := s.stickyAccount("sess-2"); got != "acc-0" {
+		t.Fatalf("dropSticky 误删了别的绑定: %q", got)
+	}
+	s.dropSticky("sess-2", "acc-0")
+	if got := s.stickyAccount("sess-2"); got != "" {
+		t.Fatalf("dropSticky 后仍有绑定: %q", got)
+	}
+
+	// 过期的绑定按未绑定处理。
+	s.bindSticky("sess-3", "acc-0")
+	s.stickyMu.Lock()
+	s.sticky["sess-3"] = store.StickyBinding{AccountID: "acc-0", At: timeAgo(stickyTTL * 2).Unix()}
+	s.stickyMu.Unlock()
+	if got := s.stickyAccount("sess-3"); got != "" {
+		t.Fatalf("过期绑定应失效，实际 %q", got)
+	}
+}
+
+// TestStickyPersistsAcrossRestart 验证绑定表走旁路文件随重启保留。
+//
+// 绑定是缓存：丢了不影响正确性，但重启就重新学一遍等于每次升级都把前缀缓存
+// 冲掉一次，所以必须落盘。
+func TestStickyPersistsAcrossRestart(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	fillPool(t, s, 2)
+	s.bindSticky("sess-restart", "acc-1")
+	s.FlushSticky()
+
+	// 同一个状态文件重新打开一个 Server：绑定应当已经回来了。
+	s2 := New(s.Store)
+	defer s2.Close(ctxT(t))
+	if got := s2.stickyAccount("sess-restart"); got != "acc-1" {
+		t.Fatalf("重启后绑定 = %q，期望 acc-1", got)
+	}
+	if n := s2.StickyBindings(); n != 1 {
+		t.Fatalf("重启后绑定数 = %d，期望 1", n)
+	}
+}
+
+// TestStickySkipsExpiredOnLoad 验证载入时剔除过期绑定。
+func TestStickySkipsExpiredOnLoad(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	fillPool(t, s, 2)
+	if err := s.Store.SaveSticky(map[string]store.StickyBinding{
+		"old": {AccountID: "acc-0", At: timeAgo(stickyTTL * 2).Unix()},
+		"new": {AccountID: "acc-1", At: time.Now().Unix()},
+	}); err != nil {
+		t.Fatalf("SaveSticky: %v", err)
+	}
+
+	s2 := New(s.Store)
+	defer s2.Close(ctxT(t))
+	if got := s2.stickyAccount("old"); got != "" {
+		t.Fatalf("过期绑定不应恢复，实际 %q", got)
+	}
+	if got := s2.stickyAccount("new"); got != "acc-1" {
+		t.Fatalf("有效绑定未恢复，实际 %q", got)
+	}
+}
+
+// TestStickyTableBounded 保证绑定表不会随 affinity 数量无限增长。
+func TestStickyTableBounded(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	fillPool(t, s, 2)
+	for i := 0; i < stickyMax*2; i++ {
+		s.bindSticky("k-"+itoa64(int64(i)), "acc-0")
+	}
+	if n := s.StickyBindings(); n > stickyMax {
+		t.Fatalf("绑定表 = %d，超过上限 %d", n, stickyMax)
+	}
+}
+
+// TestUpstreamLaneDrift 验证 /theos 回传的 lane_version 变成可观测信号。
+//
+// 2026-11-19 起上游对 ≤7 全放行，`/models` 探测再也发现不了「客户端已抬车道」；
+// lane_version 是唯一信号，必须在 /health 与指标里看得到。
+func TestUpstreamLaneDrift(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != deepai.ModelBasePath+deepai.PathTheos {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"enabled":true,"balance":"1","lane_version":9}`)
+	})
+	s, _ := newTestServer(t, u)
+
+	acct := s.Store.Account("acc-1")
+	if _, err := s.Up.Theos(ctxT(t), acct); err != nil {
+		t.Fatalf("Theos: %v", err)
+	}
+	if got := s.UpstreamLane(); got != 9 {
+		t.Fatalf("UpstreamLane = %d，期望 9", got)
+	}
+	drift := s.LaneDrift()
+	if drift <= 0 {
+		t.Fatalf("上游 9 > 网关 %s，漂移应为正数，实际 %d", s.CurrentLane(), drift)
+	}
+
+	rec := do(t, s, http.MethodGet, "/health", "", "")
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("解析 /health: %v", err)
+	}
+	if out["lane_upstream"].(float64) != 9 || out["lane_drift"].(float64) != float64(drift) {
+		t.Fatalf("/health 车道字段不对: %#v", out)
+	}
+}
+
+// TestSessionAffinityDerivation 验证不带会话头的客户端也能得到稳定 affinity
+// （前缀缓存分区 + 选号粘性都靠它）：Claude Code 与普通 OpenAI SDK 调用方
+// 都不发会话头，但两条链路的请求形状不一样。
+func TestSessionAffinityDerivation(t *testing.T) {
+	base := map[string]any{
+		"model":  "glm-5.3-flash",
+		"system": "你是助手",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "你是助手"},
+			map[string]any{"role": "user", "content": "第一轮"},
+		},
+		"tools": []any{map[string]any{"name": "f"}},
+	}
+	next := map[string]any{
+		"model":  "glm-5.3-flash",
+		"system": "你是助手",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "你是助手"},
+			map[string]any{"role": "user", "content": "第一轮"},
+			map[string]any{"role": "assistant", "content": "答"},
+			map[string]any{"role": "user", "content": "第二轮"},
+		},
+		"tools": []any{map[string]any{"name": "f"}},
+	}
+	other := map[string]any{
+		"model":  "glm-5.3-flash",
+		"system": "另一个角色",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "另一个角色"},
+			map[string]any{"role": "user", "content": "第一轮"},
+		},
+		"tools": []any{map[string]any{"name": "f"}},
+	}
+
+	a1 := sessionAffinity(nil, base)
+	a2 := sessionAffinity(nil, next)
+	a3 := sessionAffinity(nil, other)
+	if a1 == "" || !affinityPattern.MatchString(a1) {
+		t.Fatalf("派生的 affinity 不合法: %q", a1)
+	}
+	if a1 != a2 {
+		t.Fatalf("同一会话（仅增长 user 轮次）应得到同一 affinity: %q vs %q", a1, a2)
+	}
+	if a1 == a3 {
+		t.Fatalf("不同 system 应得到不同 affinity: %q", a1)
+	}
+
+	// 调用方自己给了会话头时优先用它。
+	req := httptestRequestWithHeader("X-Session-Affinity", "client-sess")
+	if got := sessionAffinity(req, base); got != "client-sess" {
+		t.Fatalf("应优先使用调用方的会话头，实际 %q", got)
+	}
+
+	// Responses 形状：系统提示在 instructions，正文在 input；
+	// 只改用户轮次不应改变 affinity。
+	resp1 := map[string]any{
+		"model":        "glm-5.3-flash",
+		"instructions": "你是助手",
+		"input":        []any{map[string]any{"role": "user", "content": "第一轮"}},
+		"tools":        []any{map[string]any{"name": "f"}},
+	}
+	resp2 := map[string]any{
+		"model":        "glm-5.3-flash",
+		"instructions": "你是助手",
+		"input": []any{
+			map[string]any{"role": "user", "content": "第一轮"},
+			map[string]any{"role": "user", "content": "第二轮"},
+		},
+		"tools": []any{map[string]any{"name": "f"}},
+	}
+	r1, r2 := sessionAffinity(nil, resp1), sessionAffinity(nil, resp2)
+	if r1 == "" || r1 != r2 {
+		t.Fatalf("Responses 形状应得到稳定 affinity: %q vs %q", r1, r2)
+	}
+}
+
+// TestSessionAffinitySkipsBareRequests 验证「没有可缓存前缀」的裸请求不派生。
+//
+// 否则一句 "hi"（无 system、无 tools）也会算出同一个 affinity，把大量互不相关
+// 的短请求钉到同一个账号上——那是负载集中，不是缓存命中。
+func TestSessionAffinitySkipsBareRequests(t *testing.T) {
+	bare := map[string]any{
+		"model":    "glm-5.3-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}
+	if got := sessionAffinity(nil, bare); got != "" {
+		t.Fatalf("裸请求不应派生 affinity，实际 %q", got)
+	}
+	// 有 tools 就是可缓存前缀，应当派生。
+	withTools := map[string]any{
+		"model":    "glm-5.3-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		"tools":    []any{map[string]any{"name": "f"}},
+	}
+	if got := sessionAffinity(nil, withTools); got == "" {
+		t.Fatal("带 tools 的请求应派生 affinity")
+	}
+}

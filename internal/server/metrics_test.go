@@ -65,6 +65,7 @@ func TestMetricsEndpointExposition(t *testing.T) {
 	s.metrics.observeUpstreamError("/chat/completions", "lane_version_unsupported", 426)
 	s.metrics.checkinAttempts.Add(2)
 	s.metrics.checkinTimeouts.Add(1)
+	s.noteUpstreamLane(9)
 
 	rec := do(t, s, http.MethodGet, "/metrics", key, "")
 	if rec.Code != http.StatusOK {
@@ -78,6 +79,8 @@ func TestMetricsEndpointExposition(t *testing.T) {
 		`gateway_checkin_total{result="timeout"} 1`,
 		`gateway_fallback_total{reason="body_shape"} 1`,
 		`gateway_upstream_errors_total{code="lane_version_unsupported",status="426",path="/chat/completions"} 1`,
+		`gateway_upstream_lane 9`,
+		`gateway_lane{source="compiled"}`,
 	} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("/metrics 缺少 %q\n%s", needle, body[:min(len(body), 4000)])
@@ -96,7 +99,7 @@ func TestOverviewIncludesRuntimeHealth(t *testing.T) {
 		t.Fatalf("状态码 = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, needle := range []string{`"latency"`, `"checkin"`, `"upstream_errors"`, `"fallback_total"`} {
+	for _, needle := range []string{`"latency"`, `"checkin"`, `"upstream_errors"`, `"fallback_total"`, `"lane_drift"`, `"lane_upstream"`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("overview 缺少 %s", needle)
 		}

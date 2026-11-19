@@ -53,28 +53,38 @@ func (s *Scheduler) Pick(accounts []*deepai.Account, group string) *deepai.Accou
 func (s *Scheduler) PickFiltered(accounts []*deepai.Account, group string, skip func(*deepai.Account) bool) *deepai.Account {
 	group = strings.TrimSpace(group)
 	eligible := func(a *deepai.Account) bool {
-		if !a.Enabled {
-			return false
-		}
-		// 上游策略拦截（social_login_required）是账号级终态：
-		// 继续轮询只会把每个请求都撞一次 403。
-		if a.Status == deepai.StatusBlocked {
-			return false
-		}
-		// 当日额度用完（theos_exhausted）：到点前不参与调度，避免每个请求
-		// 都白撞一次 403。过了 QuotaUntil 自动恢复，无需人工处理。
-		if a.QuotaUntil > 0 && time.Now().Unix() < a.QuotaUntil {
-			return false
-		}
-		if group != "" && !strings.EqualFold(a.GroupName(), group) {
-			return false
-		}
-		return skip == nil || !skip(a)
+		return s.Eligible(a, group) && (skip == nil || !skip(a))
 	}
 	if a := s.pick(accounts, eligible, true); a != nil {
 		return a
 	}
 	return s.pick(accounts, eligible, false)
+}
+
+// Eligible 报告账号在指定分组下是否可被调度（启用 / 未拦截 / 额度未用尽 / 分组匹配）。
+//
+// 这是选号策略的“单账号版本”：调度本身、会话粘性（先试绑定的那个号）、
+// 以及「池里还有没有号」的判断必须用同一套判定，否则会出现“说有号、选不到”
+// 或“绑到一个已被拦截的号”这类不一致。
+func (s *Scheduler) Eligible(a *deepai.Account, group string) bool {
+	if a == nil || !a.Enabled {
+		return false
+	}
+	// 上游策略拦截（social_login_required）是账号级终态：
+	// 继续轮询只会把每个请求都撞一次 403。
+	if a.Status == deepai.StatusBlocked {
+		return false
+	}
+	// 当日额度用完（theos_exhausted）：到点前不参与调度，避免每个请求
+	// 都白撞一次 403。过了 QuotaUntil 自动恢复，无需人工处理。
+	if a.QuotaUntil > 0 && time.Now().Unix() < a.QuotaUntil {
+		return false
+	}
+	group = strings.TrimSpace(group)
+	if group != "" && !strings.EqualFold(a.GroupName(), group) {
+		return false
+	}
+	return true
 }
 
 // HasEligible 报告池里是否存在可调度账号（分组 / 启用 / 未拦截），
