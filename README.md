@@ -754,9 +754,10 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 
 ## 十、限制与说明
 
-- 网关是**无状态代理**：不存对话，也不补历史。`/v1/responses` 的续接字段
-  （`previous_response_id` / `conversation` / `item_reference`）在合成路径直接回 400
-  `unsupported_parameter`，在透传路径交给上游（详见「上下文契约」一节）；
+- `/v1/chat/completions` 与 `/v1/messages` 不存对话，也不补历史。`/v1/responses`
+  合成路径会在进程内暂存已完成响应，支持 `previous_response_id` 重放；缓存有 TTL、条目数
+  与 64 MiB 总量上限，进程重启后清空。找不到历史、`conversation` / `item_reference`
+  仍回明确 400；上下文超限时按「上下文契约」处理；
 - `X-DeepAI-Code-Theos` 发 `7`（0.3.41 起）。上游门槛可能放宽：2026-11-19 实测 ≤7 全通过、
   8 及以上 426，此时旧车道「能用」并不代表车道是对的 —— 与上游当前车道的差异由
   `/theos` 的 `lane_version` 观测（`Server.UpstreamLane` / `LaneDrift`，控制台概览可见）；

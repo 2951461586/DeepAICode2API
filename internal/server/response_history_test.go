@@ -248,6 +248,32 @@ func TestResponsesStreamChainMemoryAndEvents(t *testing.T) {
 	}
 }
 
+func TestRememberResponseSkipsIncomplete(t *testing.T) {
+	s := &Server{history: newResponseHistory(time.Hour, 10)}
+	turn := &responseTurn{input: []any{"hello"}}
+	s.rememberResponse(turn, map[string]any{
+		"id": "resp_incomplete", "status": "incomplete",
+		"output": []any{map[string]any{"type": "message"}},
+	})
+	if s.history.get("resp_incomplete") != nil {
+		t.Fatal("incomplete response 不應進入歷史快取")
+	}
+}
+
+// TestResponsesHistoryByteLimit 验证单条过大时不写入，且不会挤掉已有历史。
+func TestResponsesHistoryByteLimit(t *testing.T) {
+	h := newResponseHistory(time.Hour, 10)
+	h.maxBytes = 128
+	h.put("small", &historyEntry{input: []any{"ok"}})
+	h.put("large", &historyEntry{input: []any{strings.Repeat("x", 256)}})
+	if h.get("large") != nil || h.get("small") == nil {
+		t.Fatal("应拒绝过大的单条历史，并保留已有小条目")
+	}
+	if h.usedBytes > h.maxBytes {
+		t.Fatalf("缓存占用 %d 超过上限 %d", h.usedBytes, h.maxBytes)
+	}
+}
+
 // TestResponsesHistoryTTLAndMax 驗證 TTL 與容量上限。
 func TestResponsesHistoryTTLAndMax(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -307,9 +333,8 @@ func TestResponsesTruncationAuto(t *testing.T) {
 	const codeword = "ZEBRA42"
 	u := codewordUpstream(t, codeword)
 	s, key := newTestServer(t, u)
-	// 用全域環境覆寫把有效窗口壓到很小（約 200 tokens → 600 bytes），
-	// 讓「開頭暗號 + 數輪填充 + 最新提問」必然超限；不影響按模型查表。
-	t.Setenv("DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW", "200")
+	// 用全域環境覆寫把有效窗口壓到 400 tokens，便於測試多輪舊歷史裁剪。
+	t.Setenv("DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW", "400")
 
 	// 第 1 輪：暗號。
 	r1 := do(t, s, http.MethodPost, "/v1/responses", key,
@@ -319,13 +344,20 @@ func TestResponsesTruncationAuto(t *testing.T) {
 	}
 	id, _ := respIDAndText(t, r1)
 
-	// 第 2 輪：帶長填充讓鏈變很長，truncation:auto。
-	longFill := strings.Repeat("filler word ", 120) // ~1440 bytes → 远超 600
+	// 累積多輪中段歷史，再以短問題觸發舊歷史裁剪。
+	fill := strings.Repeat("filler ", 50)
 	body2 := `{"model":"glm-5.3-flash","previous_response_id":"` + id +
-		`","truncation":"auto","input":"What is the codeword? ` + longFill + `"}`
+		`","truncation":"auto","input":"` + fill + `"}`
 	r2 := do(t, s, http.MethodPost, "/v1/responses", key, body2)
 	if r2.Code != http.StatusOK {
-		t.Fatalf("truncation:auto 應回 200，實際 %d：%s", r2.Code, r2.Body.String())
+		t.Fatalf("第 2 輪 = %d：%s", r2.Code, r2.Body.String())
+	}
+	id, _ = respIDAndText(t, r2)
+	body3 := `{"model":"glm-5.3-flash","previous_response_id":"` + id +
+		`","truncation":"auto","input":"What is the codeword?"}`
+	r3 := do(t, s, http.MethodPost, "/v1/responses", key, body3)
+	if r3.Code != http.StatusOK {
+		t.Fatalf("truncation:auto 應回 200，實際 %d：%s", r3.Code, r3.Body.String())
 	}
 
 	// 上游收到的 messages 應含裁減標記、開頭暗號、以及最新提問。
@@ -350,6 +382,22 @@ func TestResponsesTruncationAuto(t *testing.T) {
 	}
 	if !strings.Contains(text, "What is the codeword") {
 		t.Fatalf("裁減後應保留最新提問：%s", text)
+	}
+}
+
+func TestTruncateHistoryRejectsOversizedItems(t *testing.T) {
+	items := []any{
+		map[string]any{"type": "message", "role": "user", "content": strings.Repeat("x", 500)},
+		map[string]any{"type": "message", "role": "assistant", "content": "ok"},
+		map[string]any{"type": "message", "role": "user", "content": "latest"},
+	}
+	got := truncateHistory(items, 100)
+	total := 0
+	for _, item := range got {
+		total += itemApproxTokens(item)
+	}
+	if total <= 100 {
+		t.Fatalf("期望单条消息仍超限以便 replay 返回错误，估算=%d", total)
 	}
 }
 

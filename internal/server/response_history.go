@@ -53,12 +53,14 @@ func (h *responseHistory) remember(turn *responseTurn, respID string, output []a
 
 // responseHistory 是執行緒安全的對話歷史暫存。
 type responseHistory struct {
-	mu      sync.RWMutex
-	entries map[string]*historyEntry
-	order   []string // 插入順序，供容量淘汰
-	ttl     time.Duration
-	max     int
-	now     func() time.Time // 測試可注入
+	mu        sync.RWMutex
+	entries   map[string]*historyEntry
+	order     []string // 插入順序，供容量淘汰
+	ttl       time.Duration
+	max       int
+	maxBytes  int64
+	usedBytes int64
+	now       func() time.Time // 測試可注入
 }
 
 // newResponseHistoryFromEnv 從環境變數構造暫存。
@@ -79,10 +81,11 @@ func newResponseHistory(ttl time.Duration, max int) *responseHistory {
 		max = 500
 	}
 	return &responseHistory{
-		entries: map[string]*historyEntry{},
-		ttl:     ttl,
-		max:     max,
-		now:     time.Now,
+		entries:  map[string]*historyEntry{},
+		ttl:      ttl,
+		max:      max,
+		maxBytes: 64 << 20,
+		now:      time.Now,
 	}
 }
 
@@ -107,17 +110,27 @@ func (h *responseHistory) put(id string, e *historyEntry) {
 	if e.createdAt.IsZero() {
 		e.createdAt = h.now()
 	}
+	size := historyEntryBytes(e)
+	if size > h.maxBytes {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.purgeExpiredLocked()
-	if _, exists := h.entries[id]; !exists {
+	if old := h.entries[id]; old != nil {
+		h.usedBytes -= historyEntryBytes(old)
+	} else {
 		h.order = append(h.order, id)
 	}
 	h.entries[id] = e
-	for len(h.order) > h.max {
+	h.usedBytes += size
+	for len(h.order) > h.max || h.usedBytes > h.maxBytes {
 		oldest := h.order[0]
 		h.order = h.order[1:]
-		delete(h.entries, oldest)
+		if old := h.entries[oldest]; old != nil {
+			h.usedBytes -= historyEntryBytes(old)
+			delete(h.entries, oldest)
+		}
 	}
 }
 
@@ -173,8 +186,13 @@ func (h *responseHistory) replay(payload map[string]any, prevID, modelID string,
 	// 目錄標示（mimo-flash 140k、glyph 256k），其餘 9 個免費模型可吃滿 320k。
 	// 讓網關先裁剪並留下標記，也不要讓上游偷偷砍歷史。
 	limit := effectiveContextWindow(modelID, contextWindow)
+	instructions := strOf(payload["instructions"])
+	if instructions == "" {
+		instructions = e.instructions
+	}
+	instructionTokens := itemApproxTokens(instructions)
 	if limit > 0 {
-		total := 0
+		total := instructionTokens
 		for _, it := range merged {
 			total += itemApproxTokens(it)
 		}
@@ -186,6 +204,13 @@ func (h *responseHistory) replay(payload map[string]any, prevID, modelID string,
 					"）；請由客戶端壓縮歷史，或於請求設定 \"truncation\":\"auto\" 由網關自動裁減最舊中段。"
 			}
 			merged = truncateHistory(merged, limit)
+			remaining := instructionTokens
+			for _, it := range merged {
+				remaining += itemApproxTokens(it)
+			}
+			if remaining > limit {
+				return replayTooLong, "truncation:auto 無法將對話壓至模型有效上下文 contextWindow " + itoaApprox(limit) + " tokens；請先縮短單則訊息或工具輸出。"
+			}
 		}
 	}
 
@@ -365,12 +390,28 @@ func (h *responseHistory) purgeExpiredLocked() {
 	for _, id := range h.order {
 		e := h.entries[id]
 		if e == nil || now.Sub(e.createdAt) > h.ttl {
+			if e != nil {
+				h.usedBytes -= historyEntryBytes(e)
+			}
 			delete(h.entries, id)
 			continue
 		}
 		kept = append(kept, id)
 	}
 	h.order = kept
+}
+
+func historyEntryBytes(e *historyEntry) int64 {
+	if e == nil {
+		return 0
+	}
+	raw, _ := json.Marshal(struct {
+		ID           string `json:"id"`
+		Input        []any  `json:"input"`
+		Instructions string `json:"instructions"`
+		Output       []any  `json:"output"`
+	}{e.id, e.input, e.instructions, e.output})
+	return int64(len(raw))
 }
 
 // len 供測試與監控使用。

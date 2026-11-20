@@ -140,7 +140,9 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 		rewriteResponsesModel(out, rl.model)
 		usage := parseUsage(out["usage"])
 		outLen := responsesTextLen(out)
-		s.rememberResponse(turn, out)
+		if strOf(out["status"]) == "completed" {
+			s.rememberResponse(turn, out)
+		}
 		encoded, _ := json.Marshal(out)
 		rl.done(outLen, usage, nil)
 		httpx.WriteRawJSON(w, http.StatusOK, encoded)
@@ -280,9 +282,10 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 
 	if streamErr != nil {
 		gen.fail(streamErr)
+	} else {
+		gen.complete(usage)
+		s.rememberResponse(turn, gen.finalResponse)
 	}
-	gen.complete(usage)
-	s.rememberResponse(turn, gen.finalResponse)
 	rl.done(outLen, usage, streamErr)
 }
 
@@ -291,7 +294,7 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 // rememberResponse 從最終 Responses 物件取出 id / output 寫入歷史暫存。
 // 只有成功完成（有 id 與 output）的回應才會被記住。
 func (s *Server) rememberResponse(turn *responseTurn, resp map[string]any) {
-	if resp == nil || s.history == nil {
+	if resp == nil || s.history == nil || strOf(resp["status"]) != "completed" {
 		return
 	}
 	id := strOf(resp["id"])
