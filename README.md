@@ -16,11 +16,6 @@
 
 </div>
 
-> ℹ️ 0.3.19 曾把 DeepAI Code 推理收窄到 **Google/Apple 登录**的账号（邮箱密码号
-> `403 social_login_required`）。**2026-11-09 复测该限制已解除**：邮箱注册号在
-> `/theos` 与推理端点均恢复 200（见 `docs/recon.md` §4.1）。网关仍保留 `blocked`
-> 终态处理，策略若再次收紧无需改代码。
-
 | 能力 | 说明 |
 | --- | --- |
 | 双协议 | OpenAI `/v1/chat/completions`、`/v1/responses`；Anthropic `/v1/messages` |
@@ -871,8 +866,8 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 | 文件 | 内容 | 状态 |
 | --- | --- | --- |
 | `README.md` | 总览、接口、参数、验收基线与已知坑（本文） | 维护中 |
-| `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） | 维护中（最近复核 2026-11-14） |
-| `docs/changes.md` | 2026-11 的改造记录：根因、决策与验收（§61/§62 是最新一轮） | 维护中 |
+| `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） | 维护中（最近复核 2026-11-20） |
+| `docs/changes.md` | 2026-11 的改造记录：根因、决策与验收（§71–§76 是最新一轮） | 维护中 |
 | `docs/lessons.md` | **工程经验沉淀**：十批压测 → 可复用规则 + 改动前检查清单 | 维护中 |
 | `docs/performance.md` | 压测数据与优化方案：单号 E2E、阶段分解、P0/P1/P2 收益测算 | 维护中（数据快照 2026-11-10） |
 | `docs/pi-lens.md` | 本仓的 pi-lens 配置说明：关了什么、为什么、怎么验证与恢复 | 维护中 |

@@ -6,6 +6,15 @@
 
 > 抓包时间：应用版本 **0.3.20**（车道 4，2026-11-07 发布）。
 >
+> **2026-11-20 二次复核：客户端没有更新（`latest.yml` 仍是 0.3.42）。**
+> 更新源 `https://downloads.deepai.org/deepai-code/releases/latest.yml`（取自本机
+> `resources/app-update.yml`，`provider: generic`）的 `version` = **0.3.42**、
+> `releaseDate` = 2026-11-19T07:44:40.553Z、x64 `sha512` = `C9vGjoOQ…`（489,954,768 B）、
+> arm64 `sha512` = `hry2CPlP…`（469,900,760 B），与同日上一轮复核逐字节一致；
+> 本机 `DeepAI Code.exe` 的 `ProductVersion` 仍是 **0.3.42.0**。
+> → 车道通知 `7` / 心跳 `v=0.3.42` / `AppVersion` 全部维持原值，**无需改动**。
+> 【实测 2026-11-20】
+>
 > **2026-11-20 复核到 0.3.42（2026-11-19T07:44Z 发布）：wire protocol 零变更，只有心跳版本号要跟。**
 > 官方 `latest.yml` 从 0.3.41 跳到 **0.3.42**；下载包 sha512 与 `latest.yml` 逐字节一致
 > （`C9vGjoOQ…`，489,954,768 B），`app.asar` 的 `package.json` 与 exe 的 `ProductVersion`
