@@ -1,15 +1,13 @@
 package server
 
 import (
-	"bufio"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
 
-	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/jsonx"
+	"deepaicode2api/internal/sse"
 )
 
 // --- 上游 SSE 读帧 ---
@@ -41,7 +39,7 @@ const sseDone = "[DONE]"
 // 统一了四个流式 handler 的读帧逻辑：data 前缀、[DONE] 终止、JSON 解析结果，
 // 以及 event: / 注释帧的透传信息。fn 返回 false 或读到 EOF 都算正常结束。
 func forEachSSEFrame(body io.Reader, fn func(f sseFrame) bool) error {
-	return readSSELines(body, func(line string) bool {
+	return sse.Lines(body, func(line string) bool {
 		trimmed := strings.TrimSpace(line)
 		switch {
 		case trimmed == "":
@@ -78,28 +76,6 @@ func forEachChatChunk(body io.Reader, fn func(chunk map[string]any) bool) error 
 		}
 		return fn(f.Object)
 	})
-}
-
-// readSSELines 逐行读取上游 SSE；回调返回 false 时停止。
-//
-// 刻意不复用 deepai.ReadSSE：那个实现按 SSE 规范把多行 data 合并后再分发，
-// 会丢失注释帧与 event: 行的原始形态，而网关的透传路径需要它们。
-func readSSELines(body io.Reader, fn func(line string) bool) error {
-	br := bufio.NewReaderSize(body, 64*1024)
-	for {
-		line, err := br.ReadString('\n')
-		if line != "" {
-			if !fn(line) {
-				return nil
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-	}
 }
 
 // --- chat completion 增量提取 ---
@@ -188,12 +164,12 @@ func newSSEWriter(w http.ResponseWriter) *sseWriter {
 }
 
 func (s *sseWriter) data(raw []byte) {
-	_ = deepai.WriteSSE(s.w, raw)
+	_ = sse.WriteData(s.w, raw)
 	s.flush()
 }
 
 func (s *sseWriter) event(name string, raw []byte) {
-	_ = deepai.WriteSSEEvent(s.w, name, raw)
+	_ = sse.WriteEvent(s.w, name, raw)
 	s.flush()
 }
 

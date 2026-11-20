@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mustErr 构造一个带指定状态码与响应体的上游错误。
@@ -103,5 +104,67 @@ func TestHTTPErrorTruncatesLongBody(t *testing.T) {
 
 	if got := mustErr(t, 500, "   ").Error(); !strings.Contains(got, "HTTP 500") {
 		t.Fatalf("空 body 应回退到状态码: %q", got)
+	}
+}
+
+// TestBodyRejectedRequires400 固化「只有 400 且文案匹配才算请求体形状拒绝」。
+func TestBodyRejectedRequires400(t *testing.T) {
+	msg := `{"error":{"message":"This request is not one DeepAI Code sends.","code":"invalid_request_error"}}`
+	if !mustErr(t, http.StatusBadRequest, msg).BodyRejected() {
+		t.Fatal("400 + 固定文案应判定为请求体拒绝")
+	}
+	if mustErr(t, http.StatusInternalServerError, msg).BodyRejected() {
+		t.Fatal("非 400 不应判定为请求体拒绝")
+	}
+	if mustErr(t, http.StatusBadRequest, `{"error":{"message":"bad param"}}`).BodyRejected() {
+		t.Fatal("文案不匹配不应判定为请求体拒绝")
+	}
+	if mustErr(t, http.StatusBadRequest, ``).BodyRejected() {
+		t.Fatal("空 body 不应判定为请求体拒绝")
+	}
+}
+
+// TestBodyRejectedAcceptsNewMessage 覆盖 2026-11-13 实测到的新文案：
+// 上游把同一个门槛的 message 换成了 “This request cannot be accepted.”，
+// 漏掉它 ChatBodyFallback 就不会重试，调用方直接吃 400。
+func TestBodyRejectedAcceptsNewMessage(t *testing.T) {
+	msg := `{"error":{"message":"This request cannot be accepted.","type":"invalid_request_error","code":"invalid_request_error"}}`
+	if !mustErr(t, http.StatusBadRequest, msg).BodyRejected() {
+		t.Fatal("400 + 新文案（cannot be accepted）应判定为请求体拒绝")
+	}
+	if mustErr(t, http.StatusForbidden, msg).BodyRejected() {
+		t.Fatal("非 400 不应判定为请求体拒绝")
+	}
+}
+
+// TestQuotaExhaustedDetectionAndReset 覆盖 403 theos_exhausted 的识别与恢复时间。
+func TestQuotaExhaustedDetectionAndReset(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	// refresh_at 必须是**相对** now 的时间：写死日期会让这条用例变成定时炸弹
+	// （2026-11-14T00:05:52 一过，QuotaResetAt 按“已过期”回退到 now+6h，CI 就红）。
+	resetAt := now.Add(2 * time.Hour)
+	stamp := resetAt.Format(time.RFC3339)
+	body := `{"error":{"message":"You've used today's Theos. They refresh at ` + stamp + `.",` +
+		`"type":"theos_exhausted","code":"theos_exhausted","refresh_at":"` + stamp + `"}}`
+	e := mustErr(t, http.StatusForbidden, body)
+	if !e.QuotaExhausted() {
+		t.Fatal("应识别为 theos_exhausted")
+	}
+	if e.SocialLoginRequired() || e.EmailUnverified() || e.MachineRequired() {
+		t.Fatal("不应误判为其它账号终态")
+	}
+	if got := e.QuotaResetAt(6*time.Hour, now); !got.Equal(resetAt) {
+		t.Fatalf("恢复时间 = %v，期望 %v", got, resetAt)
+	}
+	// refresh_at 已经过期（上游给的是过去时间）时用 fallback，而不是立刻重试。
+	past := now.Add(-time.Hour).UTC().Format(time.RFC3339)
+	stale := mustErr(t, http.StatusForbidden,
+		`{"error":{"code":"theos_exhausted","refresh_at":"`+past+`"}}`)
+	if got, want := stale.QuotaResetAt(6*time.Hour, now), now.Add(6*time.Hour); !got.Equal(want) {
+		t.Fatalf("过期 refresh_at 应回退到 now+6h，实际 %v", got)
+	}
+	// 其它错误码不应命中。
+	if mustErr(t, http.StatusForbidden, `{"error":{"code":"check_in_refused"}}`).QuotaExhausted() {
+		t.Fatal("check_in_refused 不应识别为额度用完")
 	}
 }

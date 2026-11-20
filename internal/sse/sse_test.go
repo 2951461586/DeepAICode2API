@@ -1,4 +1,4 @@
-package deepai
+package sse
 
 import (
 	"errors"
@@ -7,20 +7,20 @@ import (
 	"testing"
 )
 
-// collect 跑一遍 ReadSSE 并收集事件。
-func collect(t *testing.T, stream string) []SSEEvent {
+// collect 跑一遍 Decode 并收集事件。
+func collect(t *testing.T, stream string) []Event {
 	t.Helper()
-	var got []SSEEvent
-	if err := ReadSSE(strings.NewReader(stream), func(ev SSEEvent) error {
+	var got []Event
+	if err := Decode(strings.NewReader(stream), func(ev Event) error {
 		got = append(got, ev)
 		return nil
 	}); err != nil {
-		t.Fatalf("ReadSSE 返回错误: %v", err)
+		t.Fatalf("Decode 返回错误: %v", err)
 	}
 	return got
 }
 
-func TestReadSSEBasic(t *testing.T) {
+func TestDecodeBasic(t *testing.T) {
 	got := collect(t, "data: {\"a\":1}\n\ndata: {\"b\":2}\n\n")
 	if len(got) != 2 {
 		t.Fatalf("事件数 = %d，期望 2", len(got))
@@ -30,10 +30,10 @@ func TestReadSSEBasic(t *testing.T) {
 	}
 }
 
-func TestReadSSECRLF(t *testing.T) {
+func TestDecodeCRLF(t *testing.T) {
 	// Windows 上游（或代理）可能用 CRLF；按规范 CR 不是数据的一部分。
 	// 注意：这个保证来自 bufio.ScanLines（它本身就剥 \r\n 中的 \r），
-	// ReadSSE 里的 TrimSuffix 只是防御性的二层保险。
+	// Decode 里的 TrimSuffix 只是防御性的二层保险。
 	got := collect(t, "event: ping\r\ndata: hello\r\n\r\n")
 	if len(got) != 1 {
 		t.Fatalf("事件数 = %d，期望 1", len(got))
@@ -43,7 +43,7 @@ func TestReadSSECRLF(t *testing.T) {
 	}
 }
 
-func TestReadSSEMultiLineDataJoinedWithCR(t *testing.T) {
+func TestDecodeMultiLineDataJoinedWithCR(t *testing.T) {
 	// 规范：同一事件的多行 data 用 "\n" 拼接。
 	got := collect(t, "data: line1\ndata: line2\ndata: line3\n\n")
 	if len(got) != 1 {
@@ -54,7 +54,7 @@ func TestReadSSEMultiLineDataJoinedWithCR(t *testing.T) {
 	}
 }
 
-func TestReadSSESkipsComments(t *testing.T) {
+func TestDecodeSkipsComments(t *testing.T) {
 	got := collect(t, ": keep-alive\n\n: another\ndata: x\n\n")
 	if len(got) != 1 {
 		t.Fatalf("事件数 = %d，期望 1（注释不应产生事件）", len(got))
@@ -64,7 +64,7 @@ func TestReadSSESkipsComments(t *testing.T) {
 	}
 }
 
-func TestReadSSETrailingEventWithoutBlankLine(t *testing.T) {
+func TestDecodeTrailingEventWithoutBlankLine(t *testing.T) {
 	// 流被截断时应把最后一个事件发出去，而不是丢掉。
 	got := collect(t, "data: tail")
 	if len(got) != 1 || got[0].Data != "tail" {
@@ -72,7 +72,7 @@ func TestReadSSETrailingEventWithoutBlankLine(t *testing.T) {
 	}
 }
 
-func TestReadSSEValueWithColonAndSpaces(t *testing.T) {
+func TestDecodeValueWithColonAndSpaces(t *testing.T) {
 	// 只切第一个冒号，且只吃掉一个前导空格。
 	got := collect(t, "data:  {\"u\":\"http://x/y\"}\n\n")
 	if len(got) != 1 {
@@ -83,7 +83,7 @@ func TestReadSSEValueWithColonAndSpaces(t *testing.T) {
 	}
 }
 
-func TestReadSSEIDAndEvent(t *testing.T) {
+func TestDecodeIDAndEvent(t *testing.T) {
 	got := collect(t, "id: 7\nevent: content_block_delta\ndata: {}\n\n")
 	if len(got) != 1 {
 		t.Fatalf("事件数 = %d", len(got))
@@ -93,7 +93,7 @@ func TestReadSSEIDAndEvent(t *testing.T) {
 	}
 }
 
-func TestReadSSEEmptyStream(t *testing.T) {
+func TestDecodeEmptyStream(t *testing.T) {
 	if got := collect(t, ""); len(got) != 0 {
 		t.Fatalf("空流应产生 0 个事件，实际 %d", len(got))
 	}
@@ -102,10 +102,10 @@ func TestReadSSEEmptyStream(t *testing.T) {
 	}
 }
 
-func TestReadSSECallbackErrorStops(t *testing.T) {
+func TestDecodeCallbackErrorStops(t *testing.T) {
 	boom := errors.New("boom")
 	calls := 0
-	err := ReadSSE(strings.NewReader("data: a\n\ndata: b\n\n"), func(SSEEvent) error {
+	err := Decode(strings.NewReader("data: a\n\ndata: b\n\n"), func(Event) error {
 		calls++
 		return boom
 	})
@@ -119,11 +119,11 @@ func TestReadSSECallbackErrorStops(t *testing.T) {
 
 func TestSSEWriteReadRoundTrip(t *testing.T) {
 	var b strings.Builder
-	if err := WriteSSE(&b, []byte(`{"x":1}`)); err != nil {
+	if err := WriteData(&b, []byte(`{"x":1}`)); err != nil {
 		t.Fatalf("WriteSSE: %v", err)
 	}
-	if err := WriteSSEEvent(&b, "message_stop", []byte(`{}`)); err != nil {
-		t.Fatalf("WriteSSEEvent: %v", err)
+	if err := WriteEvent(&b, "message_stop", []byte(`{}`)); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
 	}
 
 	got := collect(t, b.String())
@@ -138,11 +138,11 @@ func TestSSEWriteReadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestReadSSELargePayload(t *testing.T) {
+func TestDecodeLargePayload(t *testing.T) {
 	// 上游单条事件可能很大（长工具调用参数）；>64KB 的默认 Scanner 缓冲会炸。
 	big := strings.Repeat("x", 200*1024)
-	var got []SSEEvent
-	err := ReadSSE(strings.NewReader("data: "+big+"\n\n"), func(ev SSEEvent) error {
+	var got []Event
+	err := Decode(strings.NewReader("data: "+big+"\n\n"), func(ev Event) error {
 		got = append(got, ev)
 		return nil
 	})
@@ -155,10 +155,10 @@ func TestReadSSELargePayload(t *testing.T) {
 }
 
 // 确保 io.Reader 接口语义被覆盖：分片读取不应影响解析。
-func TestReadSSEChunkedReader(t *testing.T) {
+func TestDecodeChunkedReader(t *testing.T) {
 	r := &chunkReader{data: []byte("data: hello\ndata: world\n\n"), chunk: 3}
-	var got []SSEEvent
-	if err := ReadSSE(r, func(ev SSEEvent) error {
+	var got []Event
+	if err := Decode(r, func(ev Event) error {
 		got = append(got, ev)
 		return nil
 	}); err != nil {
@@ -189,4 +189,68 @@ func (r *chunkReader) Read(p []byte) (int, error) {
 	copy(p, r.data[:n])
 	r.data = r.data[n:]
 	return n, nil
+}
+
+// 从 internal/deepai 迁入：写入侧也归 sse 包。
+
+func TestWriteSSEFormatAndErrors(t *testing.T) {
+	var buf strings.Builder
+	if err := WriteData(&buf, []byte(`{"a":1}`)); err != nil {
+		t.Fatalf("WriteSSE: %v", err)
+	}
+	if got := buf.String(); got != "data: {\"a\":1}\n\n" {
+		t.Fatalf("WriteSSE 输出 = %q", got)
+	}
+
+	// 三段写入（"data: " 6 字节 / payload 7 字节 / "\n\n" 2 字节）
+	// 任意一段失败都要把错误抛给调用方（否则流会静默截断）。
+	for _, budget := range []int{0, 6, 13} {
+		if err := WriteData(&errWriter{budget: budget}, []byte(`{"a":1}`)); err == nil {
+			t.Fatalf("写入预算 %d 字节用尽时应报错", budget)
+		}
+	}
+}
+
+func TestWriteSSEEventFormatAndErrors(t *testing.T) {
+	var buf strings.Builder
+	if err := WriteEvent(&buf, "content_block_delta", []byte(`{"x":1}`)); err != nil {
+		t.Fatalf("WriteSSEEvent: %v", err)
+	}
+	want := "event: content_block_delta\ndata: {\"x\":1}\n\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("WriteSSEEvent 输出 = %q，期望 %q", got, want)
+	}
+
+	// 空 event 名不写 event 行（OpenAI 兼容端点的形态）。
+	buf.Reset()
+	if err := WriteEvent(&buf, "", []byte(`[DONE]`)); err != nil {
+		t.Fatalf("WriteSSEEvent: %v", err)
+	}
+	if got := buf.String(); got != "data: [DONE]\n\n" {
+		t.Fatalf("空 event 输出 = %q", got)
+	}
+
+	// "event: e\n" 9 + "data: " 6 + payload 7 + "\n\n" 2 = 24 字节。
+	for _, budget := range []int{0, 5, 9, 15, 22} {
+		if err := WriteEvent(&errWriter{budget: budget}, "e", []byte(`{"x":1}`)); err == nil {
+			t.Fatalf("写入预算 %d 字节用尽时应报错", budget)
+		}
+	}
+}
+
+// 从 internal/deepai 迁入：SSE 写出错误分支的测试夹具。
+// errWriter 累计写入预算耗尽后返回错误，用于覆盖 SSE 写出错误的分支。
+type errWriter struct{ budget int }
+
+func (w *errWriter) Write(p []byte) (int, error) {
+	if w.budget <= 0 {
+		return 0, errors.New("写入失败")
+	}
+	if len(p) > w.budget {
+		n := w.budget
+		w.budget = 0
+		return n, errors.New("写入失败")
+	}
+	w.budget -= len(p)
+	return len(p), nil
 }

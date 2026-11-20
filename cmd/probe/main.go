@@ -15,6 +15,7 @@ import (
 
 	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/sse"
 )
 
 func main() {
@@ -122,7 +123,7 @@ func main() {
 	}
 
 	fmt.Println("--- stream ---")
-	_ = deepai.ReadSSE(resp.Body, func(ev deepai.SSEEvent) error {
+	_ = sse.Decode(resp.Body, func(ev sse.Event) error {
 		if ev.Data == "[DONE]" {
 			fmt.Println("[DONE]")
 			return nil
