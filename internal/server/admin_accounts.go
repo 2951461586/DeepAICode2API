@@ -10,6 +10,7 @@ import (
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
+	"deepaicode2api/internal/poolsvc"
 )
 
 // --- 账号管理接口与配额巡检 ---
@@ -62,7 +63,7 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 //   - id：只探这个账号；
 //   - group：只探该分组的账号；
 //   - stale_only：只探额度已过时（refresh_at 已过 / 从未探 / 超 15 分钟）的账号；
-//   - limit：本批最多探多少个（默认与上限都是 maxCheckinBatch）。
+//   - limit：本批最多探多少个（默认与上限都是 poolsvc.MaxCheckinBatch）。
 //
 // 响应带 total / probed / remaining：653 号的池子全量探测要 11 分钟，
 // 单次请求只做一批，控制台按 remaining 继续下一批（探过的 checked_at 会
@@ -92,7 +93,7 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 			if group != "" && !strings.EqualFold(a.GroupName(), group) {
 				continue
 			}
-			if body.StaleOnly && !quotaNeedsRefresh(a, now, 0) {
+			if body.StaleOnly && !poolsvc.NeedsRefresh(a, now, 0) {
 				continue
 			}
 			targets = append(targets, a)
@@ -101,10 +102,10 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 	total := len(targets)
 
 	// 优先探「额度刚刷新 / 从未探过」的，分批才有意义。
-	sortByQuotaDue(targets, now)
+	poolsvc.SortByDue(targets, now)
 	limit := body.Limit
-	if limit <= 0 || limit > maxCheckinBatch {
-		limit = maxCheckinBatch
+	if limit <= 0 || limit > poolsvc.MaxCheckinBatch {
+		limit = poolsvc.MaxCheckinBatch
 	}
 	batch := targets
 	if len(batch) > limit {
@@ -116,7 +117,7 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 	// 就会让半批账号停在旧状态，控制台看起来像“刷新失败”。
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
 	defer cancel()
-	out := s.probeBatch(ctx, batch, 30*time.Second, true)
+	out := s.Pool.ProbeBatch(ctx, batch, 30*time.Second, true)
 
 	results := make([]map[string]any, 0, len(out))
 	settled := make(map[string]bool, len(out))
@@ -159,7 +160,7 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 		if settled[a.ID] {
 			continue
 		}
-		if quotaNeedsRefresh(a, now, 0) {
+		if poolsvc.NeedsRefresh(a, now, 0) {
 			remaining++
 		}
 	}

@@ -1,4 +1,4 @@
-package server
+package poolsvc
 
 import (
 	"context"
@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	// WarmUpstreamWorkers 是连接预热的并发上限：出口少时没必要开太多，
+	// WarmWorkers 是连接预热的并发上限：出口少时没必要开太多，
 	// 出口多时也不该在启动瞬间把代理打满。
-	WarmUpstreamWorkers = 4
-	// WarmUpstreamTimeout 是单个出口的预热预算（含代理握手）。
-	WarmUpstreamTimeout = 10 * time.Second
+	WarmWorkers = 4
+	// WarmTimeout 是单个出口的预热预算（含代理握手）。
+	WarmTimeout = 10 * time.Second
 )
 
-// WarmUpstream 按号池里实际出现过的出口各打一次 `/models`，把
+// WarmUp 按号池里实际出现过的出口各打一次 `/models`，把
 // DNS / TCP / TLS（以及代理 CONNECT）提前做完。
 //
 // 为什么值得做：首个真实推理请求要串行付整条握手成本。r2 压测里冷启动
@@ -33,13 +33,13 @@ const (
 //
 // 语义：只预热启用中的账号用到的出口（含「直连」这一档），同一出口只打一次；
 // 失败静默（预热是纯优化，不能影响启动）；返回成功的出口数。
-func (s *Server) WarmUpstream(ctx context.Context) int {
+func (p *Service) WarmUp(ctx context.Context) int {
 	byEgress := map[string]*deepai.Account{}
-	for _, a := range s.Store.Accounts() {
+	for _, a := range p.store.Accounts() {
 		if a == nil || !a.Enabled {
 			continue
 		}
-		// 空串代表直连（走 s.Up），这里作为一个独立出口参与预热。
+		// 空串代表直连（走直连客户端），这里作为一个独立出口参与预热。
 		if _, seen := byEgress[a.Proxy]; !seen {
 			byEgress[a.Proxy] = a
 		}
@@ -53,11 +53,11 @@ func (s *Server) WarmUpstream(ctx context.Context) int {
 	sort.Strings(targets)
 
 	var ok atomic.Int64
-	parallel.For(ctx, WarmUpstreamWorkers, len(targets), func(ctx context.Context, i int) {
-		attempt, cancel := context.WithTimeout(ctx, WarmUpstreamTimeout)
+	parallel.For(ctx, WarmWorkers, len(targets), func(ctx context.Context, i int) {
+		attempt, cancel := context.WithTimeout(ctx, WarmTimeout)
 		defer cancel()
 		acct := byEgress[targets[i]]
-		client := s.clientFor(acct)
+		client := p.clientFor(acct)
 		if _, _, err := client.FetchModels(attempt, acct); err != nil && !warmReachable(err) {
 			return
 		}

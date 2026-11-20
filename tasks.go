@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/poolsvc"
 	"deepaicode2api/internal/server"
 	"deepaicode2api/internal/store"
 	"fmt"
@@ -41,7 +42,7 @@ func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		start := time.Now()
-		n := srv.WarmUpstream(ctx)
+		n := srv.Pool.WarmUp(ctx)
 		if n > 0 {
 			log.Printf("[warmup] 已预热 %d 个出口的上游连接（%s）", n, time.Since(start).Round(time.Millisecond))
 		}
@@ -61,7 +62,7 @@ func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
 				log.Printf("定期保存状态失败: %v", err)
 			}
 			// 会话粘性绑定：无改动时这里是空操作（dirty 标记）。
-			srv.FlushSticky()
+			srv.Pool.FlushSticky()
 		case <-modelTick.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			models, err := srv.RefreshModels(ctx)
@@ -81,14 +82,14 @@ func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
 // 单独一个 goroutine 而不是塞进 background：上游挂住时一批要几分钟
 // （24 个 / 4 并发 × 20s 超时），会拖住 30s 的周期保存。
 func quotaGuard(srv *server.Server, stop <-chan struct{}) {
-	tick := time.NewTicker(server.QuotaGuardInterval)
+	tick := time.NewTicker(poolsvc.QuotaGuardInterval)
 	defer tick.Stop()
 	for {
 		select {
 		case <-stop:
 			return
 		case <-tick.C:
-			if n := srv.ReprobeStale(server.QuotaGuardBatch); n > 0 {
+			if n := srv.Pool.ReprobeStale(poolsvc.QuotaGuardBatch); n > 0 {
 				log.Printf("[quota] 后台已复探 %d 个账号的额度", n)
 			}
 		}

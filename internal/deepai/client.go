@@ -546,9 +546,9 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 		return nil, &HTTPError{
 			Op:     "上游鉴权",
 			Status: http.StatusUnauthorized,
-			Body: []byte(fmt.Sprintf(
+			Body: fmt.Appendf(nil,
 				`{"error":{"type":%q,"code":%q,"message":"上游把请求重定向到登录页（API Key 无效或已失效，status=%d）"}}`,
-				CodeAuthRequired, CodeAuthRequired, resp.StatusCode)),
+				CodeAuthRequired, CodeAuthRequired, resp.StatusCode),
 		}
 	}
 	return resp, nil

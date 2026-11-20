@@ -452,13 +452,13 @@ func (s *Server) completeLogin(session *loginSession) map[string]any {
 	// 配了代理池就按轮询分一个出口，避免多号挤在同一个 IP 上。
 	// 必须在 UpsertAccount 前写入：入池后的探活会直接复用它。
 	if strings.TrimSpace(acct.Proxy) == "" {
-		if pool := s.enrollProxyPool(); pool.Len() > 0 {
+		if pool := s.Pool.EnrollProxyPool(); pool.Len() > 0 {
 			acct.Proxy = pool.Next()
 		}
 	}
 	isNew := s.Store.UpsertAccount(acct)
 	s.persist()
-	s.probeAndSaveAsync(acct)
+	s.Pool.ProbeAndSaveAsync(acct)
 
 	return map[string]any{
 		"status": "ok", "new": isNew, "id": acct.ID,

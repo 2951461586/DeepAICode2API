@@ -1,4 +1,4 @@
-package server
+package poolsvc
 
 import (
 	"context"
@@ -11,27 +11,27 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// markAccountVerified 把账号标记为邮箱已验证（按 ID 或邮箱定位）。
-func (s *Server) markAccountVerified(id, email string) error {
+// MarkVerified 把账号标记为邮箱已验证（按 ID 或邮箱定位）。
+func (p *Service) MarkVerified(id, email string) error {
 	// 幂等：重复置 true 无害。
 	mark := func(a *deepai.Account) { a.EmailVerified = true }
 
 	// 先按 ID 定位；补跑时台账里的 ID 可能已失效，再按邮箱回退。
-	if id = strings.TrimSpace(id); id != "" && s.Store.UpdateAccount(id, mark) {
-		return s.Store.Save()
+	if id = strings.TrimSpace(id); id != "" && p.store.UpdateAccount(id, mark) {
+		return p.store.Save()
 	}
 	if want := strings.TrimSpace(email); want != "" {
-		for _, a := range s.Store.Accounts() {
-			if strings.EqualFold(a.Email, want) && s.Store.UpdateAccount(a.ID, mark) {
-				return s.Store.Save()
+		for _, a := range p.store.Accounts() {
+			if strings.EqualFold(a.Email, want) && p.store.UpdateAccount(a.ID, mark) {
+				return p.store.Save()
 			}
 		}
 	}
 	return errors.New("账号不存在")
 }
 
-// enrollRegistration 是入池的唯一写入口（管理接口与浏览器登录共用）。
-func (s *Server) enrollRegistration(reg deepai.Registration, al *deepai.Allowance) (string, bool, error) {
+// EnrollRegistration 是入池的唯一写入口（管理接口与浏览器登录共用）。
+func (p *Service) EnrollRegistration(reg deepai.Registration, al *deepai.Allowance) (string, bool, error) {
 	acct, err := deepai.AccountFromRegistration(reg)
 	if err != nil {
 		return "", false, err
@@ -46,9 +46,9 @@ func (s *Server) enrollRegistration(reg deepai.Registration, al *deepai.Allowanc
 		acct.Theos = al
 	}
 
-	isNew := s.Store.UpsertAccount(acct)
+	isNew := p.store.UpsertAccount(acct)
 	// Upsert 会保留旧运行态；把本次验证结果显式写回。
-	s.Store.UpdateAccount(acct.ID, func(stored *deepai.Account) {
+	p.store.UpdateAccount(acct.ID, func(stored *deepai.Account) {
 		stored.Status = "ok"
 		stored.Failures = 0
 		stored.LastErr = ""
@@ -60,24 +60,24 @@ func (s *Server) enrollRegistration(reg deepai.Registration, al *deepai.Allowanc
 			stored.Theos = al.Clone()
 		}
 	})
-	if err := s.Store.Save(); err != nil {
+	if err := p.store.Save(); err != nil {
 		return "", isNew, err
 	}
 
 	// 刚注册完的账号，上游往往还没把当日额度发下来：此时 /theos 会返回
 	// balance=0，但几分钟后同一个 Key 再查就是 200。若不复探，这个 0 会被
 	// 当成事实缓存下来，调度侧就会长期跳过该账号。
-	if al == nil || !positiveQuota(al) {
-		s.scheduleQuotaReprobe(acct.ID)
+	if al == nil || !PositiveQuota(al) {
+		p.ScheduleQuotaReprobe(acct.ID)
 	}
 	return acct.ID, isNew, nil
 }
 
-// positiveQuota 报告配额是否明确大于 0。
+// PositiveQuota 报告配额是否明确大于 0。
 //
 // 解析不了 / 字段缺失都按“未知”（返回 false）处理：宁可多探一次，
 // 也不要把可用账号判死。
-func positiveQuota(al *deepai.Allowance) bool {
+func PositiveQuota(al *deepai.Allowance) bool {
 	if al == nil || !al.Enabled {
 		return false
 	}
@@ -85,16 +85,16 @@ func positiveQuota(al *deepai.Allowance) bool {
 	return err == nil && v > 0
 }
 
-// allowanceFromEnroll 构造入池时携带的配额快照。
+// AllowanceFromEnroll 构造入池时携带的配额快照。
 //
 // 上游在账号刚创建时常常返回 balance=0（当日额度随后才下发）。这个 0 不是
 // 「确认耗尽」而是「未知」：按确认值缓存会让调度第一轮把它排除，最长 15 分钟
 // （R2 实测：新批入池后立刻压测，50 个号只有 12~15 个可被选中，
 // 数据面仅覆盖 19/50）。所以 0 额度时把 CheckedAt 留 0，让 pool.HasQuota
 // 按「未知」放行；真没额度时上游会拒，失败的账号会被自动降权。
-func allowanceFromEnroll(balance, granted, refreshAt string) *deepai.Allowance {
+func AllowanceFromEnroll(balance, granted, refreshAt string) *deepai.Allowance {
 	al := &deepai.Allowance{Enabled: true, Balance: balance, Granted: granted, RefreshAt: refreshAt}
-	if !positiveQuota(al) {
+	if !PositiveQuota(al) {
 		return al
 	}
 	al.CheckedAt = time.Now().Unix()
@@ -108,40 +108,40 @@ func allowanceFromEnroll(balance, granted, refreshAt string) *deepai.Allowance {
 // 「可调度」的空窗从 9 分钟压到 1 分钟以内；拿到正额度即停。
 var quotaReprobeDelays = []time.Duration{45 * time.Second, 2 * time.Minute, 6 * time.Minute}
 
-// scheduleQuotaReprobe 异步复探某个账号的配额（仅当它仍是 0 时）。
+// ScheduleQuotaReprobe 异步复探某个账号的配额（仅当它仍是 0 时）。
 //
 // 每个账号一个 goroutine，次数有上限，不会自我放大。
-func (s *Server) scheduleQuotaReprobe(id string) {
+func (p *Service) ScheduleQuotaReprobe(id string) {
 	if strings.TrimSpace(id) == "" {
 		return
 	}
-	delays := s.quotaReprobeDelays
+	delays := p.quotaReprobeDelays
 	if len(delays) == 0 {
 		return
 	}
-	s.quotaWG.Add(1)
+	p.quotaWG.Add(1)
 	go func() {
-		defer s.quotaWG.Done()
+		defer p.quotaWG.Done()
 		for _, d := range delays {
 			// 可被关停打断：退避最长 12 分钟，不能把进程退出拖住。
-			if !s.sleepOrStop(d) {
+			if !p.sleepOrStop(d) {
 				return
 			}
-			a := s.Store.Account(id)
+			a := p.store.Account(id)
 			if a == nil {
 				return // 已被删除
 			}
-			if positiveQuota(a.Theos) {
+			if PositiveQuota(a.Theos) {
 				return // 期间被别的路径探到了
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			al, err := s.clientFor(a).Theos(ctx, a)
+			al, err := p.clientFor(a).Theos(ctx, a)
 			cancel()
-			s.Store.SetAccountAllowance(id, al, err)
-			if err := s.Store.Save(); err != nil {
+			p.store.SetAccountAllowance(id, al, err)
+			if err := p.store.Save(); err != nil {
 				log.Printf("[quota] 保存复探结果失败: %v", err)
 			}
-			if err == nil && positiveQuota(al) {
+			if err == nil && PositiveQuota(al) {
 				log.Printf("[quota] %s 复探拿到额度: balance=%s granted=%s", a.Name, al.Balance, al.Granted)
 				return
 			}
@@ -149,9 +149,10 @@ func (s *Server) scheduleQuotaReprobe(id string) {
 	}()
 }
 
-// waitQuotaReprobe 阻塞到已排期的后台落盘工作（配额复探 / 入池探活）全部收尾。
+// SetQuotaReprobeDelays 覆盖入池后的复探退避序列（nil / 空 = 关闭复探）。
 //
-// 这两类 goroutine 都先把额度写进内存、再 Save() 落盘；测试若只等「额度已更新」
-// 就返回，后台的落盘会与 t.TempDir() 清理竞争，在 CI 上偶发
-// "TempDir RemoveAll cleanup: directory not empty"（-race 下更容易命中）。
-func (s *Server) waitQuotaReprobe() { s.quotaWG.Wait() }
+// 生产用不到：留着是为了测试能注入毫秒级退避，以及排查时可以临时关掉
+// 「入池后自动复探」这条后台链路。
+func (p *Service) SetQuotaReprobeDelays(d []time.Duration) {
+	p.quotaReprobeDelays = d
+}

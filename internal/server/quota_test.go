@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/poolsvc"
 )
 
 // quotaAccount 构造一个带额度快照的账号。
@@ -43,7 +44,7 @@ func TestQuotaNeedsRefresh(t *testing.T) {
 		{"fresh", quotaAccount("e", now.Add(-time.Minute).Unix(), future), 15 * time.Minute, false},
 	}
 	for _, tc := range cases {
-		if got := quotaNeedsRefresh(tc.acct, now, tc.staleAfter); got != tc.want {
+		if got := poolsvc.NeedsRefresh(tc.acct, now, tc.staleAfter); got != tc.want {
 			t.Errorf("%s: quotaNeedsRefresh = %v，期望 %v", tc.name, got, tc.want)
 		}
 	}
@@ -151,11 +152,11 @@ func TestProbeBatchDedupesInFlight(t *testing.T) {
 	s, _ := newTestServer(t, u)
 	a := s.Store.Account("acc-1")
 
-	if !s.claimProbe(a.ID) {
+	if !s.Pool.ClaimProbe(a.ID) {
 		t.Fatal("首次占用探测槽位应成功")
 	}
-	out := s.probeBatch(t.Context(), []*deepai.Account{a}, time.Second, true)
-	s.releaseProbe(a.ID)
+	out := s.Pool.ProbeBatch(t.Context(), []*deepai.Account{a}, time.Second, true)
+	s.Pool.ReleaseProbe(a.ID)
 
 	if len(out) != 1 || !out[0].Skipped {
 		t.Fatalf("在途时应标记 Skipped: %#v", out)
@@ -180,7 +181,7 @@ func TestReprobeStaleOnlyProbesDueAccounts(t *testing.T) {
 	s.Store.UpsertAccount(quotaAccount("fresh", time.Now().Unix(), future))
 	s.Store.UpdateAccount("fresh", func(a *deepai.Account) { a.Group = "g" })
 
-	if n := s.ReprobeStale(0); n != 1 {
+	if n := s.Pool.ReprobeStale(0); n != 1 {
 		t.Fatalf("后台复探数 = %d，期望 1（只有从未探测的 acc-1）", n)
 	}
 	mu.Lock()
@@ -230,9 +231,7 @@ func TestInferenceRefreshesStaleQuota(t *testing.T) {
 	// 等异步探测跑完（顺带避免测试结束后还有 goroutine 写临时目录）。
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		s.probeMu.Lock()
-		busy := len(s.probing) > 0
-		s.probeMu.Unlock()
+		busy := s.Pool.Probing() > 0
 		mu.Lock()
 		hits := theosHits
 		mu.Unlock()
@@ -261,14 +260,12 @@ func TestProbeAsyncFailureDoesNotMarkAccount(t *testing.T) {
 	s, _ := newTestServer(t, u)
 	a := s.Store.Account("acc-1")
 
-	if !s.probeAsync(a) {
+	if !s.Pool.ProbeAsync(a) {
 		t.Fatal("首次异步探测应被发起")
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		s.probeMu.Lock()
-		busy := len(s.probing) > 0
-		s.probeMu.Unlock()
+		busy := s.Pool.Probing() > 0
 		if !busy {
 			break
 		}
@@ -295,10 +292,10 @@ func TestCheckinSkipsInFlightProbes(t *testing.T) {
 	s, _ := newTestServer(t, u)
 
 	// 占住 acc-1 的探测槽位，模拟「另一路正在探」。
-	if !s.claimProbe("acc-1") {
+	if !s.Pool.ClaimProbe("acc-1") {
 		t.Fatal("占用探测槽位失败")
 	}
-	defer s.releaseProbe("acc-1")
+	defer s.Pool.ReleaseProbe("acc-1")
 
 	rec := postAdmin(t, s, "/admin/api/checkin", `{"id":"acc-1"}`)
 	if rec.Code != http.StatusOK {

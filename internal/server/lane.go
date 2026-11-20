@@ -53,7 +53,6 @@ func (s *Server) noteUpstreamLane(v int) {
 	if v <= 0 {
 		return
 	}
-	s.metrics.setUpstreamLane(int64(v))
 	prev := s.upstreamLane.Swap(int64(v))
 	if prev == int64(v) {
 		return

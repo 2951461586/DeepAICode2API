@@ -124,7 +124,7 @@ function initTopBar(ctx) {
     var b = $("#logLive");
     if (b) {
       b.setAttribute("aria-pressed", on ? "true" : "false");
-      b.classList.toggle("on", !!on);
+      b.classList.toggle("on", on);
     }
   }
   $("#logLive").onclick = function () {

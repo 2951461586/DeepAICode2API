@@ -1,7 +1,8 @@
-package server
+package poolsvc
 
 import (
 	"log"
+	"maps"
 	"time"
 
 	"deepaicode2api/internal/store"
@@ -22,24 +23,24 @@ import (
 // 落盘：绑定表放独立的旁路文件（store.SaveSticky），随重启保留；进程内改动
 // 先只标脏，由后台 30s 周期与退出流程统一 flush，避免每个请求一次写盘。
 const (
-	// stickyTTL 是绑定的闲置有效期。
+	// StickyTTL 是绑定的闲置有效期。
 	//
 	// 比前缀缓存的实际存活时间保守：会话超过 10 分钟没有请求，多半已经换了
 	// 上下文，继续钉在旧号上只会让负载集中。
-	stickyTTL = 10 * time.Minute
-	// stickyMax 是绑定表规模上限（按 affinity 计）。
+	StickyTTL = 10 * time.Minute
+	// StickyMax 是绑定表规模上限（按 affinity 计）。
 	//
 	// 超出后先回收过期项；仍然超限就整表清空 —— 绑定只是优化，
 	// 清空等价于「重新学一遍」，不会造成正确性问题。
-	stickyMax = 2048
+	StickyMax = 2048
 )
 
-// loadSticky 从旁路文件恢复绑定表（启动时调用一次）。
+// LoadSticky 从旁路文件恢复绑定表（启动时调用一次）。
 //
 // 文件不存在 / 解析失败都只记日志：绑定是缓存，丢了不影响服务。
 // 过期项在这里就剔掉，避免重启后把陈旧会话钉回旧账号。
-func (s *Server) loadSticky() {
-	m, err := s.Store.LoadSticky()
+func (p *Service) LoadSticky() {
+	m, err := p.store.LoadSticky()
 	if err != nil {
 		log.Printf("[sticky] 读取绑定表失败（按空表启动）: %v", err)
 		return
@@ -50,107 +51,104 @@ func (s *Server) loadSticky() {
 		if k == "" || b.AccountID == "" {
 			continue
 		}
-		if now.Sub(time.Unix(b.At, 0)) > stickyTTL {
+		if now.Sub(time.Unix(b.At, 0)) > StickyTTL {
 			continue
 		}
 		alive[k] = b
 	}
-	s.stickyMu.Lock()
-	s.sticky = alive
-	s.stickyMu.Unlock()
+	p.stickyMu.Lock()
+	p.sticky = alive
+	p.stickyMu.Unlock()
 	if len(alive) > 0 {
 		log.Printf("[sticky] 已恢复 %d 条会话绑定（丢弃过期 %d 条）", len(alive), len(m)-len(alive))
 	}
 }
 
-// stickyAccount 返回 affinity 当前绑定的账号 ID（无绑定 / 已过期时返回空串）。
-func (s *Server) stickyAccount(affinity string) string {
+// StickyAccount 返回 affinity 当前绑定的账号 ID（无绑定 / 已过期时返回空串）。
+func (p *Service) StickyAccount(affinity string) string {
 	if affinity == "" {
 		return ""
 	}
-	s.stickyMu.Lock()
-	defer s.stickyMu.Unlock()
-	b, ok := s.sticky[affinity]
+	p.stickyMu.Lock()
+	defer p.stickyMu.Unlock()
+	b, ok := p.sticky[affinity]
 	if !ok {
 		return ""
 	}
-	if time.Since(time.Unix(b.At, 0)) > stickyTTL {
-		delete(s.sticky, affinity)
-		s.stickyDirty.Store(true)
+	if time.Since(time.Unix(b.At, 0)) > StickyTTL {
+		delete(p.sticky, affinity)
+		p.stickyDirty.Store(true)
 		return ""
 	}
 	return b.AccountID
 }
 
-// bindSticky 把 affinity 绑定到刚成功的账号。
-func (s *Server) bindSticky(affinity, accountID string) {
+// BindSticky 把 affinity 绑定到刚成功的账号。
+func (p *Service) BindSticky(affinity, accountID string) {
 	if affinity == "" || accountID == "" {
 		return
 	}
-	s.stickyMu.Lock()
-	defer s.stickyMu.Unlock()
-	if s.sticky == nil {
-		s.sticky = map[string]store.StickyBinding{}
+	p.stickyMu.Lock()
+	defer p.stickyMu.Unlock()
+	if p.sticky == nil {
+		p.sticky = map[string]store.StickyBinding{}
 	}
-	if _, exists := s.sticky[affinity]; !exists && len(s.sticky) >= stickyMax {
-		s.gcStickyLocked()
+	if _, exists := p.sticky[affinity]; !exists && len(p.sticky) >= StickyMax {
+		p.gcStickyLocked()
 	}
-	s.sticky[affinity] = store.StickyBinding{AccountID: accountID, At: time.Now().Unix()}
-	s.stickyDirty.Store(true)
+	p.sticky[affinity] = store.StickyBinding{AccountID: accountID, At: time.Now().Unix()}
+	p.stickyDirty.Store(true)
 }
 
-// dropSticky 在账号被判死（拦截 / 额度用尽）时解除绑定。
+// DropSticky 在账号被判死（拦截 / 额度用尽）时解除绑定。
 //
 // 只在绑定确实指向这个号时才删：重试链上可能已经把会话改绑到别的号，
 // 那时删掉会误伤新的绑定。
-func (s *Server) dropSticky(affinity, accountID string) {
+func (p *Service) DropSticky(affinity, accountID string) {
 	if affinity == "" {
 		return
 	}
-	s.stickyMu.Lock()
-	defer s.stickyMu.Unlock()
-	if b, ok := s.sticky[affinity]; ok && b.AccountID == accountID {
-		delete(s.sticky, affinity)
-		s.stickyDirty.Store(true)
+	p.stickyMu.Lock()
+	defer p.stickyMu.Unlock()
+	if b, ok := p.sticky[affinity]; ok && b.AccountID == accountID {
+		delete(p.sticky, affinity)
+		p.stickyDirty.Store(true)
 	}
 }
 
 // gcStickyLocked 回收过期绑定；仍然超限就整表清空。调用方必须持有 stickyMu。
-func (s *Server) gcStickyLocked() {
+func (p *Service) gcStickyLocked() {
 	now := time.Now()
-	for k, b := range s.sticky {
-		if now.Sub(time.Unix(b.At, 0)) > stickyTTL {
-			delete(s.sticky, k)
+	for k, b := range p.sticky {
+		if now.Sub(time.Unix(b.At, 0)) > StickyTTL {
+			delete(p.sticky, k)
 		}
 	}
-	if len(s.sticky) >= stickyMax {
-		clear(s.sticky)
+	if len(p.sticky) >= StickyMax {
+		clear(p.sticky)
 	}
 }
 
 // FlushSticky 把绑定表写进旁路文件（无改动时跳过）。
 //
 // 由后台 30s 周期与 Close 调用：绑定变化频率远低于请求频率，攒批写盘即可。
-func (s *Server) FlushSticky() {
-	if !s.stickyDirty.Swap(false) {
+func (p *Service) FlushSticky() {
+	if !p.stickyDirty.Swap(false) {
 		return
 	}
-	s.stickyMu.Lock()
-	snap := make(map[string]store.StickyBinding, len(s.sticky))
-	for k, v := range s.sticky {
-		snap[k] = v
-	}
-	s.stickyMu.Unlock()
-	if err := s.Store.SaveSticky(snap); err != nil {
+	p.stickyMu.Lock()
+	snap := maps.Clone(p.sticky)
+	p.stickyMu.Unlock()
+	if err := p.store.SaveSticky(snap); err != nil {
 		// 写失败不改变服务语义，但要留痕并让下一轮重试。
-		s.stickyDirty.Store(true)
+		p.stickyDirty.Store(true)
 		log.Printf("[sticky] 保存绑定表失败（下轮重试）: %v", err)
 	}
 }
 
-// StickyBindings 返回当前绑定数量（控制台 / 测试用）。
-func (s *Server) StickyBindings() int {
-	s.stickyMu.Lock()
-	defer s.stickyMu.Unlock()
-	return len(s.sticky)
+// Bindings 返回当前绑定数量（控制台 / 测试用）。
+func (p *Service) Bindings() int {
+	p.stickyMu.Lock()
+	defer p.stickyMu.Unlock()
+	return len(p.sticky)
 }

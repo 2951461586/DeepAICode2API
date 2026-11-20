@@ -210,7 +210,7 @@ func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 	})
 	s, _ := newTestServer(t, u)
 	// 测试里把 3 分钟退避压到 10ms。
-	s.quotaReprobeDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
+	s.Pool.SetQuotaReprobeDelays([]time.Duration{10 * time.Millisecond, 10 * time.Millisecond})
 
 	rec := postAdmin(t, s, "/admin/api/accounts",
 		`{"action":"enroll","api_key":"sk-late-quota","email":"late@y.com"}`)
@@ -234,7 +234,7 @@ func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 			// 额度是复探 goroutine 先写内存、再 Save() 落盘的：只等内存就返回
 			// 会和 t.TempDir() 的清理抢同一批文件（CI 上偶发
 			// "TempDir RemoveAll cleanup: directory not empty"）。
-			s.waitQuotaReprobe()
+			s.Pool.Wait()
 			return // ok
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -254,7 +254,7 @@ func TestEnrollWithQuotaSkipsReprobe(t *testing.T) {
 		_, _ = io.WriteString(w, `{"enabled":true,"balance":"200.00000","granted":"200.00000"}`)
 	})
 	s, _ := newTestServer(t, u)
-	s.quotaReprobeDelays = []time.Duration{10 * time.Millisecond}
+	s.Pool.SetQuotaReprobeDelays([]time.Duration{10 * time.Millisecond})
 
 	if rec := postAdmin(t, s, "/admin/api/accounts",
 		`{"action":"enroll","api_key":"sk-has-quota","email":"q@y.com"}`); rec.Code != http.StatusOK {

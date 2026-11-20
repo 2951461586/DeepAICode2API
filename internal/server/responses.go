@@ -10,6 +10,7 @@ import (
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/logx"
+	"deepaicode2api/internal/respstate"
 )
 
 // handleResponses 是 /v1/responses 的入口。
@@ -44,6 +45,13 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	promptLen := estimatePromptLen(payload)
 
 	rls := s.newReqLog(key, nil, model.ID, "responses", stream, start, promptLen).withHistory(payload)
+	// 先記下「本輪新增的 input」與續接父 id：重放會把 payload["input"] 換成完整
+	// 歷史，那之後就取不到增量了（暫存只存增量 + 檢查點，完整歷史由鏈還原）。
+	turn := &respstate.Turn{
+		Input:        respstate.InputItems(payload),
+		Instructions: strOf(payload["instructions"]),
+		Parent:       strOf(payload["previous_response_id"]),
+	}
 	if p := statefulParam(payload); p != "" {
 		// previous_response_id：合成路徑現在透過伺服端歷史暫存重放上下文，
 		// 不再直接回 400（那是「失憶」的根因）。重放失敗才退回明確 400。
@@ -51,35 +59,30 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		// 網關無從重建，保留明確 400 並在文件寫清楚。
 		if !model.IsResponses() && p == "previous_response_id" {
 			prevID := strOf(payload["previous_response_id"])
-			outcome, msg := s.history.replay(payload, prevID, model.ID, model.ContextWindow)
+			outcome, msg := s.history.Replay(payload, prevID, model.ID, model.ContextWindow)
 			switch outcome {
-			case replayNotFound:
-				s.metrics.addStateful(p, true)
+			case respstate.NotFound:
+				s.metrics.AddStateful(p, true)
 				httpx.WriteErr(w, http.StatusBadRequest,
 					(&statefulParamError{Param: p}).Error(), "unsupported_parameter")
 				return
-			case replayTooLong:
-				s.metrics.addStateful(p, true)
+			case respstate.TooLong:
+				s.metrics.AddStateful(p, true)
 				httpx.WriteErr(w, http.StatusBadRequest, msg, "invalid_request_error")
 				return
 			}
-			s.metrics.addStateful(p, false) // 已重放，視為成功續接
+			s.metrics.AddStateful(p, false) // 已重放，視為成功續接
 			logx.Info("Responses 歷史重放成功", "model", model.ID, "prev", prevID)
 		} else if !model.IsResponses() {
-			s.metrics.addStateful(p, true)
+			s.metrics.AddStateful(p, true)
 			httpx.WriteErr(w, http.StatusBadRequest,
 				(&statefulParamError{Param: p}).Error(), "unsupported_parameter")
 			return
 		} else {
-			s.metrics.addStateful(p, false)
+			s.metrics.AddStateful(p, false)
 			logx.Warn("上游 /responses 透傳帶狀態字段：續接能力取決於上游",
 				"param", p, "model", model.ID)
 		}
-	}
-	// 記錄本輪「送出前的輸入快照」，回應完成後連同輸出寫入暫存。
-	turn := &responseTurn{
-		input:        responsesInputArray(payload),
-		instructions: strOf(payload["instructions"]),
 	}
 	if model.IsResponses() {
 		s.passthroughResponses(w, r, payload, affinity, rls, turn)
@@ -99,7 +102,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 // passthroughResponses 透传上游 /responses。
-func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog, turn *responseTurn) {
+func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog, turn *respstate.Turn) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
@@ -210,7 +213,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 }
 
 // blockingResponsesAsChat 用 Chat Completions 合成 Responses 响应。
-func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog, turn *responseTurn) {
+func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog, turn *respstate.Turn) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
@@ -231,7 +234,7 @@ func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request,
 }
 
 // streamResponsesAsChat 用 Chat Completions 流合成 Responses 事件流。
-func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog, turn *responseTurn) {
+func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog, turn *respstate.Turn) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
@@ -293,7 +296,7 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 
 // rememberResponse 從最終 Responses 物件取出 id / output 寫入歷史暫存。
 // 只有成功完成（有 id 與 output）的回應才會被記住。
-func (s *Server) rememberResponse(turn *responseTurn, resp map[string]any) {
+func (s *Server) rememberResponse(turn *respstate.Turn, resp map[string]any) {
 	if resp == nil || s.history == nil || strOf(resp["status"]) != "completed" {
 		return
 	}
@@ -302,7 +305,7 @@ func (s *Server) rememberResponse(turn *responseTurn, resp map[string]any) {
 	if id == "" || len(output) == 0 {
 		return
 	}
-	s.history.remember(turn, id, output)
+	s.history.Remember(turn, id, output)
 }
 
 // rewriteResponsesModel 把 Responses 对象 / 事件里的 model 改为对外模型名。

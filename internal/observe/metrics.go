@@ -1,17 +1,19 @@
-package server
+// Package observe 是可观测性层：进程内指标（计数器 + 定桶直方图）、
+// /metrics 的 Prometheus 文本输出，以及 request id / 访问日志中间件。
+//
+// 边界：本包只依赖标准库、internal/logx（一行 JSON 日志）与 internal/guard
+// （取来源 IP）。它不认识 store / 号池 / 协议层——/metrics 里那些「号池与车道」
+// 的数字由调用方通过 PromExtra 传进来。因此可以脱离网关单测与压测。
+package observe
 
 import (
-	"fmt"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"deepaicode2api/internal/deepai"
 )
 
-// 本文件是 /metrics 与 /admin/api/overview 的**扩展**指标层。
+// 本文件是指标的**扩展**层（/metrics 与 /admin/api/overview 共用）。
 //
 // 设计取舍：
 //   - 零依赖：自己维护定桶直方图，不引入 Prometheus 客户端；
@@ -19,7 +21,7 @@ import (
 //     (path, code, status) 聚合并限制条目数，避免被异常流量打爆内存；
 //   - 与旧指标共存：原来的 requests/2xx..5xx/durSum 保留，控制台不破。
 
-// 延迟桶（秒）。覆盖免费模型的百毫秒级到深度思考的分钟级。
+// defaultBuckets 是延迟桶（秒）。覆盖免费模型的百毫秒级到深度思考的分钟级。
 var defaultBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600}
 
 // hist 是定桶直方图：只保留每桶计数 + sum/count，够算 p50/p95/p99。
@@ -72,25 +74,25 @@ func (h *hist) quantile(q float64) float64 {
 	return h.bounds[len(h.bounds)-1]
 }
 
-// histogramView 是直方图的 JSON / Prometheus 视图。
-type histogramView struct {
+// HistogramView 是直方图的 JSON / Prometheus 视图。
+type HistogramView struct {
 	Bounds []float64 `json:"bounds"`
 	Counts []uint64  `json:"counts"`
 	Sum    float64   `json:"sum"`
 	Total  uint64    `json:"total"`
 }
 
-func (h *hist) view() histogramView {
+func (h *hist) view() HistogramView {
 	if h == nil {
-		return histogramView{}
+		return HistogramView{}
 	}
 	bounds := append([]float64(nil), h.bounds...)
 	counts := append([]uint64(nil), h.counts...)
-	return histogramView{Bounds: bounds, Counts: counts, Sum: h.sum, Total: h.total}
+	return HistogramView{Bounds: bounds, Counts: counts, Sum: h.sum, Total: h.total}
 }
 
-// endpointLabel 把 URL 路径收敛成低基数标签。
-func endpointLabel(path string) string {
+// EndpointLabel 把 URL 路径收敛成低基数标签。
+func EndpointLabel(path string) string {
 	switch path {
 	case "/v1/chat/completions":
 		return "chat"
@@ -130,8 +132,64 @@ func newExtraMetrics() *extraMetrics {
 	}
 }
 
-// observeDuration 记录一次请求耗时（秒）。
-func (m *metrics) observeDuration(endpoint string, sec float64) {
+// Metrics 是进程内的轻量指标计数（不持久化、重启清零）。
+type Metrics struct {
+	requests atomic.Int64
+	c2xx     atomic.Int64
+	c3xx     atomic.Int64
+	c4xx     atomic.Int64
+	c5xx     atomic.Int64
+	durSumNS atomic.Int64
+	durCount atomic.Int64
+	inflight atomic.Int64
+
+	// 扩展指标：签到 / 上游错误 / 兜底 / 分端点延迟。
+	checkinAttempts atomic.Int64
+	checkinBlocked  atomic.Int64
+	checkinTimeouts atomic.Int64
+	fallbackTotal   atomic.Int64
+
+	// stateful* 统计依赖上游响应状态的请求（previous_response_id /
+	// conversation / item_reference）。rejected 只统计网关拒绝的那部分。
+	statefulPrevID  atomic.Int64
+	statefulConv    atomic.Int64
+	statefulItemRef atomic.Int64
+	statefulReject  atomic.Int64
+	extra           *extraMetrics
+}
+
+// NewMetrics 返回一套归零的指标。
+func NewMetrics() *Metrics { return &Metrics{extra: newExtraMetrics()} }
+
+// Observe 记录一次请求（status + 耗时 + 端点分布）。
+func (m *Metrics) Observe(endpoint string, status int, d time.Duration) {
+	m.ObserveBasic(status, d)
+	m.ObserveDuration(endpoint, d.Seconds())
+}
+
+// ObserveBasic 只记状态码与总耗时，不进分端点 / 分位直方图。
+//
+// /admin/* 用它：控制台自己的请求如果也进延迟直方图，/admin/api/overview
+// 的响应体就会因为「上一次 overview 的耗时」而每次变化，ETag 永远命中不了
+// （TestOverviewETag 就是这么暴露的）。管理接口不是延迟 SLI。
+func (m *Metrics) ObserveBasic(status int, d time.Duration) {
+	m.requests.Add(1)
+	switch {
+	case status >= 500:
+		m.c5xx.Add(1)
+	case status >= 400:
+		m.c4xx.Add(1)
+	case status >= 300:
+		m.c3xx.Add(1)
+	default:
+		m.c2xx.Add(1)
+	}
+	m.durSumNS.Add(int64(d))
+	m.durCount.Add(1)
+}
+
+// ObserveDuration 记录一次请求耗时（秒）。
+func (m *Metrics) ObserveDuration(endpoint string, sec float64) {
 	x := m.extra
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -144,8 +202,8 @@ func (m *metrics) observeDuration(endpoint string, sec float64) {
 	h.observe(sec)
 }
 
-// observeUpstreamError 记录一次上游拒绝（含错误码）。
-func (m *metrics) observeUpstreamError(path, code string, status int) {
+// ObserveUpstreamError 记录一次上游拒绝（含错误码）。
+func (m *Metrics) ObserveUpstreamError(path, code string, status int) {
 	if code == "" {
 		code = "unknown"
 	}
@@ -159,27 +217,30 @@ func (m *metrics) observeUpstreamError(path, code string, status int) {
 	x.upstreamErr[key]++
 }
 
-// observeCheckIn 记录一次推理前的签到尝试。
-func (m *metrics) observeCheckIn(outcome deepai.CheckInOutcome) {
-	if !outcome.Attempted {
+// ObserveCheckIn 记录一次推理前的签到尝试。
+//
+// 参数都是原始值而不是 deepai 的结果类型：本包不依赖协议层。
+// slowAfter 是「签到阻塞推理」的告警阈值（由调用方的策略决定）。
+func (m *Metrics) ObserveCheckIn(attempted bool, waited, slowAfter time.Duration, timedOut bool) {
+	if !attempted {
 		return
 	}
 	m.checkinAttempts.Add(1)
-	if outcome.Waited >= checkInSlowWarn {
+	if slowAfter > 0 && waited >= slowAfter {
 		m.checkinBlocked.Add(1)
 	}
-	if outcome.TimedOut {
+	if timedOut {
 		m.checkinTimeouts.Add(1)
 	}
-	sec := outcome.Waited.Seconds()
+	sec := waited.Seconds()
 	x := m.extra
 	x.mu.Lock()
 	x.checkinDur.observe(sec)
 	x.mu.Unlock()
 }
 
-// observeAdmissionWait 记录一次"账号全忙"的排队等待（秒）。
-func (m *metrics) observeAdmissionWait(d time.Duration) {
+// ObserveAdmissionWait 记录一次「账号全忙」的排队等待（秒）。
+func (m *Metrics) ObserveAdmissionWait(d time.Duration) {
 	if d <= 0 {
 		return
 	}
@@ -189,14 +250,14 @@ func (m *metrics) observeAdmissionWait(d time.Duration) {
 	x.mu.Unlock()
 }
 
-// addFallback 记录一次「请求体形状被拒 → 补形状重试」。
-func (m *metrics) addFallback() { m.fallbackTotal.Add(1) }
+// AddFallback 记录一次「请求体形状被拒 → 补形状重试」。
+func (m *Metrics) AddFallback() { m.fallbackTotal.Add(1) }
 
-// addStateful 记录一次依赖上游响应状态的请求。
+// AddStateful 记录一次依赖上游响应状态的请求。
 //
 // rejected=true 表示网关没有转发，而是回 400：合成路径（chat/completions）
 // 只有 input 里的内容，静默忽略续接字段就等于把上下文截断。
-func (m *metrics) addStateful(param string, rejected bool) {
+func (m *Metrics) AddStateful(param string, rejected bool) {
 	switch param {
 	case "previous_response_id":
 		m.statefulPrevID.Add(1)
@@ -210,36 +271,38 @@ func (m *metrics) addStateful(param string, rejected bool) {
 	}
 }
 
-// metricsSnapshot 是给控制台概览的聚合视图。
-type metricsSnapshot struct {
-	Latency      histogramView            `json:"latency"`
-	ByEndpoint   map[string]histogramView `json:"by_endpoint"`
-	CheckIn      histogramView            `json:"checkin"`
-	Admission    histogramView            `json:"admission"`
-	UpstreamErrs []upstreamErrView        `json:"upstream_errors"`
+// MetricsSnapshot 是给控制台概览的聚合视图。
+type MetricsSnapshot struct {
+	Latency      HistogramView            `json:"latency"`
+	ByEndpoint   map[string]HistogramView `json:"by_endpoint"`
+	CheckIn      HistogramView            `json:"checkin"`
+	Admission    HistogramView            `json:"admission"`
+	UpstreamErrs []UpstreamErrView        `json:"upstream_errors"`
 	CheckInStats map[string]int64         `json:"checkin_stats"`
+	Stateful     map[string]int64         `json:"stateful"`
 	Fallback     int64                    `json:"fallback_total"`
 }
 
-type upstreamErrView struct {
+// UpstreamErrView 是一条聚合后的上游错误。
+type UpstreamErrView struct {
 	Path   string `json:"path"`
 	Code   string `json:"code"`
 	Status int    `json:"status"`
 	Count  int64  `json:"count"`
 }
 
-// snapshot 取一次一致性快照（按数量排序，最多 8 条上游错误）。
-func (m *metrics) snapshot() metricsSnapshot {
+// Snapshot 取一次一致性快照（按数量排序，最多 8 条上游错误）。
+func (m *Metrics) Snapshot() MetricsSnapshot {
 	x := m.extra
 	x.mu.Lock()
-	byEndpoint := make(map[string]histogramView, len(x.endpointDur))
+	byEndpoint := make(map[string]HistogramView, len(x.endpointDur))
 	for k, h := range x.endpointDur {
 		byEndpoint[k] = h.view()
 	}
-	errs := make([]upstreamErrView, 0, len(x.upstreamErr))
+	errs := make([]UpstreamErrView, 0, len(x.upstreamErr))
 	for k, n := range x.upstreamErr {
 		path, code, status := splitErrKey(k)
-		errs = append(errs, upstreamErrView{Path: path, Code: code, Status: status, Count: n})
+		errs = append(errs, UpstreamErrView{Path: path, Code: code, Status: status, Count: n})
 	}
 	latency := x.durHist.view()
 	checkin := x.checkinDur.view()
@@ -250,7 +313,7 @@ func (m *metrics) snapshot() metricsSnapshot {
 	if len(errs) > 8 {
 		errs = errs[:8]
 	}
-	return metricsSnapshot{
+	return MetricsSnapshot{
 		Latency:      latency,
 		ByEndpoint:   byEndpoint,
 		CheckIn:      checkin,
@@ -260,6 +323,12 @@ func (m *metrics) snapshot() metricsSnapshot {
 			"attempts": m.checkinAttempts.Load(),
 			"blocked":  m.checkinBlocked.Load(),
 			"timeouts": m.checkinTimeouts.Load(),
+		},
+		Stateful: map[string]int64{
+			"previous_response_id": m.statefulPrevID.Load(),
+			"conversation":         m.statefulConv.Load(),
+			"item_reference":       m.statefulItemRef.Load(),
+			"rejected":             m.statefulReject.Load(),
 		},
 		Fallback: m.fallbackTotal.Load(),
 	}
@@ -294,39 +363,17 @@ func splitNUL(s string) []string {
 	return append(out, s[start:])
 }
 
-// quantileMs 返回毫秒分位（0 表示没有样本）。
-func quantileMs(view histogramView, q float64) float64 {
+// QuantileMs 返回毫秒分位（0 表示没有样本）。
+func QuantileMs(view HistogramView, q float64) float64 {
 	h := &hist{bounds: view.Bounds, counts: view.Counts, sum: view.Sum, total: view.Total}
 	return h.quantile(q) * 1000
 }
 
-// appendHistogram 输出一个 Prometheus 直方图（含 +Inf 桶与 sum/count）。
-//
-// labelName 为空表示无标签；否则按 labelName="labelValue" 输出。
-// 输出顺序固定（桶升序），便于 diff 与抓取端做稳定性检查。
-func appendHistogram(b *strings.Builder, name, help, labelName, labelValue string, v histogramView) {
-	label := ""
-	if labelName != "" {
-		label = labelName + "=" + strconv.Quote(labelValue) + ","
-	}
-	fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s histogram\n", name, help, name)
-	var cum uint64
-	for i, bound := range v.Bounds {
-		cum += v.Counts[i]
-		le := strconv.Quote(strconv.FormatFloat(bound, 'f', -1, 64))
-		fmt.Fprintf(b, "%s_bucket{%sle=%s} %d\n", name, label, le, cum)
-	}
-	cum += v.Counts[len(v.Bounds)]
-	fmt.Fprintf(b, "%s_bucket{%sle=\"+Inf\"} %d\n", name, label, cum)
-	fmt.Fprintf(b, "%s_sum %s\n", name, ftoa(v.Sum))
-	fmt.Fprintf(b, "%s_count %d\n", name, v.Total)
-}
-
-// latencySummary 把直方图收敛成控制台要的三个分位（毫秒）。
-func latencySummary(v histogramView) map[string]float64 {
+// LatencySummary 把直方图收敛成控制台要的三个分位（毫秒）。
+func LatencySummary(v HistogramView) map[string]float64 {
 	return map[string]float64{
-		"p50_ms": quantileMs(v, 0.50),
-		"p95_ms": quantileMs(v, 0.95),
-		"p99_ms": quantileMs(v, 0.99),
+		"p50_ms": QuantileMs(v, 0.50),
+		"p95_ms": QuantileMs(v, 0.95),
+		"p99_ms": QuantileMs(v, 0.99),
 	}
 }

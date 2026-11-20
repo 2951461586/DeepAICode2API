@@ -4101,3 +4101,310 @@ gofmt / go vet / go build ./... / go test ./... -count=1
 - `gpt-oss-120b` 仍由客户端主动过滤、网关不展示（上游目录里本来也没有）；
 - `crouton-alpha` 已下线，只保留在 §40 / `docs/lessons.md` 的历史记录里；
 - 6 个 11-14 新增的模型仍无指纹实测（要花 Theos，非必要不做）。
+
+---
+
+## 71. 2026-11-20 `/v1/responses` 歷史暫存复核：配對、預算、去重與容量
+
+一輪針對「伺服端歷史暫存」（§68 引入、`response_history.go`）的复核。
+七處問題全部有可重現的失敗形態，逐條記下根因 → 決策 → 驗證。
+
+### 71.1 根因與決策
+
+| # | 根因 | 失敗形態 | 決策 |
+| --- | --- | --- | --- |
+| 1 | 裁剪按 item 邊界切，`function_call` 與 `function_call_output` 被分到兩側 | gateway 把 output 翻成 `role:tool`，上游要求它緊跟帶 `tool_calls` 的 assistant → **歷史一被裁，之後每輪 400** | 新增 `dropOrphanToolOutputs`：位置掃描（訊息項即重置 active 集合），不是全局 id 集合——插入的說明訊息同樣打斷鏈路 |
+| 2 | 說明訊息自身 token 未計入預算 | 裁剪結果剛好超限 → `replay` 誤判「壓不下去」，把本來能續接的請求回 400 | `avail = budget - itemApproxTokens(marker)`，先扣再選尾段 |
+| 3 | `tools` 定義未計入上下文 | 幾十個 function schema 低估幾千 token，剛好超限的請求穿過檢查、由上游靜默截斷 | `fixedTokens = instructions + tools`，錯誤訊息改稱「請求（歷史 + 工具定義）」 |
+| 4 | `max_output_tokens` 沒有預留輸出預算 | 歷史貼著上限時上游只能截斷歷史（失憶）或超額 | `total + reserve > limit` 即 400，訊息註明「已為 max_output_tokens 預留 N tokens」；`truncation:auto` 的預算同步扣除 |
+| 5 | 客戶端同時送 `previous_response_id` 與完整 `input` 時，基底被拼兩次 | token 直接翻倍，更快撞上限 | `hasHistoryPrefix` 逐項深比較：`input` 以重組出的歷史為前綴就不再補基底（保守：只認「完整重送」，部分重送仍會重複） |
+| 6 | `effectiveContextWindow` 每輪重放都 `json.Unmarshal` 一次環境變數 | 純 CPU 浪費在熱路徑上 | 以「原始字串」為 key 的單槽緩存：改環境變數（含 `t.Setenv`）自動失效，不需要重啟 |
+| 7 | 每輪都存整條歷史（O(輪數²)），容量用 `json.Marshal` 量體積 | 長對話記憶體平方增長；每次寫入多一次全量序列化 | 只存增量 + `parent` 鏈；每 8 輪存一份檢查點。容量改為結構走訪估算（`jsonBytesOf`，不分配、不序列化） |
+
+第 7 條的取捨寫清楚：
+
+- **記憶體**：鏈長 n 時舊版約 n²/2 份 item，現在約 n 份增量 + n²/(2×8) 份檢查點 ≈ 16 倍改善；
+- **韌性**：檢查點就是為了「父條目被淘汰」——`chain` 遇到帶快照的條目即停，不再因更早的祖先被淘汰而判定斷鏈；
+- **明確失敗**：鏈上真的缺一環（TTL/淘汰且無檢查點）時回 400 `unsupported_parameter`，**不送半截歷史**——後者正是「靜默失憶」。
+
+### 71.2 順帶修掉的熱路徑問題
+
+- `get()` 的深拷貝移到鎖外：一條 300k token 的歷史 JSON 往返要幾十毫秒，放在全局鎖裡會讓所有 `/v1/responses` 排隊（條目發布後不再改寫，鎖外讀安全）；
+- `replay` 只算一遍 `itemCosts` 傳給 `truncateHistoryWithCosts`，不再對同一批 item 重複序列化。
+
+### 71.3 驗證
+
+```text
+gofmt -l . ; go vet ./... ; go build ./...
+go test -count=1 ./...                       # 12 个包全绿
+go test -race -count=1 ./internal/server ./internal/deepai ./internal/store
+```
+
+新增 9 个顶层用例，其中 6 个在旧实现上会红：
+
+- `TestTruncateHistoryDropsOrphanToolOutputs`（孤兒 output 被丟 / 成對調用不被誤刪）
+- `TestTruncateHistoryMarkerFitsBudget`
+- `TestResponsesReplayCountsTools`（tools 挤破窗口 → 400）
+- `TestResponsesFullInputWithPrevIDNotDuplicated`（暗號只出現一次）
+- `TestResponsesReplayReservesMaxOutputTokens`（400 訊息含 `max_output_tokens`，對照組 200）
+- `TestResponsesHistoryChainCompact`（5 輪 × 2k filler：佔用 < 16k，全量存會 ~30k）
+- `TestResponsesHistoryCheckpointSurvivesEviction`（摘掉最舊三條仍可續接）
+- `TestResponsesHistoryBrokenChainIsExplicit`（鏈斷 → 400 且不上游）
+- `TestContextWindowOverridesCached`（同一份環境變數命中緩存，改值即失效）
+
+### 71.4 遗留
+
+- `max_output_tokens` 只在重放路径检查（合成路径目前没有统一的窗口检查点）。
+- `remember` 仍对 output 做一次深拷贝（回應物件可能被后续改写），这一份保留。
+
+### 71.5 结构搬迁（PR-1）：`internal/respstate`
+
+按 `docs/server-split-plan.md` 的 PR-1 把整块歷史暫存搬出 `internal/server`：
+
+| 项 | 内容 |
+| --- | --- |
+| 搬出 | `internal/server/response_history.go`（474 行）→ `internal/respstate/history.go`（774 行，含新逻辑） |
+| 导出面 | `Store` / `Turn` / `Outcome`（`OK` `NotFound` `TooLong`）/ `New` / `NewFromEnv` / `Remember` / `Replay` / `Len` / `InputItems` / `EffectiveContextWindow` / `ItemApproxTokens` |
+| 依赖方向 | `respstate → gateway`（仅取值工具），**不依赖 `internal/server`**，可脱离 HTTP 单测 |
+| 测试拆分 | 单元用例（裁剪 / 估算 / 窗口 / 容量 / 链与检查点）搬进 `internal/respstate/history_test.go`（15 个）；HTTP 端到端留在 `internal/server`（11 个） |
+| 内核变化 | `Server.history *respstate.Store`；`responses.go` 只改 6 处调用；`accounts.go` 无改动 |
+
+搬迁时顺手删掉两个因重构而**再无生产调用**的符号：`Store.get`（`Replay` 改走 `chain` 后无人使用）
+与 `truncateHistory` 薄包装（合并进 `truncateHistoryWithCosts`），避免留下“只有测试在用”的死代码。
+
+数字：`internal/server` 非测试代码 8,008 → **7,557** 行（文件 40 → 39）；
+`internal/respstate` 774 + 525 行测试。
+
+### 71.6 部分重送的去重（后缀重叠）
+
+上一轮只处理“完整重送”：客户只带**歷史尾段** + `previous_response_id` 时仍会重复。
+现在改为按**最大后缀重叠**去重（`historyOverlap`）：
+
+- 重疊必須貼住 base 末尾（`k = len(base)-j` 且 `k <= len(in)`），因此不会把「新回合里重复的同一句话」误判为重送：
+  base 末项是上一轮助手输出、in 首项是 user 讯息，`k=1` 误配窗口极窄；
+- 由前往后扫，第一个命中即最大重疊（完整重送 `k=len(base)` 与前缀判定等价）；
+- 成本两道限：首项比对最多走一遍 base，整段验证最多 16 次；
+- 合并式统一为 `base[:len(base)-k] + in`（`k=0` 时恰好是完整基底）。
+
+用例：`TestHistoryOverlap`（完整/部分/新回合/重复文字不误判）、
+`TestHistoryReplayDedupesResentHistory`（三种输入都得到 5 项，而不是 7 项）、
+`TestResponsesPartialInputWithPrevIDNotDuplicated`（HTTP 级：暗号保留且 “turn 2” 只出现一次）。
+
+---
+
+## 72. 2026-11-20 结构治理 PR-2：抽出 `internal/guard`（限流 / 口令退避 / CORS）
+
+按 `docs/server-split-plan.md` 的 PR-2 落地。与 §71 不同，这一条不是修 bug，
+是**把准入层从 `internal/server` 里切出去**——它是包内少数「只依赖 Store 设置 +
+标准库」的接缝，也是唯一能被单独压测/单测的安全层。
+
+### 72.1 边界与导出面
+
+| 新包文件 | 行 | 导出 | 来源 |
+| --- | --- | --- | --- |
+| `guard/limiter.go` | 193 | `Limiter` / `NewLimiter` / `Allow` / `Gate` / `RateConfig` / `KeyID` / `WriteRateLimited` | `server/ratelimit.go` |
+| `guard/adminauth.go` | 142 | `AdminGuard` / `NewAdminGuard` / `Blocked` / `Failure` / `Success` / `BackoffPolicy` / `DefaultBackoffPolicy` / `ClientIP` / `FreeAttempts` | `server/authguard.go` |
+| `guard/cors.go` | 91 | `Origin` / `InAllowList` / `WriteHeaders` / `IsLoopbackAddr` | `server/cors.go` |
+
+判定逻辑全部变成**纯函数/纯内存态**：设置由调用方传入（`RateConfig`、`configured`
+字符串、`BackoffPolicy`），包内不读 `store.Store`，也不碰路由表。
+
+### 72.2 保留的胶水（server 侧 104 行）
+
+| 文件 | 行 | 职责 |
+| --- | --- | --- |
+| `server/ratelimit.go` | 21 | `rateLimitGate(key)`：把设置翻译成 `guard.RateConfig` 后调 `Limiter.Gate` |
+| `server/authguard.go` | 57 | `adminGuardPolicy`（注入 `adminGuardBase`）/ `checkAdminThrottle`（429 + `Retry-After`）/ 两个 `noteAdminAuth*`（失败日志） |
+| `server/cors.go` | 26 | `withCORS` 中间件：取设置 → `guard.Origin` → `guard.WriteHeaders` |
+
+顺带消掉一处重复实现：`adminSameOrigin` 里手写的「逗号分隔允许列表 + 丢通配符」循环
+与 `corsOrigin` 里的完全同构，现在统一走 `guard.InAllowList`。
+`observability.go` 的访问日志把 `clientIP` 换成 `guard.ClientIP`。
+
+**行为零变更**：CORS 响应头顺序与取值、429 文案与 `Retry-After`（≥1s）、退避曲线
+（5 次免费 → base×2ⁿ 封顶 30s）、`adminGuardBase` 测试注入点全部保持原样。
+
+### 72.3 测试迁移
+
+- 搬进 `internal/guard`：`TestTokenBucketRefill`、`TestTokenBucketSweepsIdleEntries`
+  （改造为公开 API：`NewLimiter` / `Allow`），另新增 11 个单测 —— 令牌桶补充、
+  `Gate` 并发闸门、429 头与响应体、退避曲线与封顶、按 IP 隔离、`BackoffPolicy`
+  归一化、`ClientIP`、CORS 默认/列表/通配符/响应头、回环判定；
+- **原地不动**：`TestRateLimitPerKey`、`TestKeyConcurrencyLimit`、`TestRateLimitSettingsRoundTrip`、
+  `TestAdminPasswordThrottle*`、`TestCORSDefaultsToLoopback` —— 它们是 HTTP 级行为门槛，
+  拆包不该顺带改断言。
+
+### 72.4 验证与数字
+
+```text
+gofmt -l . ; go vet ./... ; go build ./...
+go test -count=1 ./...                    # 12 个包全绿（新增 internal/guard）
+go test -race -count=1 ./internal/guard ./internal/server
+```
+
+| 指标 | 变化 |
+| --- | --- |
+| `internal/server` 非测试 | 7,557 → **7,226** 行（-331） |
+| `internal/server` 文件 | 39（删 3 个，新增 3 个胶水） |
+| `internal/guard` | 426 行 + 311 行测试（13 个用例） |
+| 反向依赖 | 无（`go list -deps ./internal/guard` 不含 `internal/server`） |
+
+### 72.5 遗留
+
+- `internal/httpx` 直接依赖 `internal/store`（为读设置？），所以 `guard` 的**传递**依赖里
+  仍然会出现 `store`/`pool`；直接依赖只有 `deepai` + `httpx`。这层隐式依赖值得单独收一次。
+- 下一步按计划是 **PR-3 `internal/observe`**（`metrics.go` + `observability.go`，688 行），
+  前置动作是先把 `withObservability` / `handleMetrics` / `poolSnapshot` 改成窄接口。
+
+---
+
+## 73. 2026-11-20 结构治理 PR-3：抽出 `internal/observe`（指标 / 中间件）
+
+按 `docs/server-split-plan.md` 的 PR-3 落地。原计划的前置动作是「把
+`withObservability` / `handleMetrics` / `poolSnapshot` 改成窄接口」，实际落地时
+发现**比接口更窄的做法**就够：
+
+- `Middleware(m *Metrics, next http.Handler)` —— 中间件只依赖 `*Metrics`，连 Server 都不需要；
+- `handleMetrics` 需要的号池/日志/车道数字用**值结构** `PromExtra` 传进去，
+  比定义 `LaneSource` / `PoolSnapshotSource` 两个接口更窄（不用 mock、不暴露方法集）；
+- `poolSnapshot()` 仍留在 server（要 `store` + 额度策略），返回 `observe.PoolSnapshot`。
+
+### 73.1 边界与文件
+
+| 新包文件 | 行 | 内容 |
+| --- | --- | --- |
+| `observe/metrics.go` | 379 | `Metrics`（计数器 + 定桶直方图）、`Snapshot` / `MetricsSnapshot`、`HistogramView`、`QuantileMs` / `LatencySummary`、`EndpointLabel` |
+| `observe/exposition.go` | 155 | `WritePrometheus`（Prometheus 文本格式）、`PromExtra`、`PoolSnapshot`、直方图序列化 |
+| `observe/middleware.go` | 146 | request id、访问日志、`Middleware`、`IsStaticAsset` |
+
+server 只剩 **80 行**装配：`poolSnapshot()`（返回 `observe.PoolSnapshot`）与
+`handleMetrics`（方法校验 + 组装 `PromExtra` + 写响应头）。
+
+**直接依赖只有标准库 + `internal/guard`（取来源 IP）+ `internal/logx`**：
+`observe` 不认识 store / 号池 / 协议层，`go list -deps` 确认无反向依赖。
+
+### 73.2 顺带清掉的死代码
+
+`metrics.upstreamLane` 是「只在 `noteUpstreamLane` 里写、从未被读」的镜像：
+`/metrics` 的 `gateway_upstream_lane` 一直取的是 `Server.UpstreamLane()`（权威值）。
+搬迁时删掉这个字段与 `SetUpstreamLane`，`/metrics` 改由 `PromExtra.UpstreamLane`
+取值——口径不变，少一份会漂移的重复状态。
+
+### 73.3 测试迁移
+
+- 搬进 `internal/observe`：`TestHistQuantile`、`TestMetricsRecordsExtras`、
+  `TestStaticAssetsSkipAccessLog`（改名为 `TestIsStaticAsset`）；
+- 新增：`TestMetricsStatefulAndCheckIn`（状态字段与签到口径）、
+  `TestWritePrometheusContract`（指标名 / 标签 / `+Inf` 桶 / 取值，逐条锁定）、
+  `TestEndpointLabel`；
+- server 侧：`s.metrics.statefulReject.Load()` 这类**内部字段访问**改成
+  `s.metrics.Snapshot().Stateful["rejected"]`；签到计数改用 `ObserveCheckIn` 驱动；
+  测试里用的 `itoa64` 换成 `strconv.Itoa`。
+
+### 73.4 验证与数字
+
+```text
+gofmt -l . ; go vet ./... ; go build ./...
+go test -count=1 ./...                       # 13 个包全绿（新增 internal/observe）
+go test -race -count=1 ./internal/observe ./internal/server
+```
+
+| 指标 | 变化 |
+| --- | --- |
+| `internal/server` 非测试 | 7,226 → **6,607** 行（-619） |
+| `internal/server` 文件 | 39 → **38**（`metrics.go` 整文件删除，`observability.go` 变装配层） |
+| `internal/observe` | 680 行 + 178 行测试（6 个用例） |
+
+### 73.5 遗留
+
+- `handleMetrics` 仍直接读 `s.Store.Stats()` / `s.Store.Keys()`：这三个数字很小，
+  留在装配层比再抽一层值类型更划算。
+- 下一步是 **PR-4 `internal/poolsvc`**（`probe.go` / `enroll.go` / `sticky.go` /
+  `proxypool.go` / `accounts.go` / `warmup.go`，约 1,012 行），它要搬并发原语，
+  以 `-race` 为硬门槛。
+
+---
+
+## 74. 2026-11-20 结构治理 PR-4：抽出 `internal/poolsvc`（号池运行时）
+
+按 `docs/server-split-plan.md` 的 PR-4 落地，这是四步里唯一搬运**并发原语**的一步。
+
+### 74.1 边界：谁搬走、谁留下
+
+| 搬进 `internal/poolsvc` | 行 | 留在 `internal/server` |
+| --- | --- | --- |
+| `slots.go` 在途槽位（in-flight / Pick / 响应体归还） | 133 | `pool_errors.go`：`errAllAccountsBusy` / `blockedReason` / `noAccountError` —— 这是**响应文案**，不是调度 |
+| `probe.go` 配额探测（去重 / 批量 / 按需 / 后台守护） | 396 | `quotaStaleAfter` 常量（调度与探测共用的阈值口径） |
+| `enroll.go` 入池 / 邮箱验证 / 0 额度复探 | 158 | `holdResponseBody`（HTTP 空闲超时） |
+| `sticky.go` 会话粘性（affinity → 账号） | 154 | `clientFor`（按代理缓存的客户端工厂，**注入**给 poolsvc） |
+| `proxypool.go` 入池代理池 | 38 | `lifecycle.Close`（编排：停后台 → flush 绑定 → 关空闲连接） |
+| `warmup.go` 启动预热 | 76 | — |
+| `poolsvc.go` Service / Config / Close / Wait | 168 | — |
+
+`Service` 的注入面只有三项：
+
+```go
+type Config struct {
+    Store     *store.Store
+    ClientFor func(*deepai.Account) *deepai.Client // 含代理缓存
+    Save      func() error                         // 落盘（server 决定日志策略）
+}
+```
+
+原计划里 `Pick` 之类的「能力函数」最终没做成回调——它们本来就是 poolsvc 自己的
+状态操作，做了反而是把内部逻辑倒着注入回去。
+
+### 74.2 状态迁移
+
+`Server` 从 36 个扁平字段降到 **23 个**：`inflightMu/inflight`、`probeMu/probing/probeSem`、
+`quotaWG`、`stopCh/stopOnce`、`stickyMu/sticky/stickyDirty`、`quotaReprobeDelays`、
+`enrollPoolOnce/enrollPool` 全部搬进 `Service`，`Server` 只保留 `Pool *poolsvc.Service`。
+
+顺带把 `sleepOrStop` / `stopped()` 一起搬走（它们只服务入池复探的退避睡眠），
+`Server.Close` 变成三步编排：`Pool.Close(ctx)` → `Pool.FlushSticky()` → `closeIdleConnections()`。
+
+### 74.3 对外可见的注入点
+
+| 符号 | 用途 |
+| --- | --- |
+| `QuotaGuardInterval` / `QuotaGuardBatch` | 后台守护节奏（`tasks.go` 直接用） |
+| `GuardStaleAfter` / `MaxCheckinBatch` | 过旧阈值 / 单批探测上限 |
+| `MaxInFlightPerAccount` / `StickyMax` / `StickyTTL` | 容量与 TTL（控制台与测试引用） |
+| `NeedsRefresh` / `SortByDue` / `PositiveQuota` / `AllowanceFromEnroll` | 纯函数，`/health`、overview 与入池共用同一口径 |
+| `Probing()` / `InFlight()` / `Bindings()` / `Wait()` | 观测与测试收尾（替代直接摸 `probeMu` / `quotaWG`） |
+| `SetQuotaReprobeDelays` | 测试注入毫秒级退避；排查时可临时关掉入池后复探 |
+
+### 74.4 测试迁移
+
+- 机械替换：`s.pickFreeAccount/acquireAccount/releaseAccount/stickyAccount/bindSticky/
+  dropSticky/FlushSticky/probeBatch/probeAsync/claimProbe/Wait…` → `s.Pool.*`；
+- **内部字段访问**改成公开观测口：`len(s.probing)` → `s.Pool.Probing()`、
+  `s.inflightMu/inflight` → `s.Pool.InFlight()`、`s.StickyBindings()` → `s.Pool.Bindings()`；
+- 白盒用例搬进 `internal/poolsvc/poolsvc_test.go`：`TestCloseWaitsForProbes`（用
+  `quotaWG` 登记一笔假工作）、`TestCloseInterruptsBackoff`（1 小时退避被打断）、
+  `TestStickyExpired`（过期绑定顺手清除）；
+- 「载入时剔除过期绑定」仍留在 server（它通过旁路文件构造数据），改用
+  `poolsvc.StickyTTL` 生成过期时间戳。
+
+### 74.5 验证与数字
+
+```text
+gofmt -l . ; go vet ./... ; go build ./...
+go test -count=1 ./...                     # 14 个包全绿（新增 internal/poolsvc）
+go test -race -count=1 ./internal/poolsvc ./internal/server
+```
+
+| 指标 | 变化 |
+| --- | --- |
+| `internal/server` 非测试 | 6,607 → **5,610** 行（-997） |
+| `internal/server` 文件 | 38 → **33**（6 个整文件搬走，新增 1 个错误文案文件） |
+| `Server` 字段 | 36 → **23** |
+| `internal/poolsvc` | 1,123 行 + 68 行白盒测试 |
+| 反向依赖 | 无（`go list -deps ./internal/poolsvc` 不含 `internal/server`） |
+
+### 74.6 遗留
+
+- `admissionWait`（全忙排队上限）仍在 server：它和 HTTP 超时预算绑在一起，属准入策略。
+- `clientFor` 的代理缓存仍在 server：poolsvc 只需要一个「按出口取客户端」的函数值。
+- PR-5（`relay` / `adminapi`）按计划**暂缓**：拆完的收益主要是包边界好看，
+  代价是给 handler 造一个 30+ 字段的 Config。

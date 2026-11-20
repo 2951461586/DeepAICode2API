@@ -54,7 +54,7 @@ func TestLoginPollAssignsMachineID(t *testing.T) {
 		t.Fatal("浏览器登录入池未分配独立机器指纹")
 	}
 	// 入池会起一个后台探活：等它落盘完再返回，否则 TempDir 清理会与写入撞上。
-	s.waitQuotaReprobe()
+	s.Pool.Wait()
 }
 
 // 浏览器登录入池时若配置了代理池（PROXY_POOL / PROXY_POOL_FILE），要按轮询
@@ -99,7 +99,7 @@ func TestLoginPollAssignsProxyFromPool(t *testing.T) {
 	if a1.Proxy == a2.Proxy {
 		t.Fatalf("代理池应轮询到不同出口，实际都是 %q", a1.Proxy)
 	}
-	s.waitQuotaReprobe()
+	s.Pool.Wait()
 }
 
 // 假上游：兑换 code，其余路径按需响应。
@@ -185,7 +185,7 @@ func TestLoginCallbackPasteCompletesLogin(t *testing.T) {
 	}
 	// 入池的探活 goroutine 会 Save() 落盘：等它收尾，否则 TempDir 清理会报
 	// “directory not empty”（CI 上的 -race 更容易命中）。
-	s.waitQuotaReprobe()
+	s.Pool.Wait()
 
 	// code 是一次性的：同一个 code 再粘一次不能重复入池。
 	again := do(t, s, http.MethodPost, "/admin/api/login/callback", "",

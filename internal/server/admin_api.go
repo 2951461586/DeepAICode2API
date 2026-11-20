@@ -10,6 +10,8 @@ import (
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
+	"deepaicode2api/internal/observe"
+	"deepaicode2api/internal/poolsvc"
 	"deepaicode2api/internal/registry"
 	"deepaicode2api/internal/store"
 )
@@ -45,7 +47,7 @@ func accountView(a *deepai.Account) map[string]any {
 		"theos": a.Theos,
 		// quota_age 是额度快照的年龄（秒）；quota_due 表示按需复探会去刷新它。
 		"quota_age": age,
-		"quota_due": quotaNeedsRefresh(a, time.Now(), quotaStaleAfter),
+		"quota_due": poolsvc.NeedsRefresh(a, time.Now(), quotaStaleAfter),
 	}
 }
 
@@ -60,17 +62,17 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	settings := s.Store.Settings()
 	total, ready := s.Store.AccountCounts()
-	snap := s.metrics.snapshot()
+	snap := s.metrics.Snapshot()
 	byEndpoint := make(map[string]map[string]float64, len(snap.ByEndpoint))
 	for ep, hist := range snap.ByEndpoint {
-		byEndpoint[ep] = latencySummary(hist)
+		byEndpoint[ep] = observe.LatencySummary(hist)
 	}
 	checkinStats := map[string]any{
 		"attempts": snap.CheckInStats["attempts"],
 		"blocked":  snap.CheckInStats["blocked"],
 		"timeouts": snap.CheckInStats["timeouts"],
-		"p50_ms":   quantileMs(snap.CheckIn, 0.50),
-		"p95_ms":   quantileMs(snap.CheckIn, 0.95),
+		"p50_ms":   observe.QuantileMs(snap.CheckIn, 0.50),
+		"p95_ms":   observe.QuantileMs(snap.CheckIn, 0.95),
 	}
 	writeJSONCached(w, r, http.StatusOK, map[string]any{
 		"accounts":       total,
@@ -90,7 +92,7 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 		"lane_upstream": s.UpstreamLane(),
 		"lane_drift":    s.LaneDrift(),
 		// 运行健康：延迟分位、签到、兜底与上游错误码（metrics.go）。
-		"latency":             latencySummary(snap.Latency),
+		"latency":             observe.LatencySummary(snap.Latency),
 		"latency_by_endpoint": byEndpoint,
 		"checkin":             checkinStats,
 		"fallback_total":      snap.Fallback,

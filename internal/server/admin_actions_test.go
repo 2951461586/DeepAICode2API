@@ -55,7 +55,7 @@ func TestAdminActionManualThenToggleClearRemove(t *testing.T) {
 	if !acct.Enabled {
 		t.Fatal("新账号默认应启用")
 	}
-	s.waitQuotaReprobe() // 等异步探活收尾，避免和 TempDir 清理竞争
+	s.Pool.Wait() // 等异步探活收尾，避免和 TempDir 清理竞争
 
 	// toggle：启用状态翻转。
 	if rec := do(t, s, http.MethodPost, "/admin/api/accounts", "",

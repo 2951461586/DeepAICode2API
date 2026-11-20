@@ -12,11 +12,7 @@ import (
 )
 
 // inflightCount 读取当前在途账号槽位数（仅测试用）。
-func inflightCount(s *Server) int {
-	s.inflightMu.Lock()
-	defer s.inflightMu.Unlock()
-	return len(s.inflight)
-}
+func inflightCount(s *Server) int { return s.Pool.InFlight() }
 
 // TestShapeFallbackRetryKeepsIdleTimeoutGuard 覆盖「请求体形状回退」这条 2xx 返回路径。
 //

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"deepaicode2api/internal/guard"
 	"deepaicode2api/internal/store"
 )
 
@@ -37,7 +38,7 @@ func TestAdminPasswordThrottle(t *testing.T) {
 	setAdminPassword(t, s, "s3cret")
 
 	const ip = "127.0.0.1:34567" // newTestServer 的默认来源
-	for i := 0; i < adminAuthFreeAttempts; i++ {
+	for i := 0; i < guard.FreeAttempts; i++ {
 		if code := hit(s, ip, "wrong"); code != http.StatusUnauthorized {
 			t.Fatalf("第 %d 次错误口令应回 401，实际 %d", i+1, code)
 		}
@@ -74,7 +75,7 @@ func TestAdminPasswordThrottlePerIP(t *testing.T) {
 	setAdminPassword(t, s, "s3cret")
 
 	const attacker = "10.0.0.9:1234"
-	for i := 0; i < adminAuthFreeAttempts+2; i++ {
+	for i := 0; i < guard.FreeAttempts+2; i++ {
 		hit(s, attacker, "wrong")
 	}
 	if code := hit(s, attacker, "s3cret"); code != http.StatusTooManyRequests {

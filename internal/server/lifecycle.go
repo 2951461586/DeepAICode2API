@@ -2,8 +2,6 @@ package server
 
 import (
 	"context"
-	"log"
-	"time"
 
 	"deepaicode2api/internal/deepai"
 )
@@ -21,48 +19,13 @@ import (
 //   - 等待 quotaWG（以 ctx 为上限，超时只记日志，不阻塞退出）；
 //   - 关闭各出口的空闲连接，避免进程退出时留下半开连接。
 func (s *Server) Close(ctx context.Context) {
-	s.stopOnce.Do(func() {
-		if s.stopCh != nil {
-			close(s.stopCh)
-		}
-	})
-
-	done := make(chan struct{})
-	go func() {
-		s.quotaWG.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		// 退出流程不能无限等：探测本身有 20s 超时，这里通常不会命中。
-		log.Printf("[shutdown] 后台任务未在期限内收尾，继续退出（未落盘的探测结果会丢失）")
-	}
+	// 停止后台任务并等待已排期的落盘收尾（打断复探退避 + 等 quotaWG）。
+	s.Pool.Close(ctx)
 
 	// 粘性绑定攒批写盘，退出前必须补一次（否则重启后所有会话重新学一遍）。
-	s.FlushSticky()
+	s.Pool.FlushSticky()
 
 	s.closeIdleConnections()
-}
-
-// stopped 返回停止信号通道（Close 时关闭）。
-//
-// 可能为 nil（零值 Server，主要出现在测试里），调用方必须容忍。
-func (s *Server) stopped() <-chan struct{} { return s.stopCh }
-
-// sleepOrStop 等待 d，收到停止信号时返回 false。
-func (s *Server) sleepOrStop(d time.Duration) bool {
-	if d <= 0 {
-		return true
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-s.stopped():
-		return false
-	case <-timer.C:
-		return true
-	}
 }
 
 // closeIdleConnections 关闭所有上游客户端（含各出口代理客户端）的空闲连接。
