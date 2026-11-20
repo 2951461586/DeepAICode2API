@@ -126,10 +126,10 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 | --- | --- | ---: | ---: | ---: | --- |
 | `deepai-cyber` | DeepAI Cyber | 320,000 | 131,072 | **0** | 免费，纯文本 |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 320,000 | 131,072 | **0** | 免费（上游下拉是 `DeepSeek V4.1 Flash 1017`，桌面端会把旧名改写成它） |
-| `glm-5.3-flash` | GLM 5.3 Flash | 320,000 | 131,072 | **0** | 免费，默认模型 |
-| `glyph-cluster` | Glyph Cluster | 256,000 | 131,072 | **0** | 免费，纯文本 |
+| `glm-5.3-flash` | GLM 5.3 Flash | 320,000 | 131,072 | **0** | 免费，默认模型；實測 320k 完整（見下方「有效上下文上限」） |
+| `glyph-cluster` | Glyph Cluster | 256,000 | 131,072 | **0** | 免费，纯文本；實測上限 **256k**（260k 完整、320k 硬拒絕） |
 | `gpt-6-luna` | GPT-6 Luna | 320,000 | 128,000 | **0** | 免费 |
-| `mimo-2.6-flash` | MiMo 2.6 Flash | 320,000 | 131,072 | **0** | 免费 |
+| `mimo-2.6-flash` | MiMo 2.6 Flash | 320,000 | 131,072 | **0** | 免费；實測上限 **140k**（170k 起上游靜默截斷，網關提前裁剪） |
 | `mimo-2.6-pro` | MiMo 2.6 Pro | 320,000 | 131,072 | **0** | 免费 |
 | `minimax-m3.1-flash` | MiniMax M3.1 Flash | 320,000 | 131,072 | **0** | 免费 |
 | `muse-ember` | Muse Ember | 320,000 | 131,072 | **0** | 免费（2026-11-14 新增） |
@@ -204,22 +204,66 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 | POST | `/v1/messages` | 流式 / 非流式，支持 `tool_use`、`thinking`、图片 |
 | POST | `/v1/messages/count_tokens` | 本地估算（上游不提供） |
 
-#### 上下文契约：网关是**无状态**的
+#### 上下文契约：`/v1/responses` 伺服端歷史暫存（链式续接）
 
-三套协议都按「调用方每轮发完整历史」工作（和桌面端一致）：网关不存对话，
-也不会替你补上一轮。具体到 `/v1/responses`：
+三套协议中，`/v1/chat/completions` 与 `/v1/messages` 仍按「调用方每轮发完整历史」工作
+（和桌面端一致）：网关不存对话，也不会替你补上一轮。但 `/v1/responses` 自 2026-11-20
+起支持**伺服端對話歷史暫存 + 重放**，解决反代 / magpie 插件客户端攜帶
+`previous_response_id` 續接时的「失忆」问题：
 
-- `openai-responses` 模型（如 `gpt-6-astra`）：请求**原样透传**到上游
-  `/responses`，`previous_response_id` / `conversation` 能否续接取决于上游
-  （2026-11-19 该模型持续 429，尚未验证；桌面端自身从不使用链式续接）；
-- 其余模型：网关把 `input` 翻译成 chat messages。此时**凡是依赖上游保存状态
-  的请求会直接返回 400 `unsupported_parameter`**，而不是静默丢掉上下文：
-  `previous_response_id`、`conversation`、`input` 里的 `item_reference`。
-  修法：把完整历史放进 `input` 重发，或改用透传模型。
+- **其余模型（chat/completions 合成路径，如 `glm-5.3-flash`）**：每轮 `/v1/responses`
+  回應完成後，网关把该轮的 input 与 output 存进进程内暫存（按 response id 索引）。
+  下一轮帶 `previous_response_id` 时，网关沿鏈重組完整 input 再送上游——客户端无需
+  自己维护历史，链式续接不再回 400，也不会失忆。新回應有自己的 id，可继续链接。
+  - **暫存上限**：默认 TTL 24 小时、每个进程最多 500 轮，可用环境变量调整：
+    - `DEEPAI2API_HISTORY_TTL_HOURS`（默认 `24`）
+    - `DEEPAI2API_HISTORY_MAX_ENTRIES`（默认 `500`）
+  - **有效上下文上限（按模型實測值，避免上游靜默丟歷史）**：2026-11-20 把 11 個
+    免費模型全部實測（純透傳 + 唯一隨機 ASCII 階梯，附多輪對照），有效窗口按模型查表：
+    - **9 個免費模型**：`glm-5.3-flash`、`deepseek-v4.1-flash`、`qwen-3.8-flash`、
+      `minimax-m3.1-flash`、`muse-ember`、`solar-mini-4`、`gpt-6-luna`、
+      `mimo-2.6-pro`、`deepai-cyber` → **320,000**（等於標示值，不再人為砍到 120k）。
+    - **`glyph-cluster` → 256,000**（260k 完整，320k 被上游硬拒絕 400，目錄標 256k 一致）。
+    - **`mimo-2.6-flash` → 140,000**（140k 完整，170k 起上游「靜默截斷」：
+      `prompt_tokens` 掉到 5,296 ≈ 3%；上限落在 140k–170k，保守取 140k）。
+    - 未知／付費模型 → `min(標示值, 320,000)`，不再一律硬壓 120k。
+    - 網關重放時若超過各模型的有效窗口，先由網關裁剪並在 input 留下
+      「中間歷史已省略」標記，也不讓上游偷偷砍歷史。
+    - **環境變數覆寫**（排查／臨時調整用）：
+      - `DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW`：全域覆寫（舊行為保留）。如 `64000`；
+        設 `0`／負數關閉上限。優先權最高。
+      - `DEEPAI2API_CONTEXT_WINDOWS`：按模型 JSON 覆寫，例如
+        `{"mimo-2.6-flash":140000,"glm-5.3-flash":320000}`（值 `0`／負數 = 該模型不設上限，
+        JSON 格式錯誤則忽略）。優先權低於全域覆寫、高於內建實測表。
+    - 單發探測（不鏈式）實測：唯一隨機 ASCII 160,000 bytes → 上游
+      `input_tokens=100,761`（比值約 1.59 tokens/byte）；重複填充會被前綴快取，
+      `input_tokens` 不可作為窗口判斷依據。
+  - **自動上下文壓縮（`truncation`）**：重放整條鏈後若超過有效窗口（見上）：
+    - `"truncation":"auto"`：網關自動裁掉最舊的**中段**輪次（保留開頭系統/首則訊息
+      與最近的可容納範圍，並插入一則「中間歷史已省略」說明），照常送上游。
+    - 未設或 `"default"`：回明確 400 `invalid_request_error`，訊息寫明 token 估算與
+      有效窗口/標示值，並提示「請由客戶端壓縮歷史，或改用 `truncation:auto`」。
+      **绝不靜默砍歷史**——那正是「失憶」的根源。
+    - token 估算：ASCII 按 ~1.6 bytes/token、非 ASCII 按 ~1 token/字粗估
+      （實測與上游 `input_tokens` 偏差在 ±30% 內）；只在上限判斷時計算，
+      正常情況零額外開銷。
+  - **生命周期**：进程内存储，**重启后历史清空**。重启后客户端若仍帶旧的
+    `previous_response_id`，网关找不到记录会回 400 `unsupported_parameter`——
+    此时客户端应重新发送完整 `input`（或在重启后先开新对话）。
+  - 仍**不支持**：`conversation`（服务端会话）与 `input` 里的 `item_reference`
+    ——它们依赖上游保存的状态，网关无从重建，会回明确的 400 `unsupported_parameter`。
+- **`openai-responses` 模型（如 `gpt-6-astra`）**：请求**原样透传**到上游 `/responses`，
+  `previous_response_id` / `conversation` 能否续接取决于上游
+  （2026-11-19 该模型持续 429，尚未验证；桌面端自身从不使用链式续接）。
+
+**受益的客户端用法**：任何在「同一視窗」连续多轮、且依赖服务端状态的 Responses 客户端
+（典型是 Claude Code / Codex 经反代、magpie 插件反代）——现在可以放心用
+`previous_response_id` 续接，不必每轮重发整段历史。非链式用法（每轮 `input` 直接带
+完整历史）行为不变，不会回歸。
 
 排障：请求日志（控制台日志页「消息」列 / `<数据文件>-logs.jsonl` 的 `messages`、
 `system` 字段）记录每次请求回喂的消息条数与是否带系统提示，不含正文——
-条数 1 通常说明调用方只发了本轮。
+链式续接时该条数会随轮次增长，说明历史确实被重放。
 
 Claude Code 只需：
 
@@ -362,6 +406,10 @@ print(client.chat.completions.create(
 | `PROXY_POOL` | 推理代理池（逗号或换行分隔完整 URL；入池时按账号轮询分配） |
 | `PROXY_POOL_FILE` | 代理池文件（每行一个） |
 | `DEEPAI2API_ENV_FILE` | 指定 `.env` 路径 |
+| `DEEPAI2API_HISTORY_TTL_HOURS` | `/v1/responses` 伺服端歷史暫存存活小時數（默认 `24`） |
+| `DEEPAI2API_HISTORY_MAX_ENTRIES` | `/v1/responses` 伺服端歷史暫存最多輪次（默认 `500`） |
+| `DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW` | 重放有效上下文上限的全域覆寫（优先級最高；默认按模型查表，見上方上下文契約；`0`/負數關閉） |
+| `DEEPAI2API_CONTEXT_WINDOWS` | 按模型覆寫有效上下文上限，JSON 物件如 `{"mimo-2.6-flash":140000}`（值 `0`/負數 = 該模型不設上限；格式錯誤忽略） |
 | `T3CODE_HOME` / `DEEPAI_CODE_HOME` | 桌面端数据目录 |
 
 ### 诊断工具

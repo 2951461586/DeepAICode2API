@@ -45,20 +45,44 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	rls := s.newReqLog(key, nil, model.ID, "responses", stream, start, promptLen).withHistory(payload)
 	if p := statefulParam(payload); p != "" {
-		// 依赖上游保存的响应状态：合成路径无法重建，必须明说；透传路径
-		// 原样交给上游（能不能续接由上游决定），但留一条日志。
-		if !model.IsResponses() {
+		// previous_response_id：合成路徑現在透過伺服端歷史暫存重放上下文，
+		// 不再直接回 400（那是「失憶」的根因）。重放失敗才退回明確 400。
+		// conversation / item_reference 需要上游保存的服務端會話/條目，
+		// 網關無從重建，保留明確 400 並在文件寫清楚。
+		if !model.IsResponses() && p == "previous_response_id" {
+			prevID := strOf(payload["previous_response_id"])
+			outcome, msg := s.history.replay(payload, prevID, model.ID, model.ContextWindow)
+			switch outcome {
+			case replayNotFound:
+				s.metrics.addStateful(p, true)
+				httpx.WriteErr(w, http.StatusBadRequest,
+					(&statefulParamError{Param: p}).Error(), "unsupported_parameter")
+				return
+			case replayTooLong:
+				s.metrics.addStateful(p, true)
+				httpx.WriteErr(w, http.StatusBadRequest, msg, "invalid_request_error")
+				return
+			}
+			s.metrics.addStateful(p, false) // 已重放，視為成功續接
+			logx.Info("Responses 歷史重放成功", "model", model.ID, "prev", prevID)
+		} else if !model.IsResponses() {
 			s.metrics.addStateful(p, true)
 			httpx.WriteErr(w, http.StatusBadRequest,
 				(&statefulParamError{Param: p}).Error(), "unsupported_parameter")
 			return
+		} else {
+			s.metrics.addStateful(p, false)
+			logx.Warn("上游 /responses 透傳帶狀態字段：續接能力取決於上游",
+				"param", p, "model", model.ID)
 		}
-		s.metrics.addStateful(p, false)
-		logx.Warn("上游 /responses 透传带状态字段：续接能力取决于上游",
-			"param", p, "model", model.ID)
+	}
+	// 記錄本輪「送出前的輸入快照」，回應完成後連同輸出寫入暫存。
+	turn := &responseTurn{
+		input:        responsesInputArray(payload),
+		instructions: strOf(payload["instructions"]),
 	}
 	if model.IsResponses() {
-		s.passthroughResponses(w, r, payload, affinity, rls)
+		s.passthroughResponses(w, r, payload, affinity, rls, turn)
 		return
 	}
 
@@ -68,14 +92,14 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if stream {
-		s.streamResponsesAsChat(w, r, chatPayload, affinity, rls)
+		s.streamResponsesAsChat(w, r, chatPayload, affinity, rls, turn)
 		return
 	}
-	s.blockingResponsesAsChat(w, r, chatPayload, affinity, rls)
+	s.blockingResponsesAsChat(w, r, chatPayload, affinity, rls, turn)
 }
 
 // passthroughResponses 透传上游 /responses。
-func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
+func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog, turn *responseTurn) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
@@ -116,6 +140,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 		rewriteResponsesModel(out, rl.model)
 		usage := parseUsage(out["usage"])
 		outLen := responsesTextLen(out)
+		s.rememberResponse(turn, out)
 		encoded, _ := json.Marshal(out)
 		rl.done(outLen, usage, nil)
 		httpx.WriteRawJSON(w, http.StatusOK, encoded)
@@ -124,8 +149,9 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 
 	sw := newSSEWriter(w)
 	var (
-		usage  Usage
-		outLen int
+		usage     Usage
+		outLen    int
+		finalResp map[string]any
 	)
 	streamErr := forEachSSEFrame(resp.Body, func(f sseFrame) bool {
 		if f.Event != "" {
@@ -146,6 +172,12 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 			return true
 		}
 		rewriteResponsesModel(obj, rl.model)
+		// 記住最終 response 物件（含 id / output）：串流重放的依據。
+		if strOf(obj["type"]) == "response.completed" {
+			if respObj, ok := obj["response"].(map[string]any); ok {
+				finalResp = respObj
+			}
+		}
 		if respObj, ok := obj["response"].(map[string]any); ok {
 			if u := parseUsage(respObj["usage"]); u.TotalTokens > 0 || u.Cost > 0 {
 				usage = u
@@ -169,11 +201,14 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 			sw.event("error", payload)
 		}
 	}
+	if streamErr == nil {
+		s.rememberResponse(turn, finalResp)
+	}
 	rl.done(outLen, usage, streamErr)
 }
 
 // blockingResponsesAsChat 用 Chat Completions 合成 Responses 响应。
-func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog) {
+func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog, turn *responseTurn) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
@@ -188,12 +223,13 @@ func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request,
 	usage := parseUsage(out["usage"])
 	outLen := responsesTextLen(respObj)
 
+	s.rememberResponse(turn, respObj)
 	rl.done(outLen, usage, nil)
 	httpx.WriteJSON(w, http.StatusOK, respObj)
 }
 
 // streamResponsesAsChat 用 Chat Completions 流合成 Responses 事件流。
-func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog) {
+func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog, turn *responseTurn) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
@@ -246,10 +282,25 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 		gen.fail(streamErr)
 	}
 	gen.complete(usage)
+	s.rememberResponse(turn, gen.finalResponse)
 	rl.done(outLen, usage, streamErr)
 }
 
 // --- 工具函数 ---
+
+// rememberResponse 從最終 Responses 物件取出 id / output 寫入歷史暫存。
+// 只有成功完成（有 id 與 output）的回應才會被記住。
+func (s *Server) rememberResponse(turn *responseTurn, resp map[string]any) {
+	if resp == nil || s.history == nil {
+		return
+	}
+	id := strOf(resp["id"])
+	output, _ := resp["output"].([]any)
+	if id == "" || len(output) == 0 {
+		return
+	}
+	s.history.remember(turn, id, output)
+}
 
 // rewriteResponsesModel 把 Responses 对象 / 事件里的 model 改为对外模型名。
 func rewriteResponsesModel(obj map[string]any, publicModel string) {

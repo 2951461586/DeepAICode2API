@@ -116,6 +116,10 @@ type Server struct {
 	// shapeNeed 记忆「哪些调用方需要桌面端形状」（见 shape.go）。
 	shapeMu   sync.Mutex
 	shapeNeed map[string]time.Time
+
+	// history 是 /v1/responses 的伺服端對話歷史暫存（見 response_history.go）。
+	// 讓 previous_response_id 在無狀態合成路徑上也能續接，而非回 400 造成失憶。
+	history *responseHistory
 }
 
 // New 构造服务。
@@ -133,6 +137,7 @@ func New(st *store.Store) *Server {
 		adminGuard:         newAdminGuard(),
 		metrics:            newMetrics(),
 		sticky:             map[string]store.StickyBinding{},
+		history:            newResponseHistoryFromEnv(),
 	}
 	// 上次探测到的车道优先（跨重启保留）；CurrentLane 会区分「本次构建验证过
 	// 的探测值」与「旧版本残留」，后者才用较新的编译期默认值兜底。
