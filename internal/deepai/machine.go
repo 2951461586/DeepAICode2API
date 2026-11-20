@@ -114,10 +114,10 @@ func detectMachineRaw() string {
 			}
 		}
 	case "linux":
-		// 0.3.41 桌面端只用 systemd machine-id（0.3.37 起未变；无 root 读不到固件 UUID）：
+		// 0.3.41 / 0.3.42 桌面端只用 systemd machine-id（0.3.37 起未变；无 root 读不到固件 UUID）：
 		// /etc/machine-id → /var/lib/dbus/machine-id，要求 32 位小写 hex 且非全 0。
 		// 早前版本先读 /sys/class/dmi/id/product_uuid，但固件占位值会返回一个
-		// 不稳定的指纹（桌面端早已不用），这里与 0.3.41 对齐。
+		// 不稳定的指纹（桌面端早已不用），这里与 0.3.42 对齐。
 		for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
 			if b, err := os.ReadFile(path); err == nil {
 				if id := parseLinuxMachineID(string(b)); id != "" {
@@ -144,7 +144,7 @@ func parseUUID(s string) string {
 
 // parseLinuxMachineID 校验 systemd machine-id：32 位小写 hex，且不能是全 0。
 //
-// 与桌面端 parseLinuxMachineId 同义（0.3.41 未变）：全 0 是未初始化标志，
+// 与桌面端 parseLinuxMachineId 同义（0.3.41 / 0.3.42 未变）：全 0 是未初始化标志，
 // 不能当作稳定指纹。
 func parseLinuxMachineID(raw string) string {
 	id := strings.ToLower(strings.TrimSpace(raw))

@@ -53,6 +53,8 @@ const (
 	//   2. 车道探测（打 `/models`）再也分不出当前车道，也发现不了上游已抬到 8 ——
 	//      只能靠 `/theos` 的 lane_version，见 Client.LaneHook 与
 	//      internal/server 的 UpstreamLane / LaneDrift。
+	//
+	// 2026-11-20 复核 0.3.42：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
 	LaneVersion = "7"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
@@ -65,7 +67,16 @@ const (
 	// 错误页、Sentry 用户上下文、历史备份 20 KB 截断与 `sessions/save_records`
 	// 增量快照、pi stderr 诊断、长会话压缩预算、Git Bash 探测（`T3CODE_GIT_CYGPATH`）。
 	// 只有心跳里的版本号需要跟上，否则 /theos 上自报的是旧客户端。
-	AppVersion = "0.3.41"
+	//
+	// 0.3.41 → 0.3.42（2026-11-19T07:44Z 发布）是**纯客户端版本号变更**：
+	// `src/deepai/*.ts` 全部零改动（`api.ts` / `DeepAIAccount.ts` / `machineId.ts` /
+	// `apiOrigin.ts` / `localTransport.ts` / `modelTransportPolicy.ts` /
+	// `historySnapshot.ts` 等），`DEEPAI_LANE_HEADERS` 仍是 `Theos: "7"`，端点集合、
+	// 聊天请求体、beacon 形态全未变；内置 pi 运行时仍是 `pi-ai 1.3.0` 且
+	// `openai-completions.js` 字节级一致。312 个 diff hunk 全落在客户端内部
+	// （agent 工具调用 / subagent、pi 进程退出码、日志目录、自更新能力、Git Bash
+	// 命令解析），不进 wire protocol。见 `docs/changes.md` §69。
+	AppVersion = "0.3.42"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。
@@ -452,13 +463,20 @@ func (a *Account) KeyID() string { return KeyFingerprint(a.APIKey) }
 func (a *Account) SessionID() string { return ShortHash(a.APIKey) }
 
 // DefaultModelEntry 是目录不可用时的内置兜底条目。
+//
+// 字段取 2026-11-20 线上 `/models` 里 glm-5.3-flash 的实测值：
+// `contextWindow 320,000` / `maxTokens 131,072` / `theosPerRequest "0"` /
+// `input [text,image]` / `reasoning true`。兜底只用在「首次启动尚未拉到目录」
+// 与「目录刷新失败」两种情形，值必须与上游一致 —— 早前写死 `1,048,576`
+// 会让客户端按 1M 上下文组请求，实际被上游拒（车道 7 起全目录收敛到 320,000）。
 func DefaultModelEntry() Model {
 	return Model{
-		ID:            DefaultModel,
-		Name:          "GLM 5.3 Flash",
-		Reasoning:     true,
-		Input:         []string{"text", "image"},
-		ContextWindow: 1048576,
-		MaxTokens:     131072,
+		ID:              DefaultModel,
+		Name:            "GLM 5.3 Flash",
+		Reasoning:       true,
+		Input:           []string{"text", "image"},
+		ContextWindow:   320000,
+		MaxTokens:       131072,
+		TheosPerRequest: "0",
 	}
 }

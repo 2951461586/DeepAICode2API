@@ -15,7 +15,8 @@ const DefaultSystemPrompt = "You are a helpful AI assistant. Answer the user's r
 // 仅在上游以 “This request is not one DeepAI Code sends.” 拒绝后作为兜底
 // 重试使用；正常路径仍然透传客户端的原始字段。
 //
-// 实测桌面端（0.3.20，2026-11-18 用 0.3.41 复核；pi 运行时同为 1.3.0，请求体形状未变）
+// 实测桌面端（0.3.20，2026-11-18 用 0.3.41、2026-11-20 用 0.3.42 复核；pi 运行时同为
+// 1.3.0 且 `openai-completions.js` 字节级一致，请求体形状未变）
 // 每个 chat 请求发的是：
 //
 //	model / messages / stream / stream_options / store=false /

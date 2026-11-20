@@ -23,6 +23,8 @@
 | v0.1.7 | 66 | 客户端 0.3.41 同步：车道 6 → 7（唯一协议面变更）+ `sessions/save_records` 登记 |
 | v0.1.8 | 67 | 上游放宽车道门槛（≤7 全通）：车道漂移观测、Anthropic 出错即终止、缓存用量三处补齐、会话粘性落到账号 |
 | v0.1.9 | 68 | issue #5 上下文/失忆：`/responses` 续接字段不再静默忽略（显式 400）+ 历史规模可观测 + 多轮/工具历史回归用例 |
+| v0.1.10 | 69 | 客户端 0.3.42 同步复核：wire protocol **零变更**（车道仍 7），只跟心跳 `v=` + issue #5 白盒再确认 |
+| v0.1.11 | 70 | 模型目录复核（27 个零差异）+ 修内置兜底条目的过期 `contextWindow`（1,048,576 → 320,000） |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -3973,3 +3975,129 @@ gofmt / go vet / go test ./... -count=1 / -race（server,store,pool,gateway）
   持久化 + TTL + 同号路由），本次不做：无状态契约已经能覆盖官方客户端；
 - 未知 `input` 条目类型仍按「输出侧条目」跳过（`web_search_call` 等），
   若上游将来用条目承载上下文，需要重新评估。
+
+---
+
+## 69. 2026-11-20 客户端 0.3.42 同步复核：协议面零变更（v0.1.10）
+
+**触发**：例行扫描。官方更新源 `latest.yml` 从 **0.3.41** 跳到 **0.3.42**
+（`releaseDate` 2026-11-19T07:44:40Z，比 v0.1.9 的发版时间晚 3 分钟，
+也就是说 **v0.1.9 从未对 0.3.42 验证过**）。本机安装的仍是 0.3.41，按惯例下载解包做白盒比对。
+
+### 69.1 结论：这一版只有版本号，协议面完全没动
+
+下载 `DeepAI-Code-0.3.42-x64.exe`（489,954,768 B）→ sha512 与 `latest.yml` 逐字节一致
+（`C9vGjoOQ…`）→ 7z 解 NSIS 的 `$PLUGINSDIR/app-64.7z` → `resources/server.asar`
+→ `apps/server/dist/binCli-zM20e9Xy.mjs`（14.85 MB），与 0.3.41 的
+`binCli-DAkBc9bP.mjs` 全量 diff：**312 个 hunk / 733 增 / 483 删**。
+
+按 `//#region` 把 hunk 归到源模块后，**`src/deepai/*.ts` 协议模块 0 hunk**：
+
+| 复核项 | 0.3.41 | 0.3.42 | 判据 |
+| --- | --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` | `Theos: "7"` + `Instance: randomBytes(16).hex` | **逐字未动** | 字节级 diff |
+| `/deepai_code/*` 端点集合 | 推理 / `/models` / `/theos` / 搜索 / `sessions/list`+`save_records` | **完全一致** | 端点字符串集合 diff |
+| 聊天请求体 | `model/messages/stream/store/max_completion_tokens/temperature/tools/…` | **未变**（`src/deepai/api.ts` 0 hunk） | 源码级 |
+| 5 个 `X-DeepAI-Code-*` 头 / 机器指纹 | — | **未变**（`machineId.ts` 0 hunk） | 源码级 |
+| beacon | `v=${version$2};up=…;pi=…` | 同一函数，`version$2` 现在打包成 **0.3.42** | 源码级 |
+| 内置 pi 运行时 | `@earendil-works/pi-ai 1.3.0` | **1.3.0**，`openai-completions.js` 字节级一致 | shasum |
+| `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** | 全文 grep |
+
+312 个 hunk 全在协议面之外，和 release notes 对得上：
+
+| 区域 | hunk 数 | 内容 | 是否协议面 |
+| --- | ---: | --- | --- |
+| `orchestration-v2/Orchestrator.ts` | 260 | Full access 工具调用不中断、subagent 跨模型委派（「用户点名付费模型才允许」）、`editedByAgent` / `creationSource` 来源标记 | 否 |
+| `provider-pi`（`rpc.ts` / `adapter.ts` / `mcpExtensionSource.ts`） | 13 | pi 进程退出码 143 / `0x40010004` 不再报 crash、审批摘要文案、MCP 扩展生成 | 否 |
+| `shared/`、`config.ts`、`processRunner.ts`、`vcs/`、`sourceControl/` | ~10 | 日志 / 状态目录 `chmod 0700`、`PROJECT_FOLDER_COMMANDS`（git/gh/glab…）改按绝对路径 spawn | 否 |
+| `cloud/*`、`productCapabilities.ts`、`binCli.ts` | 5 | `hostSelfUpdate` / `cliReleaseDownload` 能力开关、`boot-service` 判定、产物名 | 否 |
+| `src/http.ts` | 2 | 本地 server 的 Origin 白名单、`wsTicket` / `token` 查询参数不追踪 | 否（本地回环，不是上游） |
+| `deepai/DeepAIPiConnection.ts` | 1 | 写 pi 的 `models.json` 时 `apiKey` 改成占位符 `"$T3_DEEPAI_TOKEN"`（由 pi 进程从环境变量取） | 否（客户端内部） |
+| `deepai/DeepAIApprovalReview.ts` | 1 | 审批上下文只收真人来源的用户消息 | 否 |
+| `RunExecutionService.ts` | 1 | 新增 `EXPECTED_DEEPAI_REFUSAL` 正则，把 `theos_exhausted` / `rate_limit_exceeded` / `lane_version_unsupported` 等**预期上游拒绝**从 Sentry 上报里剔除 | 佐证（见下） |
+
+最后一条值得记：0.3.42 把 `lane_version_unsupported` 明确列为「预期内的上游拒绝」，
+说明**旧车道 426 仍是上游的标准拒绝方式**，与 §67 的车道漂移观测口径一致。
+
+### 69.2 决策：只跟心跳版本号，协议逻辑不动
+
+- `deepai.AppVersion` 0.3.41 → **0.3.42**（`/theos` 心跳 `v=` 自报；桌面端同源取自打包版本）；
+- `deepai.LaneVersion` 保持 **7**（0.3.42 仍是 `Theos: "7"`，没有抬到 8；
+  `check_in` 响应里 `lane_version < 7` 才走 legacy 分支，逻辑也未变）；
+- 端点 / 请求头 / 请求体 / 指纹 / 签到形态一律不动 —— 没有证据支持改动，
+  改了反而会与桌面端分叉。
+
+### 69.3 issue #5 的连带结论
+
+`docs/recon.md` §2.3 的判据在 0.3.42 上重跑了一遍：仍然是 **0 处 `previous_response_id`**，
+`/chat/completions` 的 4 个调用点没动，pi 运行时的 `openai-completions.js` 字节级一致。
+→ 「客户端每轮发完整历史、网关是无状态代理」这个契约在 0.3.42 上没有变化，
+v0.1.9 的修法（合成路径 400 `unsupported_parameter` + `messages`/`system` 观测）继续有效。
+上游 `/responses` 的链式续接**仍无实测**（`gpt-6-astra` 依旧 429），维持「未验证」措辞。
+
+### 69.4 验证
+
+```text
+gofmt / go vet / go build ./... / go test ./... -count=1
++ node --check（全部 JS）+ console-smoke
+```
+
+改动面只有常量 + 注释 + 文档（无逻辑改动），用例数不变（492）。
+
+### 69.5 遗留
+
+- 0.3.42 起客户端进入「功能迭代」节奏（Full access / subagent），协议面可能继续不动，
+  但**每次发版仍要复核 `DEEPAI_LANE_HEADERS` 与端点集合**这两处，其余可只看 hunk 归属；
+- 车道 8 仍是黑盒：`/theos` 的 `lane_version` 是目前唯一能发现上游抬车道的信号；
+- 上游 `/responses` 链式续接待 `gpt-6-astra` 恢复后实测（同 §68.6）。
+
+---
+
+## 70. 2026-11-20 模型目录复核 + 兜底条目修正（v0.1.11）
+
+**触发**：客户端升到 0.3.42 后顺手核对「文档里的模型表还准不准」。用桌面端凭据直打
+`GET https://api.deepai.org/deepai_code/models`（`Api-Key` + `Theos: 7` + `Instance`），
+拿到 27 个条目，与 README 的模型表做**逐字段**比对。
+
+### 70.1 结论：文档准确，只有一处代码里的过期值
+
+| 检查项 | 结果 |
+| --- | --- |
+| 模型数量 / 免费·付费比 | 27 / 11·16 —— 与 README 一致 |
+| ID / 名称 / `contextWindow` / `maxTokens` / `theosPerRequest` | 27 条**逐字段零差异**（`default` 仍 `glm-5.3-flash`） |
+| 纯文本模型清单 | `deepai-cyber` / `glm-5.3` / `glyph-cluster` / `solar-mini-4` / `minimax-m3` —— 与 README 一致 |
+| `api: openai-responses` | 仅 `gpt-6-astra` —— 一致 |
+| `theosPerSecond`（按秒计费） | 仍未下发 —— 一致 |
+| 字段并集 | 仍是 `id,name,reasoning,input,contextWindow,maxTokens,premier,theosPerRequest,api`，无新增字段 |
+| 内置别名数量 | 13 个，全部指向默认免费模型 —— 与 README 一致 |
+| **内置兜底条目 `deepai.DefaultModelEntry()`** | ❌ `contextWindow: 1,048,576`，线上是 **320,000** |
+
+只有最后一行是错的。兜底条目用在「首次启动还没拉到目录」与「目录刷新失败」两种情形：
+`/v1/models` 此时只回这一条，客户端会按它算上下文预算 —— 写 1M 就是让客户端组一个
+远超上游上限（320k）的请求，最后被上游拒。§39 当时只修了 README 的表，漏了代码。
+
+### 70.2 改动
+
+- `internal/deepai/types.go`：`DefaultModelEntry()` 的 `ContextWindow` 1,048,576 → **320,000**，
+  补 `TheosPerRequest: "0"`（线上免费），注释写清字段来源日期与「值必须与上游一致」的理由；
+- `internal/deepai/types_test.go`：`TestDefaultModelEntry` 从「大于 0」改为**锁死线上值**
+  （ctx 320,000 / maxTokens 131,072 / theos `"0"`），下次上游变动会在测试里炸出来；
+- `README.md`：模型表补「2026-11-20 复核逐字段零差异」、启动日志示例的「18 个模型」改 27、
+  新增一条「内置兜底条目与线上对齐」的说明；
+- `docs/recon.md` §2：补 2026-11-20 目录复核段（27 条逐字段一致、字段并集未变）；
+- `docs/model-fingerprint-2026-11-10.md`：注明目录自 11-14 起未变，遗漏的 6 个模型范围没变。
+
+### 70.3 验证
+
+```text
+gofmt / go vet / go build ./... / go test ./... -count=1
++ node --check（全部 JS）
+```
+
+`TestDefaultModelEntry` 改为值断言后仍绿；顶层用例 492 → 492（改断言，不加用例）。
+
+### 70.4 遗留
+
+- `gpt-oss-120b` 仍由客户端主动过滤、网关不展示（上游目录里本来也没有）；
+- `crouton-alpha` 已下线，只保留在 §40 / `docs/lessons.md` 的历史记录里；
+- 6 个 11-14 新增的模型仍无指纹实测（要花 Theos，非必要不做）。

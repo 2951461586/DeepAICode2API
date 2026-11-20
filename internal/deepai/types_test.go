@@ -202,6 +202,17 @@ func TestDefaultModelEntry(t *testing.T) {
 	if m.Name == "" || m.ContextWindow <= 0 || m.MaxTokens <= 0 {
 		t.Fatalf("兜底条目缺少展示字段: %+v", m)
 	}
+	// 2026-11-20 线上目录：glm-5.3-flash 的 contextWindow 是 320,000（车道 7 起
+	// 目录全绷收敛到 320k）。兜底值写大（旧值 1,048,576）会让客户端按 1M 组请求。
+	if m.ContextWindow != 320000 {
+		t.Fatalf("兜底上下文 = %d，线上目录（2026-11-20）是 320000", m.ContextWindow)
+	}
+	if m.MaxTokens != 131072 {
+		t.Fatalf("兜底 maxTokens = %d，线上目录是 131072", m.MaxTokens)
+	}
+	if m.TheosPerRequest != "0" {
+		t.Fatalf("兜底 theosPerRequest = %q，glm-5.3-flash 免费", m.TheosPerRequest)
+	}
 	if !m.Reasoning {
 		t.Fatal("兜底模型应标记 reasoning")
 	}
