@@ -114,7 +114,9 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 ## 二、支持的模型
 
 模型目录**完全由上游下发**：网关只做缓存与别名，上游新增或下线模型都无需改代码。
-下表是 2026-11-18 从线上 `/v1/models` 重新导出的**实时目录**（27 个：11 免费 / 16 付费），
+下表是 2026-11-18 从线上 `/v1/models` 导出的**实时目录**（27 个：11 免费 / 16 付费），
+**2026-11-20 复核：与 11-18 快照逐字段零差异**（ID / 名称 / 上下文 / 最大输出 / 价格 /
+`default: glm-5.3-flash` 全部相同，仍 27 个、无新增无下线），
 `Theos/次` 取自上游 `theosPerRequest`（字符串），`0` 即免费。控制台「模型目录」页读的是同一份数据。
 （与 2026-11-14 的快照相比：**模型集合、名称、价格均未变**，只有 `glyph-cluster`
  的 `contextWindow` 从 320,000 变为 256,000。更早的 `crouton-alpha` 已下线；
@@ -170,6 +172,10 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 - **以线上 `/v1/models` 为准**：仓库里不放状态文件（`deepaicode2api-data*.json`
   是运行期产物，含上游 Key，已 gitignore 且已清理）；本表与 `/v1/models` 不一致时，
   先在控制台点「刷新模型目录」再按本表格式重新导出。
+- **内置兜底条目与线上对齐**：目录为空（首启未拉到 / 刷新失败）时 `/v1/models`
+  只回一条 `glm-5.3-flash`，字段取线上实测值（ctx **320,000**、maxTokens 131,072、
+  免费、text+image、reasoning）。旧构建写的是 `1,048,576`，会让客户端按 1M
+  上下文组请求后被上游拒（v0.1.11 已修，见 `docs/changes.md` §70）。
 
 内置别名（可在控制台覆盖，共 13 个，全部指向默认免费模型 `glm-5.3-flash`）：
 
@@ -303,7 +309,7 @@ printf 'DEEPAI2API_MASTER_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
 状态文件: …/deepaicode2api-data.json
 机器指纹: a1b2c3d4e5f6…（用于上游按天发放免费 Theos）
 已导入账号 desktop-…（~/.deepai-code/userdata/secrets/deepai-account.bin）
-模型目录已更新：18 个模型，默认 glm-5.3-flash
+模型目录已更新：27 个模型，默认 glm-5.3-flash
 DeepAICode2API dev 已启动: http://127.0.0.1:10087/
 ```
 

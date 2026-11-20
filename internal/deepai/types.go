@@ -463,13 +463,20 @@ func (a *Account) KeyID() string { return KeyFingerprint(a.APIKey) }
 func (a *Account) SessionID() string { return ShortHash(a.APIKey) }
 
 // DefaultModelEntry 是目录不可用时的内置兜底条目。
+//
+// 字段取 2026-11-20 线上 `/models` 里 glm-5.3-flash 的实测值：
+// `contextWindow 320,000` / `maxTokens 131,072` / `theosPerRequest "0"` /
+// `input [text,image]` / `reasoning true`。兜底只用在「首次启动尚未拉到目录」
+// 与「目录刷新失败」两种情形，值必须与上游一致 —— 早前写死 `1,048,576`
+// 会让客户端按 1M 上下文组请求，实际被上游拒（车道 7 起全目录收敛到 320,000）。
 func DefaultModelEntry() Model {
 	return Model{
-		ID:            DefaultModel,
-		Name:          "GLM 5.3 Flash",
-		Reasoning:     true,
-		Input:         []string{"text", "image"},
-		ContextWindow: 1048576,
-		MaxTokens:     131072,
+		ID:              DefaultModel,
+		Name:            "GLM 5.3 Flash",
+		Reasoning:       true,
+		Input:           []string{"text", "image"},
+		ContextWindow:   320000,
+		MaxTokens:       131072,
+		TheosPerRequest: "0",
 	}
 }

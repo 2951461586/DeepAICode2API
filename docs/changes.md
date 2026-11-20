@@ -24,6 +24,7 @@
 | v0.1.8 | 67 | 上游放宽车道门槛（≤7 全通）：车道漂移观测、Anthropic 出错即终止、缓存用量三处补齐、会话粘性落到账号 |
 | v0.1.9 | 68 | issue #5 上下文/失忆：`/responses` 续接字段不再静默忽略（显式 400）+ 历史规模可观测 + 多轮/工具历史回归用例 |
 | v0.1.10 | 69 | 客户端 0.3.42 同步复核：wire protocol **零变更**（车道仍 7），只跟心跳 `v=` + issue #5 白盒再确认 |
+| v0.1.11 | 70 | 模型目录复核（27 个零差异）+ 修内置兜底条目的过期 `contextWindow`（1,048,576 → 320,000） |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -4049,3 +4050,54 @@ gofmt / go vet / go build ./... / go test ./... -count=1
   但**每次发版仍要复核 `DEEPAI_LANE_HEADERS` 与端点集合**这两处，其余可只看 hunk 归属；
 - 车道 8 仍是黑盒：`/theos` 的 `lane_version` 是目前唯一能发现上游抬车道的信号；
 - 上游 `/responses` 链式续接待 `gpt-6-astra` 恢复后实测（同 §68.6）。
+
+---
+
+## 70. 2026-11-20 模型目录复核 + 兜底条目修正（v0.1.11）
+
+**触发**：客户端升到 0.3.42 后顺手核对「文档里的模型表还准不准」。用桌面端凭据直打
+`GET https://api.deepai.org/deepai_code/models`（`Api-Key` + `Theos: 7` + `Instance`），
+拿到 27 个条目，与 README 的模型表做**逐字段**比对。
+
+### 70.1 结论：文档准确，只有一处代码里的过期值
+
+| 检查项 | 结果 |
+| --- | --- |
+| 模型数量 / 免费·付费比 | 27 / 11·16 —— 与 README 一致 |
+| ID / 名称 / `contextWindow` / `maxTokens` / `theosPerRequest` | 27 条**逐字段零差异**（`default` 仍 `glm-5.3-flash`） |
+| 纯文本模型清单 | `deepai-cyber` / `glm-5.3` / `glyph-cluster` / `solar-mini-4` / `minimax-m3` —— 与 README 一致 |
+| `api: openai-responses` | 仅 `gpt-6-astra` —— 一致 |
+| `theosPerSecond`（按秒计费） | 仍未下发 —— 一致 |
+| 字段并集 | 仍是 `id,name,reasoning,input,contextWindow,maxTokens,premier,theosPerRequest,api`，无新增字段 |
+| 内置别名数量 | 13 个，全部指向默认免费模型 —— 与 README 一致 |
+| **内置兜底条目 `deepai.DefaultModelEntry()`** | ❌ `contextWindow: 1,048,576`，线上是 **320,000** |
+
+只有最后一行是错的。兜底条目用在「首次启动还没拉到目录」与「目录刷新失败」两种情形：
+`/v1/models` 此时只回这一条，客户端会按它算上下文预算 —— 写 1M 就是让客户端组一个
+远超上游上限（320k）的请求，最后被上游拒。§39 当时只修了 README 的表，漏了代码。
+
+### 70.2 改动
+
+- `internal/deepai/types.go`：`DefaultModelEntry()` 的 `ContextWindow` 1,048,576 → **320,000**，
+  补 `TheosPerRequest: "0"`（线上免费），注释写清字段来源日期与「值必须与上游一致」的理由；
+- `internal/deepai/types_test.go`：`TestDefaultModelEntry` 从「大于 0」改为**锁死线上值**
+  （ctx 320,000 / maxTokens 131,072 / theos `"0"`），下次上游变动会在测试里炸出来；
+- `README.md`：模型表补「2026-11-20 复核逐字段零差异」、启动日志示例的「18 个模型」改 27、
+  新增一条「内置兜底条目与线上对齐」的说明；
+- `docs/recon.md` §2：补 2026-11-20 目录复核段（27 条逐字段一致、字段并集未变）；
+- `docs/model-fingerprint-2026-11-10.md`：注明目录自 11-14 起未变，遗漏的 6 个模型范围没变。
+
+### 70.3 验证
+
+```text
+gofmt / go vet / go build ./... / go test ./... -count=1
++ node --check（全部 JS）
+```
+
+`TestDefaultModelEntry` 改为值断言后仍绿；顶层用例 492 → 492（改断言，不加用例）。
+
+### 70.4 遗留
+
+- `gpt-oss-120b` 仍由客户端主动过滤、网关不展示（上游目录里本来也没有）；
+- `crouton-alpha` 已下线，只保留在 §40 / `docs/lessons.md` 的历史记录里；
+- 6 个 11-14 新增的模型仍无指纹实测（要花 Theos，非必要不做）。

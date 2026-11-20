@@ -261,6 +261,14 @@
 `glm-5.3-flash`；**车道 5 / 6 / 7 的目录逐字段一致**（`glyph-cluster` 256,000，
 其余 320,000）—— 0.3.37 时代的分车道上下文差异已消失。
 
+**2026-11-20 复核（0.3.42 当天）：目录零变化。** 27 个条目的 `id` / `name` /
+`contextWindow` / `maxTokens` / `theosPerRequest` / `input` / `api` 与 11-18 快照
+逐字段一致（11 免费 / 16 付费，`default` 仍 `glm-5.3-flash`，`gpt-6-astra` 仍是
+唯一的 `api: openai-responses`，纯文本仍是 `deepai-cyber` / `glm-5.3` / `glyph-cluster` /
+`solar-mini-4` / `minimax-m3`）；`theosPerSecond` **仍未下发**。字段并集仍是
+`id,name,reasoning,input,contextWindow,maxTokens,premier,theosPerRequest,api`，
+没有新增字段。
+
 ### 2.3 上下文续接：桌面端从不使用 `previous_response_id`【源码级 0.3.42，2026-11-20 复核】
 
 issue #5（“模型失忆”）要回答的第一个问题是「上游/客户端到底支持不支持链式续接」。
