@@ -1,6 +1,14 @@
-package deepai
+package gateway
 
 import "encoding/json"
+
+// 本文件是「把 chat 请求体收敛成桌面端形状」的纯函数：上游偶尔以
+// “This request is not one DeepAI Code sends.” 拒绝纯 user-only 请求，
+// 网关据此补一条 system 消息（或整体裁剪字段）后重试。
+//
+// 与 internal/gateway 的其余部分同属协议适配：只依赖标准库，不碰 HTTP /
+// store / 号池。此前它住在 internal/deepai（传输层），调用方（server）为了
+// 一次形状修补要依赖整个上游客户端包。
 
 // DefaultSystemPrompt 是补齐 system 消息时使用的兜底提示词。
 //

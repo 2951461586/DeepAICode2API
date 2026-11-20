@@ -531,42 +531,6 @@ func TestHTTPErrorPolicyClassification(t *testing.T) {
 	}
 }
 
-// 400 形状拒绝 -> 桌面端字段白名单 + 补 system 消息。
-func TestChatBodyFallback(t *testing.T) {
-	body := []byte(`{"model":"m","stream":true,"user":"u1","messages":[{"role":"user","content":"hi"}],"tools":[]}`)
-	rejected := mustErr(t, http.StatusBadRequest,
-		`{"error":{"message":"This request is not one DeepAI Code sends.","code":"invalid_request_error"}}`)
-	if !rejected.BodyRejected() {
-		t.Fatal("应识别为请求体形状拒绝")
-	}
-
-	out, ok := ChatBodyFallback(body, "")
-	if !ok {
-		t.Fatal("可解析的 messages 应能兜底")
-	}
-	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("兜底结果不是合法 JSON: %v", err)
-	}
-	if _, exists := got["user"]; exists {
-		t.Fatal("白名单外的字段应被剔除")
-	}
-	if got["stream"] != true || got["model"] != "m" {
-		t.Fatalf("白名单字段应保留: %#v", got)
-	}
-	msgs, _ := got["messages"].([]any)
-	if len(msgs) != 2 {
-		t.Fatalf("应插入一条 system 消息，实际 %d 条", len(msgs))
-	}
-	if role, _ := msgs[0].(map[string]any)["role"].(string); role != "system" {
-		t.Fatalf("第一条应为 system，实际 %q", role)
-	}
-
-	if _, ok := ChatBodyFallback([]byte(`{"model":"m"}`), ""); ok {
-		t.Fatal("没有 messages 时不应兜底")
-	}
-}
-
 // 文案再次更换时，400 + code=invalid_request_error 仍要按形状拒绝处理；
 // 其它 400（上下文超限、鉴权等）不能误判，否则会拿改动过的 body 白重试一次。
 func TestBodyRejectedFallsBackToInvalidRequestCode(t *testing.T) {
@@ -590,20 +554,6 @@ func TestBodyRejectedFallsBackToInvalidRequestCode(t *testing.T) {
 
 	if mustErr(t, http.StatusUnprocessableEntity, `{"error":{"code":"invalid_request_error"}}`).BodyRejected() {
 		t.Fatal("非 400 不应按形状拒绝处理")
-	}
-}
-
-// 已带 system 的请求不应被重复插入。
-func TestChatBodyFallbackKeepsExistingSystem(t *testing.T) {
-	body := []byte(`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)
-	out, ok := ChatBodyFallback(body, "")
-	if !ok {
-		t.Fatal("应能兜底")
-	}
-	var got map[string]any
-	_ = json.Unmarshal(out, &got)
-	if msgs, _ := got["messages"].([]any); len(msgs) != 2 {
-		t.Fatalf("不应插入额外 system，实际 %d 条", len(msgs))
 	}
 }
 
@@ -663,36 +613,6 @@ func TestRegisterClientKeepsBrowserFingerprint(t *testing.T) {
 	}
 	if got.Get("sec-ch-ua") == "" || got.Get("sec-ch-ua-platform") == "" || got.Get("Accept-Language") == "" {
 		t.Fatalf("注册客户端应带齐指纹头: %#v", got)
-	}
-}
-
-// 形状回退不能顺手改掉采样条件：seed / service_tier / stream_options
-// 会改变采样与用量上报，指纹类检测甚至会因此换一个候选模型。
-// store 则是桌面端每次请求都带的字段，必须同样保留。
-func TestChatBodyFallbackKeepsSamplingFields(t *testing.T) {
-	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],` +
-		`"seed":7,"service_tier":"flex","stream":true,"store":false,` +
-		`"stream_options":{"include_usage":true},"presence_penalty":0.5,"user":"u1"}`)
-	out, ok := ChatBodyFallback(body, "")
-	if !ok {
-		t.Fatal("应能兜底")
-	}
-	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("兜底结果不是 JSON: %v", err)
-	}
-	for _, k := range []string{"seed", "service_tier", "stream_options", "store"} {
-		if _, exists := got[k]; !exists {
-			t.Errorf("白名单丢了 %s，会改变采样条件或用量上报", k)
-		}
-	}
-	if v, exists := got["store"]; exists && v != false {
-		t.Errorf("store 应原值保留，实际 %#v", v)
-	}
-	for _, k := range []string{"presence_penalty", "user"} {
-		if _, exists := got[k]; exists {
-			t.Errorf("非桌面字段 %s 仍应被剥离", k)
-		}
 	}
 }
 

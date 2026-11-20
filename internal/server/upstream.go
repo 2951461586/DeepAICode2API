@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/gateway"
 	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/logx"
 	"deepaicode2api/internal/poolsvc"
@@ -33,7 +34,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 	// 预置桌面端形状：只对「已被上游按形状拒绝过」的调用方生效（shape.go），
 	// 且只补 system、不裁剪字段，因此不会改调用方显式给的采样参数。
 	if path == deepai.PathChat && settings.PresetDesktopShape && apiKey != "" && s.shapeNeeded(apiKey) {
-		if alt, inserted := deepai.EnsureSystemMessage(body, ""); inserted {
+		if alt, inserted := gateway.EnsureSystemMessage(body, ""); inserted {
 			body = alt
 		}
 	}
@@ -128,7 +129,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		// DeepAI Code sends."）。用桌面端字段白名单 + 补 system 消息同号重试一次。
 		if httpErr.BodyRejected() && path == deepai.PathChat {
 			s.markShapeNeeded(apiKey)
-			if alt, ok := deepai.ChatBodyFallback(body, ""); ok {
+			if alt, ok := gateway.ChatBodyFallback(body, ""); ok {
 				s.metrics.AddFallback()
 				log.Printf("[upstream] 请求体被拒，按桌面端形状重试：account=%s", acctLabel(acct))
 				if retry, err2 := client.OpenModel(ctx, acct, path, alt, affinity); err2 == nil {

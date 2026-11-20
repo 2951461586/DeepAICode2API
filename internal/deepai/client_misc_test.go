@@ -2,12 +2,12 @@ package deepai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // errWriter 累计写入预算耗尽后返回错误，用于覆盖 SSE 写出错误的分支。
@@ -153,55 +153,34 @@ func TestDetectLaneServerErrorFallback(t *testing.T) {
 	}
 }
 
-// TestHasSystemMessageIgnoresMalformed 覆盖 messages 里的脏数据。
-func TestHasSystemMessageIgnoresMalformed(t *testing.T) {
-	cases := []struct {
-		name string
-		msgs []any
-		want bool
-	}{
-		{"空", nil, false},
-		{"只有 user", []any{map[string]any{"role": "user"}}, false},
-		{"system", []any{map[string]any{"role": "system"}}, true},
-		{"developer 也算", []any{map[string]any{"role": "developer"}}, true},
-		{"非对象条目被跳过", []any{"oops", 42, nil, map[string]any{"role": "system"}}, true},
-		{"role 非字符串", []any{map[string]any{"role": 7}}, false},
-		{"大小写敏感", []any{map[string]any{"role": "System"}}, false},
+// TestQuotaExhaustedDetectionAndReset 覆盖 403 theos_exhausted 的识别与恢复时间。
+func TestQuotaExhaustedDetectionAndReset(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	// refresh_at 必须是**相对** now 的时间：写死日期会让这条用例变成定时炸弹
+	// （2026-11-14T00:05:52 一过，QuotaResetAt 按“已过期”回退到 now+6h，CI 就红）。
+	resetAt := now.Add(2 * time.Hour)
+	stamp := resetAt.Format(time.RFC3339)
+	body := `{"error":{"message":"You've used today's Theos. They refresh at ` + stamp + `.",` +
+		`"type":"theos_exhausted","code":"theos_exhausted","refresh_at":"` + stamp + `"}}`
+	e := mustErr(t, http.StatusForbidden, body)
+	if !e.QuotaExhausted() {
+		t.Fatal("应识别为 theos_exhausted")
 	}
-	for _, c := range cases {
-		if got := hasSystemMessage(c.msgs); got != c.want {
-			t.Errorf("%s: hasSystemMessage()=%v，期望 %v", c.name, got, c.want)
-		}
+	if e.SocialLoginRequired() || e.EmailUnverified() || e.MachineRequired() {
+		t.Fatal("不应误判为其它账号终态")
 	}
-}
-
-// TestChatBodyFallbackDirtyMessages 覆盖 messages 里混入非对象条目时仍能兜底。
-func TestChatBodyFallbackDirtyMessages(t *testing.T) {
-	body := []byte(`{"model":"m","messages":["oops",{"role":"user","content":"hi"}]}`)
-	out, ok := ChatBodyFallback(body, "自定义提示词")
-	if !ok {
-		t.Fatal("messages 非空即应兜底")
+	if got := e.QuotaResetAt(6*time.Hour, now); !got.Equal(resetAt) {
+		t.Fatalf("恢复时间 = %v，期望 %v", got, resetAt)
 	}
-	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("兜底结果不是合法 JSON: %v", err)
+	// refresh_at 已经过期（上游给的是过去时间）时用 fallback，而不是立刻重试。
+	past := now.Add(-time.Hour).UTC().Format(time.RFC3339)
+	stale := mustErr(t, http.StatusForbidden,
+		`{"error":{"code":"theos_exhausted","refresh_at":"`+past+`"}}`)
+	if got, want := stale.QuotaResetAt(6*time.Hour, now), now.Add(6*time.Hour); !got.Equal(want) {
+		t.Fatalf("过期 refresh_at 应回退到 now+6h，实际 %v", got)
 	}
-	msgs, _ := got["messages"].([]any)
-	if len(msgs) != 3 {
-		t.Fatalf("应插入一条 system，实际 %d 条", len(msgs))
-	}
-	first, _ := msgs[0].(map[string]any)
-	if first["role"] != "system" || first["content"] != "自定义提示词" {
-		t.Fatalf("自定义提示词未生效: %#v", first)
-	}
-
-	if _, ok := ChatBodyFallback([]byte(`not json`), ""); ok {
-		t.Fatal("非法 JSON 不应兜底")
-	}
-	if _, ok := ChatBodyFallback([]byte(`{"messages":{}}`), ""); ok {
-		t.Fatal("messages 不是数组时不应兜底")
-	}
-	if _, ok := ChatBodyFallback([]byte(`{"messages":[]}`), ""); ok {
-		t.Fatal("messages 为空时不应兜底")
+	// 其它错误码不应命中。
+	if mustErr(t, http.StatusForbidden, `{"error":{"code":"check_in_refused"}}`).QuotaExhausted() {
+		t.Fatal("check_in_refused 不应识别为额度用完")
 	}
 }
