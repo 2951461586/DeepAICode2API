@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // 桌面端凭据文件名。
@@ -29,7 +29,7 @@ const (
 
 // ImportResult 是一次桌面端凭据导入结果。
 type ImportResult struct {
-	Account *deepai.Account
+	Account *model.Account
 	Path    string
 }
 
@@ -83,7 +83,7 @@ func importCredentialFile(path string) (*ImportResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取凭据失败: %w", err)
 	}
-	var cred deepai.Credentials
+	var cred model.Credentials
 	if err := json.Unmarshal(raw, &cred); err != nil {
 		return nil, fmt.Errorf("凭据解析失败（%s）: %w", path, err)
 	}
@@ -95,7 +95,7 @@ func importCredentialFile(path string) (*ImportResult, error) {
 }
 
 // AccountFromCredentials 把凭据转换为账号。
-func AccountFromCredentials(cred *deepai.Credentials, source string) (*deepai.Account, error) {
+func AccountFromCredentials(cred *model.Credentials, source string) (*model.Account, error) {
 	if cred == nil {
 		return nil, errors.New("凭据为空")
 	}
@@ -107,7 +107,7 @@ func AccountFromCredentials(cred *deepai.Credentials, source string) (*deepai.Ac
 }
 
 // AccountFromAPIKey 校验并构造一个账号。
-func AccountFromAPIKey(key, username, source string, isPro bool) (*deepai.Account, error) {
+func AccountFromAPIKey(key, username, source string, isPro bool) (*model.Account, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return nil, errors.New("API Key 不能为空")
@@ -118,13 +118,13 @@ func AccountFromAPIKey(key, username, source string, isPro bool) (*deepai.Accoun
 	username = strings.TrimSpace(username)
 	name := username
 	if name == "" {
-		name = "DeepAI " + deepai.ShortHash(key)
+		name = "DeepAI " + model.ShortHash(key)
 	}
 	if source == "" {
 		source = "manual"
 	}
-	return &deepai.Account{
-		ID:       deepai.RandomHex(8),
+	return &model.Account{
+		ID:       model.RandomHex(8),
 		Name:     name,
 		Source:   source,
 		APIKey:   key,
@@ -137,13 +137,13 @@ func AccountFromAPIKey(key, username, source string, isPro bool) (*deepai.Accoun
 }
 
 // AccountFromRegistration 从网页注册链路的结果构造账号。
-func AccountFromRegistration(r deepai.Registration) (*deepai.Account, error) {
+func AccountFromRegistration(r model.Registration) (*model.Account, error) {
 	acct, err := AccountFromAPIKey(r.APIKey, r.Username, r.Source, strings.EqualFold(r.Plan, "pro"))
 	if err != nil {
 		return nil, err
 	}
 	email := strings.TrimSpace(r.Email)
-	if acct.Name == "" || acct.Name == "DeepAI "+deepai.ShortHash(r.APIKey) {
+	if acct.Name == "" || acct.Name == "DeepAI "+model.ShortHash(r.APIKey) {
 		if email != "" {
 			acct.Name = email
 		}
@@ -179,7 +179,7 @@ func AccountFromRegistration(r deepai.Registration) (*deepai.Account, error) {
 		acct.Name = acct.Username
 	}
 	if acct.Name == "" {
-		acct.Name = "DeepAI " + deepai.ShortHash(r.APIKey)
+		acct.Name = "DeepAI " + model.ShortHash(r.APIKey)
 	}
 	return acct, nil
 }
@@ -195,13 +195,25 @@ func normalizeGroup(g string) string {
 
 func timeNowUnix() int64 { return time.Now().Unix() }
 
+// envOr 返回环境变量值或默认值（去空白）。
+//
+// 本地实现而不是复用 deepai.EnvOr：本包只需要这一个三行工具，不值得为它
+// 保留一条 credimport → deepai 的依赖边（那样「凭据导入」又会把上游客户端
+// 拖进依赖图，与本次拆分的初衷相反）。
+func envOr(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
 // EnvAccount 从 DEEPAI_API_KEY 环境变量构造账号（可选）。
-func EnvAccount() *deepai.Account {
+func EnvAccount() *model.Account {
 	key := strings.TrimSpace(os.Getenv("DEEPAI_API_KEY"))
 	if key == "" {
 		return nil
 	}
-	acct, err := AccountFromAPIKey(key, deepai.EnvOr("DEEPAI_API_KEY_NAME", ""), "env", false)
+	acct, err := AccountFromAPIKey(key, envOr("DEEPAI_API_KEY_NAME", ""), "env", false)
 	if err != nil {
 		return nil
 	}

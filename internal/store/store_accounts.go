@@ -8,16 +8,16 @@ import (
 	"strings"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // --- 账号 ---
 
 // Accounts 返回账号快照列表（每项都是深拷贝）。
-func (s *Store) Accounts() []*deepai.Account {
+func (s *Store) Accounts() []*model.Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]*deepai.Account, len(s.st.Accounts))
+	out := make([]*model.Account, len(s.st.Accounts))
 	for i, a := range s.st.Accounts {
 		out[i] = a.Clone()
 	}
@@ -29,7 +29,7 @@ func (s *Store) Accounts() []*deepai.Account {
 // 不返回号池里的活指针：账号状态会被调度、后台探测、管理接口并发改写，
 // 把活指针交出去等于把加锁责任推给每个调用方。需要就地改字段时用
 // UpdateAccount / UpdateAccounts（在写锁内完成）。
-func (s *Store) Account(id string) *deepai.Account {
+func (s *Store) Account(id string) *model.Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, a := range s.st.Accounts {
@@ -45,7 +45,7 @@ func (s *Store) Account(id string) *deepai.Account {
 // 用于会话粘性：先把请求送回同一把 Key 上次用的号（上游前缀缓存与会话上下文
 // 都在那个号上）。不可调度时返回 nil，调用方回退常规选号。
 // 与 PickAccount 同量级开销：一次读锁 + 一个账号的拷贝，不做全池复制。
-func (s *Store) PreferredAccount(id, group string) *deepai.Account {
+func (s *Store) PreferredAccount(id, group string) *model.Account {
 	if id == "" {
 		return nil
 	}
@@ -65,7 +65,7 @@ func (s *Store) PreferredAccount(id, group string) *deepai.Account {
 
 // AccountPage 是一次账号分页查询的结果。
 type AccountPage struct {
-	Items []*deepai.Account
+	Items []*model.Account
 	Total int // 过滤后的总数（未分页）
 }
 
@@ -74,7 +74,7 @@ type AccountPage struct {
 // 控制台首屏需要在不同步整个账号列表的情况下展示“就绪/总”，
 // 而 Accounts() 会给每个账号做深拷贝。
 //
-// “就绪”的口径见 deepai.AccountReady：error 只在错误还算新鲜时算不健康，
+// “就绪”的口径见 model.AccountReady：error 只在错误还算新鲜时算不健康，
 // blocked 永不算就绪（它不会自愈）。旧实现用的 `status != "error"` 会把
 // 一次概率性 EOF 永久计成不健康，也会把 blocked 算成就绪。
 func (s *Store) AccountCounts() (total, ready int) {
@@ -82,7 +82,7 @@ func (s *Store) AccountCounts() (total, ready int) {
 	defer s.mu.RUnlock()
 	now := time.Now()
 	for _, a := range s.st.Accounts {
-		if deepai.AccountReady(a, now) {
+		if model.AccountReady(a, now) {
 			ready++
 		}
 	}
@@ -132,7 +132,7 @@ func (s *Store) AccountPage(q AccountQuery) AccountPage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	matched := make([]*deepai.Account, 0, len(s.st.Accounts))
+	matched := make([]*model.Account, 0, len(s.st.Accounts))
 	for _, a := range s.st.Accounts {
 		if group != "" && !strings.EqualFold(a.GroupName(), group) {
 			continue
@@ -156,7 +156,7 @@ func (s *Store) AccountPage(q AccountQuery) AccountPage {
 	if end > total {
 		end = total
 	}
-	items := make([]*deepai.Account, 0, end-offset)
+	items := make([]*model.Account, 0, end-offset)
 	for _, a := range matched[offset:end] {
 		items = append(items, a.Clone())
 	}
@@ -164,7 +164,7 @@ func (s *Store) AccountPage(q AccountQuery) AccountPage {
 }
 
 // sortAccounts 按指定字段排序；未知字段保持原顺序。
-func sortAccounts(xs []*deepai.Account, key string, desc bool) {
+func sortAccounts(xs []*model.Account, key string, desc bool) {
 	key = strings.ToLower(strings.TrimSpace(key))
 	if key == "" || len(xs) < 2 {
 		return
@@ -186,7 +186,7 @@ func sortAccounts(xs []*deepai.Account, key string, desc bool) {
 }
 
 // accountComparator 返回某字段的升序比较函数；未知字段返回 ok=false。
-func accountComparator(key string) (func(a, b *deepai.Account) int, bool) {
+func accountComparator(key string) (func(a, b *model.Account) int, bool) {
 	cmpStr := func(a, b string) int { return strings.Compare(a, b) }
 	cmpInt := func(a, b int64) int {
 		switch {
@@ -200,29 +200,29 @@ func accountComparator(key string) (func(a, b *deepai.Account) int, bool) {
 	}
 	switch key {
 	case "account", "name", "email":
-		return func(a, b *deepai.Account) int { return cmpStr(accountLabel(a), accountLabel(b)) }, true
+		return func(a, b *model.Account) int { return cmpStr(accountLabel(a), accountLabel(b)) }, true
 	case "group":
-		return func(a, b *deepai.Account) int { return cmpStr(a.GroupName(), b.GroupName()) }, true
+		return func(a, b *model.Account) int { return cmpStr(a.GroupName(), b.GroupName()) }, true
 	case "source":
-		return func(a, b *deepai.Account) int { return cmpStr(a.Source, b.Source) }, true
+		return func(a, b *model.Account) int { return cmpStr(a.Source, b.Source) }, true
 	case "plan":
-		return func(a, b *deepai.Account) int { return cmpStr(accountPlanLabel(a), accountPlanLabel(b)) }, true
+		return func(a, b *model.Account) int { return cmpStr(accountPlanLabel(a), accountPlanLabel(b)) }, true
 	case "theos":
-		return func(a, b *deepai.Account) int { return cmpInt(quotaValue(a), quotaValue(b)) }, true
+		return func(a, b *model.Account) int { return cmpInt(quotaValue(a), quotaValue(b)) }, true
 	case "status":
-		return func(a, b *deepai.Account) int { return cmpStr(a.Status, b.Status) }, true
+		return func(a, b *model.Account) int { return cmpStr(a.Status, b.Status) }, true
 	case "failures":
-		return func(a, b *deepai.Account) int {
+		return func(a, b *model.Account) int {
 			return cmpInt(int64(a.Failures), int64(b.Failures))
 		}, true
 	case "last_used":
-		return func(a, b *deepai.Account) int { return cmpInt(a.LastUsed, b.LastUsed) }, true
+		return func(a, b *model.Account) int { return cmpInt(a.LastUsed, b.LastUsed) }, true
 	}
 	return nil, false
 }
 
 // accountLabel 是账号的展示名（优先邮箱，其次名称，最后 ID）。
-func accountLabel(a *deepai.Account) string {
+func accountLabel(a *model.Account) string {
 	if a == nil {
 		return ""
 	}
@@ -237,7 +237,7 @@ func accountLabel(a *deepai.Account) string {
 }
 
 // accountPlanLabel 是套餐的展示名（与前端一致）。
-func accountPlanLabel(a *deepai.Account) string {
+func accountPlanLabel(a *model.Account) string {
 	if a == nil {
 		return ""
 	}
@@ -251,7 +251,7 @@ func accountPlanLabel(a *deepai.Account) string {
 }
 
 // quotaValue 把 Theos 余额解析成数值；未知/解析不了按 -1（排在最前，升序）。
-func quotaValue(a *deepai.Account) int64 {
+func quotaValue(a *model.Account) int64 {
 	if a == nil || a.Theos == nil {
 		return -1
 	}
@@ -263,7 +263,7 @@ func quotaValue(a *deepai.Account) int64 {
 }
 
 // accountMatches 在 ID / 名称 / 邮箱 / 用户名 / 分组 / 代理上做子串匹配。
-func accountMatches(a *deepai.Account, kw string) bool {
+func accountMatches(a *model.Account, kw string) bool {
 	for _, field := range []string{a.ID, a.Name, a.Email, a.Username, a.GroupName(), a.Proxy, a.Fingerprint} {
 		if strings.Contains(strings.ToLower(field), kw) {
 			return true
@@ -273,7 +273,7 @@ func accountMatches(a *deepai.Account, kw string) bool {
 }
 
 // UpdateAccount 在写锁内就地修改一个账号；返回账号是否存在。
-func (s *Store) UpdateAccount(id string, fn func(*deepai.Account)) bool {
+func (s *Store) UpdateAccount(id string, fn func(*model.Account)) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, a := range s.st.Accounts {
@@ -288,7 +288,7 @@ func (s *Store) UpdateAccount(id string, fn func(*deepai.Account)) bool {
 // UpdateAccounts 在写锁内批量遍历全部账号。
 //
 // fn 返回 true 表示本次改动了该账号；返回值为改动个数。
-func (s *Store) UpdateAccounts(fn func(*deepai.Account) bool) int {
+func (s *Store) UpdateAccounts(fn func(*model.Account) bool) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
@@ -304,7 +304,7 @@ func (s *Store) UpdateAccounts(fn func(*deepai.Account) bool) int {
 //
 // 同一账号重新登录时 API Key 可能不变，但重新注册/补跑时邮箱相同、
 // Key 可能已轮换；按邮箱二次匹配可以避免号池里出现同一账号两份。
-func (s *Store) UpsertAccount(a *deepai.Account) bool {
+func (s *Store) UpsertAccount(a *model.Account) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, ex := range s.st.Accounts {
@@ -351,7 +351,7 @@ func (s *Store) RemoveAccount(id string) bool {
 // skip 为可选的临时排除谓词（如“并发槽位已满”），必须是纯函数。
 // 返回值第二个标记“池里是否有可调度账号（忽略 skip）”，
 // 供调用方区分“全忙”与“根本没号”。
-func (s *Store) PickAccount(group string, skip func(*deepai.Account) bool) (*deepai.Account, bool) {
+func (s *Store) PickAccount(group string, skip func(*model.Account) bool) (*model.Account, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	acct := s.sched.PickFiltered(s.st.Accounts, group, skip)
@@ -363,11 +363,11 @@ func (s *Store) PickAccount(group string, skip func(*deepai.Account) bool) (*dee
 
 // AnySchedulable 报告是否存在满足 ok 的可调度账号（启用、未被拦截），
 // 不解包快照、不深拷贝。
-func (s *Store) AnySchedulable(ok func(*deepai.Account) bool) bool {
+func (s *Store) AnySchedulable(ok func(*model.Account) bool) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, a := range s.st.Accounts {
-		if a == nil || !a.Enabled || a.Status == deepai.StatusBlocked {
+		if a == nil || !a.Enabled || a.Status == model.StatusBlocked {
 			continue
 		}
 		if ok == nil || ok(a) {
@@ -378,7 +378,7 @@ func (s *Store) AnySchedulable(ok func(*deepai.Account) bool) bool {
 }
 
 // NextAccountGroup 兼容旧调用点：等价于 PickAccount(group, nil) 的成功分支。
-func (s *Store) NextAccountGroup(group string) *deepai.Account {
+func (s *Store) NextAccountGroup(group string) *model.Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	acct := s.sched.Pick(s.st.Accounts, group)
@@ -411,7 +411,7 @@ func (s *Store) MarkAccountFailure(id string, err error) {
 	if errors.Is(err, context.Canceled) {
 		return
 	}
-	s.markAccountResult(id, false, err.Error(), deepai.Transient(err))
+	s.markAccountResult(id, false, err.Error(), model.Transient(err))
 }
 
 func (s *Store) markAccountResult(id string, ok bool, note string, transient bool) {
@@ -442,7 +442,7 @@ func (s *Store) markAccountResult(id string, ok bool, note string, transient boo
 		a.LastErr = note
 		a.LastErrAt = now
 		if !transient {
-			a.Status = deepai.StatusError
+			a.Status = model.StatusError
 		}
 		return
 	}
@@ -459,10 +459,10 @@ func (s *Store) RecoverStaleErrors(now time.Time) int {
 	defer s.mu.Unlock()
 	recovered := 0
 	for _, a := range s.st.Accounts {
-		if a.Status != deepai.StatusError {
+		if a.Status != model.StatusError {
 			continue
 		}
-		if now.Sub(time.Unix(a.LastErrAt, 0)) < deepai.ErrorStaleAfter {
+		if now.Sub(time.Unix(a.LastErrAt, 0)) < model.ErrorStaleAfter {
 			continue
 		}
 		// 保留 last_err / failures 作为历史，只把“现在是否健康”改回去。
@@ -484,7 +484,7 @@ func (s *Store) BlockAccount(id, reason string) {
 			continue
 		}
 		a.LastUsed = time.Now().Unix()
-		a.Status = deepai.StatusBlocked
+		a.Status = model.StatusBlocked
 		a.LastErr = reason
 		if a.Failures < 1 {
 			a.Failures = 1
@@ -524,7 +524,7 @@ func (s *Store) ClearQuotaExhausted(id string) {
 }
 
 // SetAccountAllowance 缓存一次配额探测结果。
-func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) {
+func (s *Store) SetAccountAllowance(id string, al *model.Allowance, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, a := range s.st.Accounts {
@@ -535,8 +535,8 @@ func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) 
 		if err != nil {
 			// 瞬时错误（EOF / 429 / 签到限流）不该把账号打成 error：
 			// 探测失败经常是成片的出口抖动，不是账号本身坏了。
-			if !deepai.Transient(err) {
-				a.Status = deepai.StatusError
+			if !model.Transient(err) {
+				a.Status = model.StatusError
 			}
 			a.LastErr = err.Error()
 			a.LastErrAt = time.Now().Unix()
@@ -578,7 +578,7 @@ func (s *Store) RecordProbeFailure(id string) {
 }
 
 // bumpProbeBackoff 推进账号的探测退避（调用方持锁）。
-func bumpProbeBackoff(a *deepai.Account) {
+func bumpProbeBackoff(a *model.Account) {
 	a.ProbeFailures++
 	a.ProbeAfter = time.Now().Add(probeBackoff(a.ProbeFailures)).Unix()
 }

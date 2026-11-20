@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // benchStore 构造一个装着 n 个账号的 Store（不落盘）。
@@ -16,14 +16,14 @@ func benchStore(b *testing.B, n int) *Store {
 		b.Fatalf("store.Open: %v", err)
 	}
 	for i := 0; i < n; i++ {
-		st.UpsertAccount(&deepai.Account{
+		st.UpsertAccount(&model.Account{
 			ID:      "acc-" + strconv.Itoa(i),
 			Name:    "acc-" + strconv.Itoa(i),
 			APIKey:  "key-" + strconv.Itoa(i),
 			Email:   "user" + strconv.Itoa(i) + "@example.com",
 			Enabled: true,
 			Status:  "ok",
-			Theos:   &deepai.Allowance{Balance: "10", Enabled: true},
+			Theos:   &model.Allowance{Balance: "10", Enabled: true},
 		})
 	}
 	return st

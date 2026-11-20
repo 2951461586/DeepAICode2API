@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // 日志应写入旁路文件、并可跨重启恢复。
@@ -46,7 +46,7 @@ func TestStateFileExcludesLogsAndStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "sk-1", Enabled: true})
+	st.UpsertAccount(&model.Account{ID: "a1", APIKey: "sk-1", Enabled: true})
 	st.Record(LogEntry{Endpoint: "chat", Status: 200}, 2)
 	if err := st.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -77,7 +77,7 @@ func TestMigrateLegacyState(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
 	legacy := legacyState{
-		Accounts: []*deepai.Account{{ID: "old", APIKey: "sk-old", Enabled: true}},
+		Accounts: []*model.Account{{ID: "old", APIKey: "sk-old", Enabled: true}},
 		Keys:     []*APIKey{{Key: "sk-gw", Enabled: true}},
 		Settings: DefaultSettings(),
 		Stats:    Stats{TotalRequests: 7, StartedAt: 1000},
@@ -156,7 +156,7 @@ func TestQueryLogsFilters(t *testing.T) {
 func TestAccountPage(t *testing.T) {
 	st := newStore(t)
 	for i := 0; i < 25; i++ {
-		st.UpsertAccount(&deepai.Account{
+		st.UpsertAccount(&model.Account{
 			ID:      "id" + strconv.Itoa(i),
 			APIKey:  "sk-" + strconv.Itoa(i),
 			Email:   "u" + strconv.Itoa(i) + "@x.com",
@@ -164,7 +164,7 @@ func TestAccountPage(t *testing.T) {
 			Enabled: true,
 		})
 	}
-	st.UpsertAccount(&deepai.Account{ID: "other", APIKey: "sk-other", Group: "g2", Enabled: true})
+	st.UpsertAccount(&model.Account{ID: "other", APIKey: "sk-other", Group: "g2", Enabled: true})
 
 	page := st.AccountPage(AccountQuery{Limit: 10})
 	if page.Total != 26 || len(page.Items) != 10 {
@@ -210,13 +210,13 @@ func TestAccountPageSorting(t *testing.T) {
 	st := newStore(t)
 	quota := []string{"5", "0", "9", ""}
 	for i := 0; i < 4; i++ {
-		a := &deepai.Account{
+		a := &model.Account{
 			ID: "id" + strconv.Itoa(i), APIKey: "sk-" + strconv.Itoa(i),
 			Email: "u" + strconv.Itoa(i) + "@x.com", Group: "g1", Enabled: true,
 			Failures: i,
 		}
 		if quota[i] != "" {
-			a.Theos = &deepai.Allowance{Enabled: true, Balance: quota[i]}
+			a.Theos = &model.Allowance{Enabled: true, Balance: quota[i]}
 		}
 		st.UpsertAccount(a)
 	}

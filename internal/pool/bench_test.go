@@ -4,21 +4,21 @@ import (
 	"strconv"
 	"testing"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // benchAccounts 构造 n 个健康账号（含一个 balance 字段，贴近真实快照）。
-func benchAccounts(n int) []*deepai.Account {
-	out := make([]*deepai.Account, 0, n)
+func benchAccounts(n int) []*model.Account {
+	out := make([]*model.Account, 0, n)
 	for i := 0; i < n; i++ {
-		out = append(out, &deepai.Account{
+		out = append(out, &model.Account{
 			ID:       "acc-" + strconv.Itoa(i),
 			Name:     "acc-" + strconv.Itoa(i),
 			APIKey:   "key-" + strconv.Itoa(i),
 			Enabled:  true,
 			Status:   "ok",
 			Failures: i % 3,
-			Theos:    &deepai.Allowance{Balance: "10", Granted: "20", Enabled: true},
+			Theos:    &model.Allowance{Balance: "10", Granted: "20", Enabled: true},
 		})
 	}
 	return out
@@ -44,7 +44,7 @@ func BenchmarkPick500(b *testing.B) {
 func BenchmarkPickFiltered500(b *testing.B) {
 	s := New()
 	accounts := benchAccounts(500)
-	skip := func(a *deepai.Account) bool { return a.ID == "acc-7" }
+	skip := func(a *model.Account) bool { return a.ID == "acc-7" }
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

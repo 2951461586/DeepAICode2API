@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // 这一组锁的是「失败怎么记账」与「错误标记怎么自愈」（docs/changes.md §45）。
@@ -16,17 +16,17 @@ import (
 // 只跳过 blocked —— 展示与事实脱节。
 
 func transientErr() error {
-	return &deepai.HTTPError{Op: "上游", Status: http.StatusTooManyRequests, Body: []byte(`{}`)}
+	return &model.HTTPError{Op: "上游", Status: http.StatusTooManyRequests, Body: []byte(`{}`)}
 }
 
 func hardErr() error {
-	return &deepai.HTTPError{Op: "上游", Status: http.StatusUnauthorized,
+	return &model.HTTPError{Op: "上游", Status: http.StatusUnauthorized,
 		Body: []byte(`{"error":{"code":"invalid_api_key"}}`)}
 }
 
 func TestMarkAccountFailureTransientKeepsStatus(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
+	st.UpsertAccount(&model.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
 
 	st.MarkAccountFailure("a1", transientErr())
 
@@ -41,12 +41,12 @@ func TestMarkAccountFailureTransientKeepsStatus(t *testing.T) {
 
 func TestMarkAccountFailureHardMarksError(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
+	st.UpsertAccount(&model.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
 
 	st.MarkAccountFailure("a1", hardErr())
 
 	a := st.Accounts()[0]
-	if a.Status != deepai.StatusError {
+	if a.Status != model.StatusError {
 		t.Fatalf("账号级失败应标 error，实际 %q", a.Status)
 	}
 	if a.LastErrAt == 0 {
@@ -56,8 +56,8 @@ func TestMarkAccountFailureHardMarksError(t *testing.T) {
 
 func TestMarkAccountSuccessClearsError(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true,
-		Status: deepai.StatusError, LastErr: "旧错误", LastErrAt: time.Now().Unix()})
+	st.UpsertAccount(&model.Account{ID: "a1", APIKey: "k1", Enabled: true,
+		Status: model.StatusError, LastErr: "旧错误", LastErrAt: time.Now().Unix()})
 
 	st.MarkAccountResult("a1", true, "")
 
@@ -70,28 +70,28 @@ func TestMarkAccountSuccessClearsError(t *testing.T) {
 
 func TestRecoverStaleErrors(t *testing.T) {
 	st := newStore(t)
-	stale := time.Now().Add(-deepai.ErrorStaleAfter - time.Minute).Unix()
+	stale := time.Now().Add(-model.ErrorStaleAfter - time.Minute).Unix()
 	fresh := time.Now().Unix()
-	st.UpsertAccount(&deepai.Account{ID: "stale", APIKey: "k-stale", Enabled: true, Status: deepai.StatusError, LastErrAt: stale})
-	st.UpsertAccount(&deepai.Account{ID: "fresh", APIKey: "k-fresh", Enabled: true, Status: deepai.StatusError, LastErrAt: fresh})
-	st.UpsertAccount(&deepai.Account{ID: "blocked", APIKey: "k-blocked", Enabled: true, Status: deepai.StatusBlocked, LastErrAt: stale})
+	st.UpsertAccount(&model.Account{ID: "stale", APIKey: "k-stale", Enabled: true, Status: model.StatusError, LastErrAt: stale})
+	st.UpsertAccount(&model.Account{ID: "fresh", APIKey: "k-fresh", Enabled: true, Status: model.StatusError, LastErrAt: fresh})
+	st.UpsertAccount(&model.Account{ID: "blocked", APIKey: "k-blocked", Enabled: true, Status: model.StatusBlocked, LastErrAt: stale})
 	// 老状态文件没有 last_err_at：也要能自愈。
-	st.UpsertAccount(&deepai.Account{ID: "legacy", APIKey: "k-legacy", Enabled: true, Status: deepai.StatusError})
+	st.UpsertAccount(&model.Account{ID: "legacy", APIKey: "k-legacy", Enabled: true, Status: model.StatusError})
 
 	if n := st.RecoverStaleErrors(time.Now()); n != 2 {
 		t.Fatalf("应自愈 2 个（stale + legacy），实际 %d", n)
 	}
-	byID := map[string]*deepai.Account{}
+	byID := map[string]*model.Account{}
 	for _, a := range st.Accounts() {
 		byID[a.ID] = a
 	}
 	if byID["stale"].Status != "ok" || byID["legacy"].Status != "ok" {
 		t.Fatalf("陈旧错误应置回 ok：stale=%q legacy=%q", byID["stale"].Status, byID["legacy"].Status)
 	}
-	if byID["fresh"].Status != deepai.StatusError {
+	if byID["fresh"].Status != model.StatusError {
 		t.Fatalf("新鲜错误不该被动：%q", byID["fresh"].Status)
 	}
-	if byID["blocked"].Status != deepai.StatusBlocked {
+	if byID["blocked"].Status != model.StatusBlocked {
 		t.Fatalf("blocked 不会自愈，不该被改：%q", byID["blocked"].Status)
 	}
 	// 幂等：再跑一次没有可改的。
@@ -102,14 +102,14 @@ func TestRecoverStaleErrors(t *testing.T) {
 
 func TestAccountCountsUsesStalenessAndBlocked(t *testing.T) {
 	st := newStore(t)
-	stale := time.Now().Add(-deepai.ErrorStaleAfter - time.Minute).Unix()
+	stale := time.Now().Add(-model.ErrorStaleAfter - time.Minute).Unix()
 	fresh := time.Now().Unix()
-	st.UpsertAccount(&deepai.Account{ID: "ok", APIKey: "k-ok", Enabled: true, Status: "ok"})
-	st.UpsertAccount(&deepai.Account{ID: "unknown", APIKey: "k-unknown", Enabled: true, Status: "unknown"})
-	st.UpsertAccount(&deepai.Account{ID: "staleErr", APIKey: "k-staleerr", Enabled: true, Status: deepai.StatusError, LastErrAt: stale})
-	st.UpsertAccount(&deepai.Account{ID: "freshErr", APIKey: "k-fresherr", Enabled: true, Status: deepai.StatusError, LastErrAt: fresh})
-	st.UpsertAccount(&deepai.Account{ID: "blocked", APIKey: "k-blocked", Enabled: true, Status: deepai.StatusBlocked})
-	st.UpsertAccount(&deepai.Account{ID: "off", APIKey: "k-off", Enabled: false, Status: "ok"})
+	st.UpsertAccount(&model.Account{ID: "ok", APIKey: "k-ok", Enabled: true, Status: "ok"})
+	st.UpsertAccount(&model.Account{ID: "unknown", APIKey: "k-unknown", Enabled: true, Status: "unknown"})
+	st.UpsertAccount(&model.Account{ID: "staleErr", APIKey: "k-staleerr", Enabled: true, Status: model.StatusError, LastErrAt: stale})
+	st.UpsertAccount(&model.Account{ID: "freshErr", APIKey: "k-fresherr", Enabled: true, Status: model.StatusError, LastErrAt: fresh})
+	st.UpsertAccount(&model.Account{ID: "blocked", APIKey: "k-blocked", Enabled: true, Status: model.StatusBlocked})
+	st.UpsertAccount(&model.Account{ID: "off", APIKey: "k-off", Enabled: false, Status: "ok"})
 
 	total, ready := st.AccountCounts()
 	if total != 6 {
@@ -123,7 +123,7 @@ func TestAccountCountsUsesStalenessAndBlocked(t *testing.T) {
 
 func TestSetAccountAllowanceTransientKeepsStatus(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
+	st.UpsertAccount(&model.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
 
 	// 探测失败（EOF）：不该把好号标成 error，但要退避。
 	st.SetAccountAllowance("a1", nil, errors.New("Get \"https://api.deepai.org\": unexpected EOF"))
@@ -138,7 +138,7 @@ func TestSetAccountAllowanceTransientKeepsStatus(t *testing.T) {
 
 	// 账号级失败要标 error。
 	st.SetAccountAllowance("a1", nil, hardErr())
-	if got := st.Accounts()[0].Status; got != deepai.StatusError {
+	if got := st.Accounts()[0].Status; got != model.StatusError {
 		t.Fatalf("账号级探测失败应标 error，实际 %q", got)
 	}
 }

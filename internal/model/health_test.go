@@ -1,4 +1,4 @@
-package deepai
+package model
 
 import (
 	"context"

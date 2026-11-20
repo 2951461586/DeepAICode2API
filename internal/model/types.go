@@ -25,7 +25,20 @@
 // **2026-11-14 起失效**：不带 `Api-Key` 的 `/models` 一律 401 auth_required，
 // 带任意账号的 Key 才 200。所以这两条路径现在都要借一个账号的凭据
 // （见 `Client.FetchModels` / `DetectLane` 与 docs/recon.md §2）。
-package deepai
+// Package model 是上游协议的「数据契约」：领域类型 + 协议常量。
+//
+// 为什么单独成包：这些类型（Account / Model / Allowance / …）与常量（车道、
+// 路径、错误码）原先住在 internal/deepai，而 deepai 同时是**传输层**
+// （Client / HTTP / 代理 / 重试）。于是持久化层（store）、选号策略（pool）、
+// 模型目录（registry）为了用一个 Account 结构体，必须依赖整个上游客户端。
+// 拆开后依赖方向变成：
+//
+//	store / pool / registry / credimport / respstate → model（叶子）
+//	deepai（Client）→ model
+//	server / poolsvc → 两者都用
+//
+// 本包只依赖标准库，任何包都可以安全依赖它。
+package model
 
 import (
 	"strings"

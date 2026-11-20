@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // --- 密钥 ---
@@ -37,7 +37,7 @@ func (s *Store) AddKey(name, group string) *APIKey {
 		group = "default"
 	}
 	k := &APIKey{
-		Key:       "sk-" + deepai.RandomHex(24),
+		Key:       "sk-" + model.RandomHex(24),
 		Name:      name,
 		Group:     group,
 		Enabled:   true,

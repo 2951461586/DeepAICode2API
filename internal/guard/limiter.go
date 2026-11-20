@@ -12,14 +12,14 @@ import (
 	"sync"
 	"time"
 
-	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
+	"deepaicode2api/internal/model"
 )
 
 // KeyID 把密钥映射成限流桶的键。
 //
 // 用指纹而不是明文：限流器是长期驻留内存的 map，没必要把完整密钥留在里面。
-func KeyID(key string) string { return deepai.KeyFingerprint(key) }
+func KeyID(key string) string { return model.KeyFingerprint(key) }
 
 // --- 数据面：按密钥限流 ---
 //

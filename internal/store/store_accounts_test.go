@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // LockAccountProbe 只加探测冷却与备注：不改状态、不累加失败次数。
@@ -18,8 +18,8 @@ import (
 // （docs/performance.md §14）。
 func TestLockAccountProbeKeepsStatus(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
-	st.SetAccountAllowance("a1", &deepai.Allowance{Enabled: true}, nil)
+	st.UpsertAccount(&model.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
+	st.SetAccountAllowance("a1", &model.Allowance{Enabled: true}, nil)
 	if err := st.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestLockAccountProbeKeepsStatus(t *testing.T) {
 // 已有更长的冷却时，短锁不能把它缩短。
 func TestLockAccountProbeKeepsLongerCooldown(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true})
+	st.UpsertAccount(&model.Account{ID: "a1", APIKey: "k1", Enabled: true})
 	far := time.Now().Add(12 * time.Hour).Truncate(time.Second)
 	st.LockAccountProbe("a1", far, "")
 	st.LockAccountProbe("a1", time.Now().Add(time.Minute), "")
@@ -69,7 +69,7 @@ func TestLockAccountProbeUnknown(t *testing.T) {
 // 探测失败按次退避 2m → 10m → 1h，成功即清零。
 func TestProbeCooldownBackoff(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true})
+	st.UpsertAccount(&model.Account{ID: "a1", APIKey: "k1", Enabled: true})
 
 	steps := []time.Duration{2 * time.Minute, 10 * time.Minute, time.Hour, time.Hour}
 	for i, want := range steps {
@@ -84,7 +84,7 @@ func TestProbeCooldownBackoff(t *testing.T) {
 		}
 	}
 
-	st.SetAccountAllowance("a1", &deepai.Allowance{Enabled: true}, nil)
+	st.SetAccountAllowance("a1", &model.Allowance{Enabled: true}, nil)
 	a := st.Accounts()[0]
 	if a.ProbeAfter != 0 || a.ProbeFailures != 0 {
 		t.Fatalf("成功应清零冷却，实际 after=%d failures=%d", a.ProbeAfter, a.ProbeFailures)
@@ -97,9 +97,9 @@ func TestProbeCooldownBackoff(t *testing.T) {
 // （docs/changes.md §61：同一账号 323 次/小时）。
 func TestRecordProbeFailureBacksOffOnlyProbe(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{
+	st.UpsertAccount(&model.Account{
 		ID: "a1", APIKey: "k1", Enabled: true, Status: "ok",
-		Theos: &deepai.Allowance{Enabled: true, CheckedAt: time.Now().Add(-time.Hour).Unix()},
+		Theos: &model.Allowance{Enabled: true, CheckedAt: time.Now().Add(-time.Hour).Unix()},
 	})
 
 	st.RecordProbeFailure("a1")
@@ -130,7 +130,7 @@ func TestRecordProbeFailureBacksOffOnlyProbe(t *testing.T) {
 	}
 
 	// 探测成功（任何写入额度的路径）都要把退避清零。
-	st.SetAccountAllowance("a1", &deepai.Allowance{Enabled: true}, nil)
+	st.SetAccountAllowance("a1", &model.Allowance{Enabled: true}, nil)
 	a = st.Accounts()[0]
 	if a.ProbeAfter != 0 || a.ProbeFailures != 0 {
 		t.Fatalf("成功应清零退避，实际 after=%d failures=%d", a.ProbeAfter, a.ProbeFailures)
@@ -140,7 +140,7 @@ func TestRecordProbeFailureBacksOffOnlyProbe(t *testing.T) {
 // 未知账号不 panic、不影响其它账号。
 func TestRecordProbeFailureUnknownAccount(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true})
+	st.UpsertAccount(&model.Account{ID: "a1", APIKey: "k1", Enabled: true})
 	st.RecordProbeFailure("nope")
 	if a := st.Accounts()[0]; a.ProbeFailures != 0 || a.ProbeAfter != 0 {
 		t.Fatalf("不应影响其它账号: %+v", a)
@@ -153,8 +153,8 @@ func TestRecordProbeFailureUnknownAccount(t *testing.T) {
 // 「绑定到一个已经被上游拦死的号」这种情况，让会话粘性变成持续失败。
 func TestPreferredAccountHonorsEligibility(t *testing.T) {
 	st := newStore(t)
-	st.UpsertAccount(&deepai.Account{ID: "a1", Name: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
-	st.UpsertAccount(&deepai.Account{ID: "a2", Name: "a2", APIKey: "k2", Enabled: true, Status: "ok", Group: "vip"})
+	st.UpsertAccount(&model.Account{ID: "a1", Name: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
+	st.UpsertAccount(&model.Account{ID: "a2", Name: "a2", APIKey: "k2", Enabled: true, Status: "ok", Group: "vip"})
 
 	if got := st.PreferredAccount("a1", ""); got == nil || got.ID != "a1" {
 		t.Fatalf("应返回 a1，实际 %+v", got)
@@ -178,7 +178,7 @@ func TestPreferredAccountHonorsEligibility(t *testing.T) {
 	if got := st.PreferredAccount("a1", ""); got != nil {
 		t.Fatalf("blocked 账号仍被返回: %+v", got)
 	}
-	st.UpdateAccount("a2", func(a *deepai.Account) { a.Enabled = false })
+	st.UpdateAccount("a2", func(a *model.Account) { a.Enabled = false })
 	if got := st.PreferredAccount("a2", ""); got != nil {
 		t.Fatalf("停用账号仍被返回: %+v", got)
 	}

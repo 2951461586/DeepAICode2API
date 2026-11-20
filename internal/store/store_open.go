@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 	"deepaicode2api/internal/pool"
 )
 
@@ -246,7 +246,7 @@ const saveTimestampGranularity = 300
 // 复用活指针会让 ToggleKey / DeleteKey 与 marshal 撞车（-race 可见）。
 func (s *Store) snapshotLocked() State {
 	snap := *s.st
-	snap.Accounts = make([]*deepai.Account, len(s.st.Accounts))
+	snap.Accounts = make([]*model.Account, len(s.st.Accounts))
 	for i, a := range s.st.Accounts {
 		c := a.Clone()
 		c.LastUsed = quantizeTimestamp(c.LastUsed)
@@ -270,11 +270,11 @@ func (s *Store) snapshotLocked() State {
 }
 
 // cloneModels 复制模型目录（含 Input 切片与 TheosPerSecond map）。
-func cloneModels(models []deepai.Model) []deepai.Model {
+func cloneModels(models []model.Model) []model.Model {
 	if models == nil {
 		return nil
 	}
-	out := make([]deepai.Model, len(models))
+	out := make([]model.Model, len(models))
 	for i, m := range models {
 		if m.Input != nil {
 			m.Input = append([]string(nil), m.Input...)

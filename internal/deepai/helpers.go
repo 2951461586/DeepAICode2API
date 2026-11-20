@@ -1,38 +1,11 @@
 package deepai
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
 	"strings"
 )
-
-// RandomHex 生成 n 字节的随机十六进制串。
-func RandomHex(n int) string {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return strings.Repeat("0", n*2)
-	}
-	return hex.EncodeToString(b)
-}
-
-// RandomToken 生成 n 字节随机数的十六进制串（用于 OAuth state）。
-func RandomToken(n int) string { return RandomHex(n) }
-
-// KeyFingerprint 返回 API Key 的 sha256 前 16 位十六进制。
-func KeyFingerprint(key string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(key)))
-	return hex.EncodeToString(sum[:8])
-}
-
-// ShortHash 返回 API Key 的短哈希，用于展示。
-func ShortHash(key string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(key)))
-	return hex.EncodeToString(sum[:4])
-}
 
 // MaskSecret 对敏感串脱敏，仅保留首尾片段。
 func MaskSecret(s string) string {

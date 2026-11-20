@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // writeCredential 在指定目录下写一个桌面端凭据文件。
@@ -173,7 +173,7 @@ func TestAccountFromAPIKeyValidation(t *testing.T) {
 	if !acct.IsPro {
 		t.Fatal("isPro 未透传")
 	}
-	if acct.Name != "DeepAI "+deepai.ShortHash("sk-ok") {
+	if acct.Name != "DeepAI "+model.ShortHash("sk-ok") {
 		t.Fatalf("无用户名时应生成兜底名，得到 %q", acct.Name)
 	}
 	if acct.ID == "" {
@@ -186,7 +186,7 @@ func TestAccountFromAPIKeyValidation(t *testing.T) {
 }
 
 func TestAccountFromRegistration(t *testing.T) {
-	r := deepai.Registration{
+	r := model.Registration{
 		Email:          "  bob@example.com  ",
 		Password:       "pw",
 		APIKey:         "sk-reg",
@@ -244,7 +244,7 @@ func TestAccountFromRegistration(t *testing.T) {
 }
 
 func TestAccountFromRegistrationEmptyGroup(t *testing.T) {
-	acct, err := AccountFromRegistration(deepai.Registration{APIKey: "sk-1", Username: "u"})
+	acct, err := AccountFromRegistration(model.Registration{APIKey: "sk-1", Username: "u"})
 	if err != nil {
 		t.Fatalf("AccountFromRegistration: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestEnvAccount(t *testing.T) {
 // 与 HTTP 客户端无关，测试跟着代码走。
 
 func TestRegistrationCarriesMachineID(t *testing.T) {
-	acct, err := AccountFromRegistration(deepai.Registration{
+	acct, err := AccountFromRegistration(model.Registration{
 		APIKey:    "sk-abc",
 		Email:     "a@b.com",
 		MachineID: "dddddddd-4444-4444-8444-444444444444",
@@ -312,7 +312,7 @@ func TestRegistrationCarriesMachineID(t *testing.T) {
 		t.Fatalf("注册信息里的机器指纹丢失: %q", acct.MachineID)
 	}
 	// 首尾空白应被裁剪。
-	acct2, err := AccountFromRegistration(deepai.Registration{
+	acct2, err := AccountFromRegistration(model.Registration{
 		APIKey: "sk-abc", Email: "a@b.com", MachineID: "  eeee  ",
 	})
 	if err != nil {
@@ -324,12 +324,12 @@ func TestRegistrationCarriesMachineID(t *testing.T) {
 }
 
 func TestAccountFromCredentialsPropagatesInvalidKey(t *testing.T) {
-	_, err := AccountFromCredentials(&deepai.Credentials{APIKey: "bad key"}, "desktop")
+	_, err := AccountFromCredentials(&model.Credentials{APIKey: "bad key"}, "desktop")
 	if err == nil || !strings.Contains(err.Error(), "格式非法") {
 		t.Fatalf("非法 Key 应透传校验错误，得到 %v", err)
 	}
 
-	acct, err := AccountFromCredentials(&deepai.Credentials{APIKey: "sk-x", Username: "u", IsPro: true}, "")
+	acct, err := AccountFromCredentials(&model.Credentials{APIKey: "sk-x", Username: "u", IsPro: true}, "")
 	if err != nil {
 		t.Fatalf("AccountFromCredentials: %v", err)
 	}
