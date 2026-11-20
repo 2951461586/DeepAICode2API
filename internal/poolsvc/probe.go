@@ -225,13 +225,11 @@ func (p *Service) ProbeBatch(ctx context.Context, accts []*deepai.Account, timeo
 		}
 		al, err := p.clientFor(a).Theos(cctx, a)
 		out[i].Allowance, out[i].Err = al, err
-		if err != nil && !strict {
-			// 自动批次同样要留退避（这里返回后不落任何状态，否则下一次
-			// NeedsRefresh 立刻又把这个号挑出来重探）。
-			p.store.RecordProbeFailure(a.ID)
-			return
-		}
-		// 策略拦截不是“额度探测失败”：单独落 blocked，调度器会跳过它。
+		// 策略拦截 / 签到限流与 strict 无关：它们不是「额度探测失败」，
+		// 而是要落的账号级终态与静默锁。之前把「!strict 早退」排在前面，
+		// 导致自动批次（后台守护 / 入池复探）永远不会把被上游要求改用
+		// Google/Apple 登录的号标成 blocked——只能靠退避每小时再磕一次，
+		// 而热路径的 ProbeAsync 却是会拦的，两条路径口径不一致。
 		if deepai.IsSocialLoginRequired(err) {
 			p.store.BlockAccount(a.ID, err.Error())
 			return
@@ -240,6 +238,12 @@ func (p *Service) ProbeBatch(ctx context.Context, accts []*deepai.Account, timeo
 		// 锁住额度探测，避免后台守护每 5 分钟再来磕一次 403。
 		if deepai.IsCheckInRefused(err) {
 			p.store.LockAccountProbe(a.ID, time.Now().Add(deepai.CheckInRefusedLock), err.Error())
+			return
+		}
+		if err != nil && !strict {
+			// 自动批次同样要留退避（这里返回后不落任何状态，否则下一次
+			// NeedsRefresh 立刻又把这个号挑出来重探）。
+			p.store.RecordProbeFailure(a.ID)
 			return
 		}
 		p.store.SetAccountAllowance(a.ID, al, err)

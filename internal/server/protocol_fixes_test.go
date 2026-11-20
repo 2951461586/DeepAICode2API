@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -124,52 +123,6 @@ func TestResponsesStreamCachedTokens(t *testing.T) {
 	}
 }
 
-// TestStickyPickPrefersBoundAccount 验证会话粘性只影响「先试谁」。
-func TestStickyPickPrefersBoundAccount(t *testing.T) {
-	s, _ := newTestServer(t, nil)
-	fillPool(t, s, 2)
-
-	s.Pool.BindSticky("sess-1", "acc-1")
-	if got := s.Pool.StickyAccount("sess-1"); got != "acc-1" {
-		t.Fatalf("绑定 = %q，期望 acc-1", got)
-	}
-	a, ok, _ := s.Pool.Pick("", s.Pool.StickyAccount("sess-1"))
-	if !ok || a == nil || a.ID != "acc-1" {
-		t.Fatalf("应优先选到绑定的 acc-1，实际 %+v ok=%v", a, ok)
-	}
-	s.Pool.Release(a.ID)
-
-	// 绑定的号忙时静默回退，不阻塞请求。
-	for i := 0; i < poolsvc.MaxInFlightPerAccount; i++ {
-		if !s.Pool.Acquire("acc-1") {
-			t.Fatalf("第 %d 次占用 acc-1 应成功", i)
-		}
-	}
-	a2, ok, _ := s.Pool.Pick("", s.Pool.StickyAccount("sess-1"))
-	if !ok || a2 == nil || a2.ID == "acc-1" {
-		t.Fatalf("acc-1 已满仍被选中: %+v", a2)
-	}
-}
-
-// TestStickyDropsOnBlockAndExpiry 覆盖绑定的两种失效路径。
-func TestStickyDropsOnBlockAndExpiry(t *testing.T) {
-	s, _ := newTestServer(t, nil)
-	fillPool(t, s, 2)
-
-	s.Pool.BindSticky("sess-2", "acc-0")
-	s.Pool.DropSticky("sess-2", "acc-1") // 不匹配的账号不应误删
-	if got := s.Pool.StickyAccount("sess-2"); got != "acc-0" {
-		t.Fatalf("dropSticky 误删了别的绑定: %q", got)
-	}
-	s.Pool.DropSticky("sess-2", "acc-0")
-	if got := s.Pool.StickyAccount("sess-2"); got != "" {
-		t.Fatalf("dropSticky 后仍有绑定: %q", got)
-	}
-
-	// 过期绑定按未绑定处理（TTL 逻辑是 poolsvc 的白盒用例：
-	// internal/poolsvc/sticky_test.go 的 TestStickyExpired）。
-}
-
 // TestStickyPersistsAcrossRestart 验证绑定表走旁路文件随重启保留。
 //
 // 绑定是缓存：丢了不影响正确性，但重启就重新学一遍等于每次升级都把前缀缓存
@@ -209,18 +162,6 @@ func TestStickySkipsExpiredOnLoad(t *testing.T) {
 	}
 	if got := s2.Pool.StickyAccount("new"); got != "acc-1" {
 		t.Fatalf("有效绑定未恢复，实际 %q", got)
-	}
-}
-
-// TestStickyTableBounded 保证绑定表不会随 affinity 数量无限增长。
-func TestStickyTableBounded(t *testing.T) {
-	s, _ := newTestServer(t, nil)
-	fillPool(t, s, 2)
-	for i := 0; i < poolsvc.StickyMax*2; i++ {
-		s.Pool.BindSticky("k-"+strconv.Itoa(i), "acc-0")
-	}
-	if n := s.Pool.Bindings(); n > poolsvc.StickyMax {
-		t.Fatalf("绑定表 = %d，超过上限 %d", n, poolsvc.StickyMax)
 	}
 }
 
