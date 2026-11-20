@@ -49,6 +49,8 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 	h.Set("Deprecation", "true")
 	h.Set("Sunset", stateSunset)
 	h.Add("Link", `</admin/api/overview>; rel="successor-version"`)
+	// 计数器进 Prometheus：日志只能人工 grep，而「连续 N 天为 0」才是删除的依据。
+	s.metrics.AddDeprecatedEndpoint(r.URL.Path)
 	logx.Warn("调用了已弃用的 /admin/api/state（请改用 overview + accounts 分页）",
 		"remote", r.RemoteAddr, "ua", r.UserAgent())
 

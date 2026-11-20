@@ -121,7 +121,8 @@ func TestEnrollAssignsMachine(t *testing.T) {
 	}
 }
 
-func TestStateExposesMachineSummary(t *testing.T) {
+// 账号列表里只下发机器指纹摘要（完整 UUID 不出网）。
+func TestAccountsExposeMachineSummary(t *testing.T) {
 	s := newEmptyServer(t)
 	s.Store.UpsertAccount(&deepai.Account{
 		ID: "a1", Name: "with", APIKey: "sk-1", Enabled: true,
@@ -129,12 +130,12 @@ func TestStateExposesMachineSummary(t *testing.T) {
 	})
 	s.Store.UpsertAccount(&deepai.Account{ID: "a2", Name: "without", APIKey: "sk-2", Enabled: true})
 
-	rec := call(t, s, "127.0.0.1:1", nil, "/admin/api/state")
+	rec := call(t, s, "127.0.0.1:1", nil, "/admin/api/accounts")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d", rec.Code)
 	}
 	out := decodeJSON[map[string]any](t, rec.Body.Bytes())
-	accts, _ := out["accounts"].([]any)
+	accts, _ := out["items"].([]any)
 	if len(accts) != 2 {
 		t.Fatalf("账号数 = %d", len(accts))
 	}

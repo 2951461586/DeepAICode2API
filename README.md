@@ -298,6 +298,33 @@ export ANTHROPIC_MODEL=glm-5.3-flash
 | POST | `/admin/api/login/poll` | 轮询登录结果（本机回调自动收，`status=pending\|ok\|error\|expired`） |
 | POST | `/admin/api/login/callback` | **粘贴回调 URL 完成登录**（`{session_id, callback}`）。Docker / 远程部署必用：浏览器落在 `127.0.0.1:<port>/auth-callback?code=…&state=…` 打不开时，把地址栏完整 URL 粘回来即可 |
 
+#### 已弃用的端点：`/admin/api/state`
+
+`GET /admin/api/state` 会把**全部账号**一次性拍平下发（603 个号约 430KB），
+已由两个端点取代：
+
+| 需要什么 | 用哪个 |
+| --- | --- |
+| 元信息（设置 / 统计 / 密钥 / 模型 / 车道 / 延迟） | `GET /admin/api/overview` |
+| 账号列表（分页 + 过滤 + 排序） | `GET /admin/api/accounts?offset=&limit=&group=&status=&q=&sort=&order=` |
+
+过渡期内该响应带标准弃用头，并在 `/metrics` 上计数，方便确认是否还有调用方：
+
+```text
+Deprecation: true
+Sunset: Wed, 20 May 2026 00:00:00 GMT
+Link: </admin/api/overview>; rel="successor-version"
+
+gateway_deprecated_endpoint_total{path="/admin/api/state"} 0
+```
+
+迁移就是两次请求：
+
+```bash
+curl -s -H "X-Admin-Password: $DEEPAI2API_ADMIN_PASSWORD"      http://127.0.0.1:10087/admin/api/overview
+curl -s -H "X-Admin-Password: $DEEPAI2API_ADMIN_PASSWORD"      'http://127.0.0.1:10087/admin/api/accounts?limit=200&offset=0'
+```
+
 ### 控制台
 
 | 路径 | 说明 |

@@ -93,10 +93,10 @@ func TestAuthRejectsDisabledKey(t *testing.T) {
 func TestAdminAuthLoopbackOnlyWithoutPassword(t *testing.T) {
 	s := newEmptyServer(t)
 
-	if rec := call(t, s, "192.168.1.10:1", nil, "/admin/api/state"); rec.Code != http.StatusForbidden {
+	if rec := call(t, s, "192.168.1.10:1", nil, "/admin/api/overview"); rec.Code != http.StatusForbidden {
 		t.Fatalf("局域网访问 → %d，期望 403", rec.Code)
 	}
-	if rec := call(t, s, "127.0.0.1:1", nil, "/admin/api/state"); rec.Code != http.StatusOK {
+	if rec := call(t, s, "127.0.0.1:1", nil, "/admin/api/overview"); rec.Code != http.StatusOK {
 		t.Fatalf("本机访问 → %d，期望 200：%s", rec.Code, rec.Body.String())
 	}
 }
@@ -106,16 +106,16 @@ func TestAdminAuthRequiresPassword(t *testing.T) {
 	s := newEmptyServer(t)
 	s.Store.UpdateSettings(func(st *store.Settings) { st.AdminPassword = "secret" })
 
-	if rec := call(t, s, "127.0.0.1:1", nil, "/admin/api/state"); rec.Code != http.StatusUnauthorized {
+	if rec := call(t, s, "127.0.0.1:1", nil, "/admin/api/overview"); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("缺密码 → %d，期望 401", rec.Code)
 	}
-	if rec := call(t, s, "127.0.0.1:1", map[string]string{"X-Admin-Password": "bad"}, "/admin/api/state"); rec.Code != http.StatusUnauthorized {
+	if rec := call(t, s, "127.0.0.1:1", map[string]string{"X-Admin-Password": "bad"}, "/admin/api/overview"); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("错密码 → %d，期望 401", rec.Code)
 	}
-	if rec := call(t, s, "192.168.1.10:1", map[string]string{"X-Admin-Password": "secret"}, "/admin/api/state"); rec.Code != http.StatusOK {
+	if rec := call(t, s, "192.168.1.10:1", map[string]string{"X-Admin-Password": "secret"}, "/admin/api/overview"); rec.Code != http.StatusOK {
 		t.Fatalf("正确密码 → %d，期望 200：%s", rec.Code, rec.Body.String())
 	}
-	if rec := call(t, s, "192.168.1.10:1", map[string]string{"Authorization": "Bearer secret"}, "/admin/api/state"); rec.Code != http.StatusOK {
+	if rec := call(t, s, "192.168.1.10:1", map[string]string{"Authorization": "Bearer secret"}, "/admin/api/overview"); rec.Code != http.StatusOK {
 		t.Fatalf("Bearer 密码 → %d，期望 200", rec.Code)
 	}
 }
@@ -213,7 +213,7 @@ func TestErrorMessageDoesNotLeakKey(t *testing.T) {
 	s.Store.UpsertAccount(&deepai.Account{ID: "a", Name: "n", APIKey: "sk-super-secret", Enabled: true})
 	key := s.Store.AddKey("k", "").Key
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/api/state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/overview", nil)
 	req.RemoteAddr = "127.0.0.1:1"
 	req.Header.Set("Authorization", "Bearer "+key)
 	rec := httptest.NewRecorder()

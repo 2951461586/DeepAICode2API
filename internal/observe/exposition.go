@@ -110,6 +110,10 @@ func (m *Metrics) WritePrometheus(w io.Writer, extra PromExtra) {
 	counter("gateway_fallback_total", "请求体形状被拒后按桌面端形状重试的次数",
 		[2]string{`gateway_fallback_total{reason="body_shape"}`, itoa64(m.fallbackTotal.Load())},
 	)
+	// 已弃用端点：连续 0 是删除它的前提（见 docs/changes.md 的退役记录）。
+	counter("gateway_deprecated_endpoint_total", "对已弃用管理端点的调用次数（按路径）",
+		[2]string{`gateway_deprecated_endpoint_total{path="/admin/api/state"}`, itoa64(m.deprecatedState.Load())},
+	)
 	// 依赖上游响应状态的请求：这些是「上下文看起来丢了」的第一现场。
 	// 合成路径（chat）会直接拒绝，透传路径交给上游（其能否续接尚未验证）。
 	counter("gateway_stateful_requests_total", "依赖上游保存响应状态的请求（按字段）",

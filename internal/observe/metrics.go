@@ -155,7 +155,15 @@ type Metrics struct {
 	statefulConv    atomic.Int64
 	statefulItemRef atomic.Int64
 	statefulReject  atomic.Int64
-	extra           *extraMetrics
+
+	// deprecatedState 统计对已弃用管理端点 /admin/api/state 的调用次数。
+	//
+	// 为什么需要它（而不只是日志）：这个端点带 Sunset 头、准备下线，
+	// 「还有没有人在用」只能靠观测回答。日志要人工 grep 且没有历史；
+	// 计数器能直接进 Prometheus，看「过去 N 天是否归零」就能决定能否删除。
+	deprecatedState atomic.Int64
+
+	extra *extraMetrics
 }
 
 // NewMetrics 返回一套归零的指标。
@@ -253,6 +261,19 @@ func (m *Metrics) ObserveAdmissionWait(d time.Duration) {
 // AddFallback 记录一次「请求体形状被拒 → 补形状重试」。
 func (m *Metrics) AddFallback() { m.fallbackTotal.Add(1) }
 
+// AddDeprecatedEndpoint 记录一次对已弃用管理端点的调用。
+//
+// 只认已知的弃用路径：这个计数是「能否删除该端点」的唯一依据，
+// 让任意路径都能自增会把它变成一个无意义的全局计数器。
+func (m *Metrics) AddDeprecatedEndpoint(path string) {
+	if path == "/admin/api/state" {
+		m.deprecatedState.Add(1)
+	}
+}
+
+// DeprecatedStateHits 返回 /admin/api/state 的累计调用次数。
+func (m *Metrics) DeprecatedStateHits() int64 { return m.deprecatedState.Load() }
+
 // AddStateful 记录一次依赖上游响应状态的请求。
 //
 // rejected=true 表示网关没有转发，而是回 400：合成路径（chat/completions）
@@ -281,6 +302,8 @@ type MetricsSnapshot struct {
 	CheckInStats map[string]int64         `json:"checkin_stats"`
 	Stateful     map[string]int64         `json:"stateful"`
 	Fallback     int64                    `json:"fallback_total"`
+	// DeprecatedState 是 /admin/api/state 的累计调用次数（下线依据）。
+	DeprecatedState int64 `json:"deprecated_state_hits"`
 }
 
 // UpstreamErrView 是一条聚合后的上游错误。
@@ -330,7 +353,8 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 			"item_reference":       m.statefulItemRef.Load(),
 			"rejected":             m.statefulReject.Load(),
 		},
-		Fallback: m.fallbackTotal.Load(),
+		Fallback:        m.fallbackTotal.Load(),
+		DeprecatedState: m.deprecatedState.Load(),
 	}
 }
 

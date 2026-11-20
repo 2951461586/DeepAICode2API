@@ -103,11 +103,13 @@ func TestOverviewETag(t *testing.T) {
 	}
 }
 
-// 兼容端点支持 ?accounts=0 只取元信息。
-func TestStateEndpointCanOmitAccounts(t *testing.T) {
+// 元信息端点只给账号**数量**，不下发账号数组（那会随号池规模线性增长）。
+//
+// 这条契约替代了已下线的 /admin/api/state?accounts=0 兼容分支。
+func TestOverviewOmitsAccountList(t *testing.T) {
 	s, key := newTestServer(t, nil)
 
-	rec := do(t, s, http.MethodGet, "/admin/api/state?accounts=0", key, "")
+	rec := do(t, s, http.MethodGet, "/admin/api/overview", key, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d", rec.Code)
 	}
@@ -115,8 +117,11 @@ func TestStateEndpointCanOmitAccounts(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil {
 		t.Fatalf("解析: %v", err)
 	}
-	if v, ok := d["accounts"]; ok && v != nil {
-		t.Fatalf("accounts 应为空，实际 %#v", v)
+	if _, isArray := d["accounts"].([]any); isArray {
+		t.Fatalf("overview 不应下发账号数组，实际 %#v", d["accounts"])
+	}
+	if _, ok := d["accounts"].(float64); !ok {
+		t.Fatalf("accounts 应是账号总数，实际 %#v", d["accounts"])
 	}
 	if _, ok := d["stats"]; !ok {
 		t.Fatal("元信息仍应存在")
