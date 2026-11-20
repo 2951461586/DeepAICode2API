@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/jsonx"
 )
 
 // --- Anthropic → OpenAI ---
@@ -223,7 +223,7 @@ func AppendAnthropicMessage(messages *[]any, m AnthropicMessage) error {
 					"type": "image_url", "image_url": map[string]any{"url": u},
 				})
 			} else {
-				name := FirstString(b["title"], b["name"])
+				name := jsonx.FirstString(b["title"], b["name"])
 				if name == "" {
 					name = "document"
 				}
@@ -407,7 +407,7 @@ func ChatToAnthropicMessage(out map[string]any, publicModel string) map[string]a
 	}
 
 	return map[string]any{
-		"id":            "msg_" + deepai.RandomHex(12),
+		"id":            newID("msg"),
 		"type":          "message",
 		"role":          "assistant",
 		"model":         publicModel,
@@ -469,9 +469,9 @@ func AnthropicTextLen(msg map[string]any) int {
 		}
 		switch cm["type"] {
 		case "text":
-			total += LenOfString(cm["text"])
+			total += jsonx.LenOfString(cm["text"])
 		case "thinking":
-			total += LenOfString(cm["thinking"])
+			total += jsonx.LenOfString(cm["thinking"])
 		}
 	}
 	return total

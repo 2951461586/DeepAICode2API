@@ -1,4 +1,4 @@
-package httpx
+package server
 
 import (
 	"context"
@@ -8,6 +8,10 @@ import (
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/store"
 )
+
+// 为什么在 server 而不是 internal/httpx：这个映射要知道「领域错误」（上游
+// HTTPError / 客户端断开），属于装配层的知识。放在 httpx 会让一个自称
+// 「纯叶子」的 HTTP 工具包反向依赖 deepai 与 store（持久化层）。
 
 // StatusOf 把一次请求的错误映射成日志里的状态码。
 //

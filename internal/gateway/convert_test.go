@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"deepaicode2api/internal/jsonx"
 )
 
 // 本文件直接覆盖转换层本体。
@@ -690,12 +692,12 @@ func TestAnthropicBlockWriterInterleavedToolCalls(t *testing.T) {
 		switch e.name {
 		case "content_block_start":
 			cb, _ := e.body["content_block"].(map[string]any)
-			open = &block{id: StrOf(cb["id"]), name: StrOf(cb["name"])}
+			open = &block{id: jsonx.StrOf(cb["id"]), name: jsonx.StrOf(cb["name"])}
 			blocks = append(blocks, open)
 		case "content_block_delta":
 			d, _ := e.body["delta"].(map[string]any)
-			if StrOf(d["type"]) == "input_json_delta" && open != nil {
-				open.args += StrOf(d["partial_json"])
+			if jsonx.StrOf(d["type"]) == "input_json_delta" && open != nil {
+				open.args += jsonx.StrOf(d["partial_json"])
 			}
 		case "content_block_stop":
 			if open != nil {
@@ -764,7 +766,7 @@ func TestAnthropicBlockWriter(t *testing.T) {
 		if e.name != "content_block_start" {
 			continue
 		}
-		if idx := IntOf(e.body["index"]); idx <= last {
+		if idx := jsonx.IntOf(e.body["index"]); idx <= last {
 			t.Fatalf("块 index 未递增: %d → %d", last, idx)
 		} else {
 			last = idx

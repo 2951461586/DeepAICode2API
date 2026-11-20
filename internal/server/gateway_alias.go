@@ -9,7 +9,10 @@ package server
 //
 // 新增转换逻辑请直接写到 internal/gateway，不要在本文件里加实现。
 
-import "deepaicode2api/internal/gateway"
+import (
+	"deepaicode2api/internal/gateway"
+	"deepaicode2api/internal/jsonx"
+)
 
 type (
 	// Usage 是上游返回的用量（token / 成本）。
@@ -27,12 +30,15 @@ type (
 
 var (
 	// 用量解析。
-	parseUsage  = gateway.ParseUsage
-	intOf       = gateway.IntOf
-	floatOf     = gateway.FloatOf
-	lenOfString = gateway.LenOfString
-	strOf       = gateway.StrOf
-	boolOf      = gateway.BoolOf
+	parseUsage = gateway.ParseUsage
+
+	// JSON 宽松取值（纯叶子，见 internal/jsonx）。
+	intOf       = jsonx.IntOf
+	floatOf     = jsonx.FloatOf
+	lenOfString = jsonx.LenOfString
+	strOf       = jsonx.StrOf
+	boolOf      = jsonx.BoolOf
+	firstString = jsonx.FirstString
 
 	// errNoMessages 表示转换后没有可用消息（映射成 400）。
 	errNoMessages = gateway.ErrNoMessages
@@ -41,7 +47,6 @@ var (
 	statefulParam = gateway.StatefulParam
 
 	// Anthropic ⇄ Chat 映射。
-	firstString              = gateway.FirstString
 	anthropicToChatPayload   = gateway.AnthropicToChatPayload
 	anthropicEffort          = gateway.AnthropicEffort
 	appendAnthropicMessage   = gateway.AppendAnthropicMessage

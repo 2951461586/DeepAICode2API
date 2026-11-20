@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"deepaicode2api/internal/gateway"
+	"deepaicode2api/internal/jsonx"
 )
 
 // msgItem 造一則標準 Responses message item（測試輔助）。
@@ -182,7 +182,7 @@ func TestTruncateHistoryDropsOrphanToolOutputs(t *testing.T) {
 	}
 	for _, it := range out {
 		m, _ := it.(map[string]any)
-		if gateway.StrOf(m["type"]) == "function_call_output" {
+		if jsonx.StrOf(m["type"]) == "function_call_output" {
 			t.Fatalf("配對的 function_call 已被裁掉，仍留下孤立 output（上游會 400）：%#v", out)
 		}
 	}
@@ -203,7 +203,7 @@ func TestTruncateHistoryDropsOrphanToolOutputs(t *testing.T) {
 	var calls, outputs int
 	for _, it := range pout {
 		m, _ := it.(map[string]any)
-		switch gateway.StrOf(m["type"]) {
+		switch jsonx.StrOf(m["type"]) {
 		case "function_call":
 			calls++
 		case "function_call_output":

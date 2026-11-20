@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
-	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/store"
 )
 
@@ -62,7 +61,7 @@ func TestStatusOfUsesUpstreamStatusCode(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := httpx.StatusOf(c.err); got != c.want {
+			if got := StatusOf(c.err); got != c.want {
 				t.Fatalf("statusOf = %d，期望 %d", got, c.want)
 			}
 		})

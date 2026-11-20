@@ -15,7 +15,7 @@ package respstate
 // historyCheckpointEvery 輪存一份完整快照作為檢查點：記憶體降到 O(總量)
 // 的最壞 O(h²/interval)，鏈上父條目被淘汰時也能從最近的檢查點還原。
 //
-// 本包不依賴 internal/server：只用到 internal/gateway 的取值工具，因此可以
+// 本包不依賴 internal/server：只用到 internal/jsonx 的取值工具，因此可以
 // 脫離 HTTP 層單獨測試。
 
 import (
@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	"deepaicode2api/internal/gateway"
+	"deepaicode2api/internal/jsonx"
 )
 
 // historyCheckpointEvery 是檢查點間隔（輪）。
@@ -320,7 +320,7 @@ func (h *Store) Replay(payload map[string]any, prevID, modelID string, contextWi
 	// 目錄標示（mimo-flash 140k、glyph 256k），其餘 9 個免費模型可吃滿 320k。
 	// 讓網關先裁剪並留下標記，也不要讓上游偷偷砍歷史。
 	limit := EffectiveContextWindow(modelID, contextWindow)
-	instructions := gateway.StrOf(payload["instructions"])
+	instructions := jsonx.StrOf(payload["instructions"])
 	if instructions == "" {
 		instructions = inherited
 	}
@@ -334,7 +334,7 @@ func (h *Store) Replay(payload map[string]any, prevID, modelID string, contextWi
 	// 輸出預算：客戶端要求的 max_output_tokens 也要在窗口內。不預留的話，
 	// 歷史貼著上限時上游只能二選一：截斷歷史（失憶）或超額。
 	reserve := 0
-	if n := gateway.IntOf(payload["max_output_tokens"]); n > 0 {
+	if n := jsonx.IntOf(payload["max_output_tokens"]); n > 0 {
 		reserve = n
 	}
 	if limit > 0 {
@@ -345,7 +345,7 @@ func (h *Store) Replay(payload map[string]any, prevID, modelID string, contextWi
 			total += costs[i]
 		}
 		if total+reserve > limit {
-			if gateway.StrOf(payload["truncation"]) != "auto" {
+			if jsonx.StrOf(payload["truncation"]) != "auto" {
 				return TooLong, "重放後的請求（對話歷史 + 工具定義）約 " + itoaApprox(total) +
 					" tokens" + reserveNote(reserve) +
 					"，超過模型有效上下文 contextWindow " + itoaApprox(limit) +
@@ -365,7 +365,7 @@ func (h *Store) Replay(payload map[string]any, prevID, modelID string, contextWi
 	}
 
 	payload["input"] = merged
-	if gateway.StrOf(payload["instructions"]) == "" && inherited != "" {
+	if jsonx.StrOf(payload["instructions"]) == "" && inherited != "" {
 		payload["instructions"] = inherited
 	}
 	delete(payload, "previous_response_id")
@@ -407,7 +407,7 @@ func truncateHistoryWithCosts(items []any, costs []int, budget int) []any {
 	headEnd := 0
 	for headEnd < len(items) {
 		m, ok := items[headEnd].(map[string]any)
-		if !ok || gateway.StrOf(m["role"]) != "system" {
+		if !ok || jsonx.StrOf(m["role"]) != "system" {
 			break
 		}
 		headEnd++
@@ -479,7 +479,7 @@ func dropOrphanToolOutputs(items []any) []any {
 			out = append(out, it)
 			continue
 		}
-		switch gateway.StrOf(m["type"]) {
+		switch jsonx.StrOf(m["type"]) {
 		case "function_call":
 			if id := toolCallID(m); id != "" {
 				active[id] = struct{}{}
@@ -489,7 +489,7 @@ func dropOrphanToolOutputs(items []any) []any {
 				continue // 配對的 function_call 已被裁掉：丟掉，否則上游 400
 			}
 		case "message", "":
-			if gateway.StrOf(m["role"]) != "system" {
+			if jsonx.StrOf(m["role"]) != "system" {
 				reset()
 			}
 		}
@@ -501,10 +501,10 @@ func dropOrphanToolOutputs(items []any) []any {
 // toolCallID 取 function_call / function_call_output 的配對 id；
 // 與 gateway 的 FirstString(call_id, id) 保持同一套回退規則。
 func toolCallID(m map[string]any) string {
-	if id := gateway.StrOf(m["call_id"]); id != "" {
+	if id := jsonx.StrOf(m["call_id"]); id != "" {
 		return id
 	}
-	return gateway.StrOf(m["id"])
+	return jsonx.StrOf(m["id"])
 }
 
 // perModelContextWindow 是實測得出的「例外」上限：少數模型的可靠窗口
