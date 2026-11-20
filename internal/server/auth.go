@@ -42,7 +42,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		// 按密钥隔离的限流：令牌桶（RPS）+ 在途并发。默认 0 = 不限。
-		release, ok, retryAfter := s.rateLimitGate(key)
+		release, ok, retryAfter := s.rateLimitGate(r, key)
 		if !ok {
 			guard.WriteRateLimited(w, retryAfter)
 			return
@@ -61,7 +61,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 // 另外对写操作（非 GET/HEAD/OPTIONS）做同源校验，阻断跨站请求伪造。
 func (s *Server) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if pw := s.Store.Settings().AdminPassword; pw != "" {
+		if pw := s.settings(r).AdminPassword; pw != "" {
 			// 先看退避：处于退避期的来源直接 429，不再给口令对错的提示。
 			if !s.checkAdminThrottle(w, r) {
 				return
@@ -120,7 +120,7 @@ func (s *Server) adminSameOrigin(r *http.Request) bool {
 	if strings.EqualFold(u.Host, r.Host) {
 		return true
 	}
-	return guard.InAllowList(origin, s.Store.Settings().CORSOrigin)
+	return guard.InAllowList(origin, s.settings(r).CORSOrigin)
 }
 
 func (s *Server) resolveKeyRef(ref string) string {

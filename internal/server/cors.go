@@ -16,7 +16,7 @@ import (
 // 需局域网访问时在设置里显式列出逗号分隔的来源。不提供通配符。
 func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		guard.WriteHeaders(w, guard.Origin(r.Header.Get("Origin"), s.Store.Settings().CORSOrigin))
+		guard.WriteHeaders(w, guard.Origin(r.Header.Get("Origin"), s.settings(r).CORSOrigin))
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

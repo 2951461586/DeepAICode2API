@@ -29,7 +29,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 	if acctTotal == 0 {
 		return nil, nil, errors.New("没有可用账号，请先在控制台导入桌面端凭据或添加 API Key")
 	}
-	settings := s.Store.Settings()
+	settings := s.settingsOf(ctx)
 	// 预置桌面端形状：只对「已被上游按形状拒绝过」的调用方生效（shape.go），
 	// 且只补 system、不裁剪字段，因此不会改调用方显式给的采样参数。
 	if path == deepai.PathChat && settings.PresetDesktopShape && apiKey != "" && s.shapeNeeded(apiKey) {
@@ -37,10 +37,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			body = alt
 		}
 	}
-	maxTries := settings.MaxRetries
-	if maxTries <= 0 {
-		maxTries = 3
-	}
+	maxTries := settings.RuntimeView().MaxRetries // 已归一化（>=1），无需兜底
 	if maxTries > acctTotal+2 {
 		maxTries = acctTotal + 2
 	}

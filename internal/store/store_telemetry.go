@@ -6,7 +6,10 @@ import (
 
 // --- 设置 / 统计 / 日志 ---
 
-// Settings 返回设置快照。
+// Settings 返回设置快照（已归一化）。
+//
+// 归一化放在读取处而不是写入处：手改过状态文件、旧版本落下缺字段的文件，
+// 都会从这里得到一致的可运行值，消费端不必再各自兜底（见 settings.go）。
 func (s *Store) Settings() Settings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -15,7 +18,7 @@ func (s *Store) Settings() Settings {
 	for k, v := range s.st.Settings.ModelAliases {
 		cp.ModelAliases[k] = v
 	}
-	return cp
+	return cp.Normalize()
 }
 
 // UpdateSettings 局部更新设置。

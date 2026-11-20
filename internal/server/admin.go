@@ -64,14 +64,15 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 	}
 	safeKeys := safeKeyList(s.Store.Keys())
 	catalog := s.catalog()
+	settings := s.settings(r)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"accounts":       safe,
 		"keys":           safeKeys,
-		"models":         registry.List(catalog, s.Store.Settings().ModelAliases),
+		"models":         registry.List(catalog, settings.ModelAliases),
 		"default_model":  s.Store.DefaultModel(),
 		"models_updated": s.Store.ModelsUpdated(),
 		"machine_id":     shortMachine(s.Store.MachineID()),
-		"settings":       sanitizedSettings(s.Store.Settings()),
+		"settings":       sanitizedSettings(settings),
 		"stats":          s.Store.Stats(),
 		"upstream":       s.Up.Origin,
 	})
@@ -257,7 +258,17 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
 		return
 	}
-	s.Store.UpdateSettings(func(st *store.Settings) { body.apply(st) })
+	// 先合进副本再校验，通不过就不落地：只改一半的状态比不改更难排障。
+	// 校验规则与默认值都在 store.Settings 上（Normalize / Validate），
+	// 与运行期读取共用同一套口径。
+	next := s.Store.Settings()
+	body.apply(&next)
+	next = next.Normalize()
+	if err := next.Validate(); err != nil {
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		return
+	}
+	s.Store.UpdateSettings(func(st *store.Settings) { *st = next })
 	if !s.persistOrFail(w) {
 		return
 	}

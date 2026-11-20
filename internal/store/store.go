@@ -207,9 +207,9 @@ type Store struct {
 func DefaultSettings() Settings {
 	return Settings{
 		ModelAliases:   map[string]string{},
-		RequestTimeout: 600,
-		MaxRetries:     3,
-		LogKeep:        500,
+		RequestTimeout: DefaultRequestTimeout,
+		MaxRetries:     DefaultMaxRetries,
+		LogKeep:        DefaultLogKeep,
 		// 默认仅放行本机来源；如需局域网访问，在控制台显式配置。
 		CORSOrigin:    "",
 		FallbackModel: "",

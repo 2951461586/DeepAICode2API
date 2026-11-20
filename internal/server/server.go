@@ -196,8 +196,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/js/", s.handleConsoleAsset)
 	mux.HandleFunc("/", s.handleRoot)
 
+	// 顺序（由外到内）：设置快照 → CORS → 观测 → 压缩 → 路由。
+	// 设置快照必须最外层：CORS 来源校验、鉴权、限流、handler 与上游调用
+	// 都必须看到同一份设置（同一请求里不能一半新一半旧）。
 	// 压缩在最内层：外层（观测）看到的是压缩后的字节数。
-	return s.withCORS(observe.Middleware(s.metrics, httpx.WithGzip(mux)))
+	return s.withSettingsSnapshot(s.withCORS(observe.Middleware(s.metrics, httpx.WithGzip(mux))))
 }
 
 // RefreshModels 从上游拉取模型目录并落盘。
@@ -227,6 +230,7 @@ func (s *Server) RefreshModels(ctx context.Context) ([]deepai.Model, error) {
 // --- 基础端点 ---
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	settings := s.settings(r)
 	// 口径见 deepai.AccountReady / AccountDegraded 与额度时效；
 	// 与 /metrics 共用 poolSnapshot，避免两处给出互相矛盾的数。
 	pool := s.poolSnapshot()
@@ -246,11 +250,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"lane_drift":    s.LaneDrift(),
 		"models":        len(models),
 		"default_model": s.Store.DefaultModel(),
-		"strict_model":  s.Store.Settings().StrictModel,
+		"strict_model":  settings.StrictModel,
 		"machine_id":    shortMachine(s.Store.MachineID()),
 		"machine_ready": s.Store.MachineID() != "",
 		// 控制台据此决定是否把用户送到 /login：未设口令时本机直接放行。
-		"admin_required": s.Store.Settings().AdminPassword != "",
+		"admin_required": settings.AdminPassword != "",
 	})
 }
 
@@ -260,7 +264,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	catalog := s.catalog()
-	models := registry.List(catalog, s.Store.Settings().ModelAliases)
+	settings := s.settings(r)
+	models := registry.List(catalog, settings.ModelAliases)
 	data := make([]map[string]any, 0, len(models))
 	now := time.Now().Unix()
 	for _, m := range models {

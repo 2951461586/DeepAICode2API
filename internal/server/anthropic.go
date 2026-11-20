@@ -223,10 +223,10 @@ func writeAnthropicErr(w http.ResponseWriter, code int, typ, msg string) {
 }
 
 // requestTimeout 返回设置里的请求超时。
+// requestTimeout 返回单请求整体预算。
+//
+// 默认值与范围校验在 store.Settings.Normalize / Validate 里统一定义，
+// 这里不再重复「<=0 就取 600」——那种兜底曾经散在三处。
 func (s *Server) requestTimeout() time.Duration {
-	sec := s.Store.Settings().RequestTimeout
-	if sec <= 0 {
-		sec = 600
-	}
-	return time.Duration(sec) * time.Second
+	return s.Store.Settings().RuntimeView().RequestTimeout
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -68,21 +69,21 @@ func TestKeyConcurrencyLimit(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	s.Store.UpdateSettings(func(st *store.Settings) { st.KeyConcurrency = 1 })
 
-	release, ok, _ := s.rateLimitGate("fingerprint-a")
+	release, ok, _ := s.rateLimitGate(httptest.NewRequest(http.MethodPost, "/", nil), "fingerprint-a")
 	if !ok {
 		t.Fatal("第一个请求应拿到并发名额")
 	}
-	if _, ok, _ := s.rateLimitGate("fingerprint-a"); ok {
+	if _, ok, _ := s.rateLimitGate(httptest.NewRequest(http.MethodPost, "/", nil), "fingerprint-a"); ok {
 		t.Fatal("同一密钥的第二个并发请求应被拒绝")
 	}
 	// 不同密钥互不影响。
-	releaseB, okB, _ := s.rateLimitGate("fingerprint-b")
+	releaseB, okB, _ := s.rateLimitGate(httptest.NewRequest(http.MethodPost, "/", nil), "fingerprint-b")
 	if !okB {
 		t.Fatal("不同密钥不应共享并发名额")
 	}
 	release()
 	releaseB()
-	if _, ok, _ := s.rateLimitGate("fingerprint-a"); !ok {
+	if _, ok, _ := s.rateLimitGate(httptest.NewRequest(http.MethodPost, "/", nil), "fingerprint-a"); !ok {
 		t.Fatal("名额归还后应能再次获取")
 	}
 }
