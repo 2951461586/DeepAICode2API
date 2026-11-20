@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/deepai"
 )
 
@@ -114,7 +115,7 @@ func TestAdminActionImportFromDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	cred := `{"apiKey":"sk-from-desktop","username":"desk@example.com"}`
-	if err := os.WriteFile(filepath.Join(dir, deepai.CredentialFile), []byte(cred), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, credimport.CredentialFile), []byte(cred), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -140,7 +141,7 @@ func TestAdminActionImportFromDir(t *testing.T) {
 	if !got.Imported[0].New {
 		t.Fatal("首次导入应为新建")
 	}
-	if !strings.HasSuffix(got.Imported[0].Path, deepai.CredentialFile) {
+	if !strings.HasSuffix(got.Imported[0].Path, credimport.CredentialFile) {
 		t.Fatalf("导入路径 = %q", got.Imported[0].Path)
 	}
 	if acct := s.Store.Account(got.Imported[0].ID); acct == nil || acct.Source != "desktop" {

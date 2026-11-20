@@ -6,8 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -103,22 +101,6 @@ func TestBodyRejectedAcceptsNewMessage(t *testing.T) {
 	}
 }
 
-// TestHomeDirFallback 覆盖主目录不可用时的回落顺序。
-func TestHomeDirFallback(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// Windows 上 os.UserHomeDir 读 USERPROFILE，两者都清空才会失败。
-		t.Setenv("USERPROFILE", "")
-		t.Setenv("HOMEDRIVE", "")
-		t.Setenv("HOMEPATH", "")
-	} else {
-		t.Setenv("HOME", "")
-	}
-	// 无论是否拿到真实主目录，都不允许返回空串。
-	if got := HomeDir(); got == "" {
-		t.Fatal("HomeDir 不应为空串")
-	}
-}
-
 // TestDoTransportError 覆盖连接失败：错误必须原样上抛并被判定为瞬时故障。
 func TestDoTransportError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
@@ -168,36 +150,6 @@ func TestDetectLaneServerErrorFallback(t *testing.T) {
 	_, err := c.DetectLane(context.Background(), nil)
 	if err == nil || !strings.Contains(err.Error(), "所有候选车道都被上游拒绝") {
 		t.Fatalf("全 5xx 应给出兜底错误，得到 %v", err)
-	}
-}
-
-// TestImportCredentialFileReadError 覆盖「路径存在但读不了」。
-func TestImportCredentialFileReadError(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := importCredentialFile(dir); err == nil ||
-		!strings.Contains(err.Error(), "读取凭据失败") {
-		t.Fatalf("目录当作凭据文件应报读取失败，得到 %v", err)
-	}
-	if _, err := importCredentialFile(dir + string(os.PathSeparator) + "missing.bin"); err == nil {
-		t.Fatal("不存在的文件应报错")
-	}
-}
-
-func TestAccountFromCredentialsPropagatesInvalidKey(t *testing.T) {
-	_, err := AccountFromCredentials(&Credentials{APIKey: "bad key"}, "desktop")
-	if err == nil || !strings.Contains(err.Error(), "格式非法") {
-		t.Fatalf("非法 Key 应透传校验错误，得到 %v", err)
-	}
-
-	acct, err := AccountFromCredentials(&Credentials{APIKey: "sk-x", Username: "u", IsPro: true}, "")
-	if err != nil {
-		t.Fatalf("AccountFromCredentials: %v", err)
-	}
-	if acct.Source != "manual" {
-		t.Fatalf("空 source 应回落 manual，得到 %q", acct.Source)
-	}
-	if acct.Name != "u" || !acct.IsPro {
-		t.Fatalf("字段丢失: %+v", acct)
 	}
 }
 

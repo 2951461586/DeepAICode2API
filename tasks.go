@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/poolsvc"
 	"deepaicode2api/internal/server"
@@ -98,7 +99,7 @@ func quotaGuard(srv *server.Server, stop <-chan struct{}) {
 
 // autoImport 在启动时尝试导入本机桌面端凭据。
 func autoImport(st *store.Store, dir string) {
-	results, err := deepai.ImportAllFromDesktop(dir)
+	results, err := credimport.ImportAllFromDesktop(dir)
 	if err != nil {
 		log.Printf("未自动导入桌面端凭据（可在控制台手动导入）: %v", err)
 		return
@@ -122,7 +123,7 @@ func autoImport(st *store.Store, dir string) {
 }
 
 func runImport(st *store.Store, dir string) {
-	results, err := deepai.ImportAllFromDesktop(dir)
+	results, err := credimport.ImportAllFromDesktop(dir)
 	if err != nil {
 		log.Fatalf("导入失败: %v", err)
 	}

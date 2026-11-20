@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/deepai"
 )
 
@@ -133,14 +134,14 @@ func main() {
 
 func resolveAccount(dir, key string) *deepai.Account {
 	if key != "" {
-		acct, err := deepai.AccountFromAPIKey(key, "", "probe", false)
+		acct, err := credimport.AccountFromAPIKey(key, "", "probe", false)
 		if err != nil {
 			fmt.Println("API Key 非法:", err)
 			return nil
 		}
 		return acct
 	}
-	results, err := deepai.ImportAllFromDesktop(dir)
+	results, err := credimport.ImportAllFromDesktop(dir)
 	if err != nil {
 		return nil
 	}

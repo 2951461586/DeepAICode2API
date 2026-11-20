@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/envfile"
 	"deepaicode2api/internal/logx"
 	"deepaicode2api/internal/machine"
@@ -112,7 +112,7 @@ func main() {
 	if !*noImport {
 		autoImport(st, *deepaiDir)
 	}
-	if envAcct := deepai.EnvAccount(); envAcct != nil {
+	if envAcct := credimport.EnvAccount(); envAcct != nil {
 		if isNew := st.UpsertAccount(envAcct); isNew {
 			log.Printf("已从 DEEPAI_API_KEY 添加账号 %s", envAcct.Name)
 			_ = st.Save()

@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"strings"
 
+	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/machine"
@@ -135,7 +136,7 @@ func (s *Server) adminImport(w http.ResponseWriter, raw []byte) {
 	if !ok {
 		return
 	}
-	results, err := deepai.ImportAllFromDesktop(body.Dir)
+	results, err := credimport.ImportAllFromDesktop(body.Dir)
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "导入失败: "+err.Error(), "invalid_request_error")
 		return
@@ -160,7 +161,7 @@ func (s *Server) adminManual(w http.ResponseWriter, raw []byte) {
 	if !ok {
 		return
 	}
-	acct, err := deepai.AccountFromAPIKey(body.APIKey, body.Name, "manual", false)
+	acct, err := credimport.AccountFromAPIKey(body.APIKey, body.Name, "manual", false)
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
@@ -196,7 +197,7 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 	if reg.MachineID == "" {
 		reg.MachineID = machine.NewUUID()
 	}
-	acct, err := deepai.AccountFromRegistration(reg)
+	acct, err := credimport.AccountFromRegistration(reg)
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return

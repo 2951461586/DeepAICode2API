@@ -64,30 +64,6 @@ func TestTheosUsesAccountMachine(t *testing.T) {
 	}
 }
 
-func TestRegistrationCarriesMachineID(t *testing.T) {
-	acct, err := AccountFromRegistration(Registration{
-		APIKey:    "sk-abc",
-		Email:     "a@b.com",
-		MachineID: "dddddddd-4444-4444-8444-444444444444",
-	})
-	if err != nil {
-		t.Fatalf("AccountFromRegistration: %v", err)
-	}
-	if acct.MachineID != "dddddddd-4444-4444-8444-444444444444" {
-		t.Fatalf("注册信息里的机器指纹丢失: %q", acct.MachineID)
-	}
-	// 首尾空白应被裁剪。
-	acct2, err := AccountFromRegistration(Registration{
-		APIKey: "sk-abc", Email: "a@b.com", MachineID: "  eeee  ",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acct2.MachineID != "eeee" {
-		t.Fatalf("机器指纹未裁剪: %q", acct2.MachineID)
-	}
-}
-
 // 推理侧必须复用注册时的浏览器指纹，否则“Chrome 注册 + 空 UA 推理”本身就是异常信号。
 func TestClientPerAccountFingerprintHeaders(t *testing.T) {
 	var got http.Header

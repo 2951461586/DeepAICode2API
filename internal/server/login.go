@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/machine"
@@ -439,7 +440,7 @@ func (s *Server) completeLogin(session *loginSession) map[string]any {
 	if result.Err != "" || result.Creds == nil {
 		return map[string]any{"status": "error", "error": result.Err}
 	}
-	acct, err := deepai.AccountFromCredentials(result.Creds, "oauth")
+	acct, err := credimport.AccountFromCredentials(result.Creds, "oauth")
 	if err != nil {
 		return map[string]any{"status": "error", "error": err.Error()}
 	}

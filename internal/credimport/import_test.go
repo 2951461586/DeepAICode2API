@@ -1,10 +1,13 @@
-package deepai
+package credimport
 
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"deepaicode2api/internal/deepai"
 )
 
 // writeCredential 在指定目录下写一个桌面端凭据文件。
@@ -170,14 +173,11 @@ func TestAccountFromAPIKeyValidation(t *testing.T) {
 	if !acct.IsPro {
 		t.Fatal("isPro 未透传")
 	}
-	if acct.Name != "DeepAI "+ShortHash("sk-ok") {
+	if acct.Name != "DeepAI "+deepai.ShortHash("sk-ok") {
 		t.Fatalf("无用户名时应生成兜底名，得到 %q", acct.Name)
 	}
 	if acct.ID == "" {
 		t.Fatal("ID 不应为空")
-	}
-	if acct.ID == (&Account{ID: "x"}).ID {
-		_ = 0
 	}
 	// ID 必须是 8 字节随机 hex（16 字符）。
 	if len(acct.ID) != 16 || strings.Trim(acct.ID, "0123456789abcdef") != "" {
@@ -186,7 +186,7 @@ func TestAccountFromAPIKeyValidation(t *testing.T) {
 }
 
 func TestAccountFromRegistration(t *testing.T) {
-	r := Registration{
+	r := deepai.Registration{
 		Email:          "  bob@example.com  ",
 		Password:       "pw",
 		APIKey:         "sk-reg",
@@ -244,7 +244,7 @@ func TestAccountFromRegistration(t *testing.T) {
 }
 
 func TestAccountFromRegistrationEmptyGroup(t *testing.T) {
-	acct, err := AccountFromRegistration(Registration{APIKey: "sk-1", Username: "u"})
+	acct, err := AccountFromRegistration(deepai.Registration{APIKey: "sk-1", Username: "u"})
 	if err != nil {
 		t.Fatalf("AccountFromRegistration: %v", err)
 	}
@@ -293,5 +293,177 @@ func TestEnvAccount(t *testing.T) {
 	t.Setenv("DEEPAI_API_KEY", "sk-with space")
 	if got := EnvAccount(); got != nil {
 		t.Fatalf("非法 Key 应返回 nil，得到 %+v", got)
+	}
+}
+
+// 从 internal/deepai 迁入：这两个用例断言的都是「构造器」行为，
+// 与 HTTP 客户端无关，测试跟着代码走。
+
+func TestRegistrationCarriesMachineID(t *testing.T) {
+	acct, err := AccountFromRegistration(deepai.Registration{
+		APIKey:    "sk-abc",
+		Email:     "a@b.com",
+		MachineID: "dddddddd-4444-4444-8444-444444444444",
+	})
+	if err != nil {
+		t.Fatalf("AccountFromRegistration: %v", err)
+	}
+	if acct.MachineID != "dddddddd-4444-4444-8444-444444444444" {
+		t.Fatalf("注册信息里的机器指纹丢失: %q", acct.MachineID)
+	}
+	// 首尾空白应被裁剪。
+	acct2, err := AccountFromRegistration(deepai.Registration{
+		APIKey: "sk-abc", Email: "a@b.com", MachineID: "  eeee  ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acct2.MachineID != "eeee" {
+		t.Fatalf("机器指纹未裁剪: %q", acct2.MachineID)
+	}
+}
+
+func TestAccountFromCredentialsPropagatesInvalidKey(t *testing.T) {
+	_, err := AccountFromCredentials(&deepai.Credentials{APIKey: "bad key"}, "desktop")
+	if err == nil || !strings.Contains(err.Error(), "格式非法") {
+		t.Fatalf("非法 Key 应透传校验错误，得到 %v", err)
+	}
+
+	acct, err := AccountFromCredentials(&deepai.Credentials{APIKey: "sk-x", Username: "u", IsPro: true}, "")
+	if err != nil {
+		t.Fatalf("AccountFromCredentials: %v", err)
+	}
+	if acct.Source != "manual" {
+		t.Fatalf("空 source 应回落 manual，得到 %q", acct.Source)
+	}
+	if acct.Name != "u" || !acct.IsPro {
+		t.Fatalf("字段丢失: %+v", acct)
+	}
+}
+
+// TestHomeDirFallback 覆盖主目录不可用时的回落顺序。
+func TestHomeDirFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows 上 os.UserHomeDir 读 USERPROFILE，两者都清空才会失败。
+		t.Setenv("USERPROFILE", "")
+		t.Setenv("HOMEDRIVE", "")
+		t.Setenv("HOMEPATH", "")
+	} else {
+		t.Setenv("HOME", "")
+	}
+	// 无论是否拿到真实主目录，都不允许返回空串。
+	if got := homeDir(); got == "" {
+		t.Fatal("HomeDir 不应为空串")
+	}
+}
+
+// TestImportCredentialFileReadError 覆盖「路径存在但读不了」。
+func TestImportCredentialFileReadError(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := importCredentialFile(dir); err == nil ||
+		!strings.Contains(err.Error(), "读取凭据失败") {
+		t.Fatalf("目录当作凭据文件应报读取失败，得到 %v", err)
+	}
+	if _, err := importCredentialFile(dir + string(os.PathSeparator) + "missing.bin"); err == nil {
+		t.Fatal("不存在的文件应报错")
+	}
+}
+
+// 桌面端目录探测的用例随 homeDir / desktopBaseDirs / desktopSecretDirs 迁入。
+func TestHomeDirIsNonEmpty(t *testing.T) {
+	if got := homeDir(); got == "" {
+		t.Fatal("HomeDir 任何时候都不应返回空串（需保证有回落）")
+	}
+}
+
+func TestDesktopBaseDirsExplicit(t *testing.T) {
+	got := desktopBaseDirs("/tmp/explicit-home")
+	if len(got) != 1 || got[0] != "/tmp/explicit-home" {
+		t.Fatalf("显式路径应原样返回单元素，得到 %v", got)
+	}
+}
+
+// TestDesktopBaseDirsFromEnv 覆盖两个候选环境变量并验证去重。
+
+func TestDesktopBaseDirsFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("T3CODE_HOME", dir)
+	t.Setenv("DEEPAI_CODE_HOME", "  "+dir+"  ") // 同值（带空白）应被去重
+
+	got := desktopBaseDirs("")
+	if len(got) != 2 {
+		t.Fatalf("期望 [envDir, ~/.deepai-code]，得到 %v", got)
+	}
+	if got[0] != dir {
+		t.Fatalf("首个候选应来自 T3CODE_HOME 且已去空白，得到 %q", got[0])
+	}
+	if !strings.HasSuffix(got[1], filepath.Join(".deepai-code")) {
+		t.Fatalf("末位候选应为 ~/.deepai-code，得到 %q", got[1])
+	}
+
+	// 环境变量清空后只剩主目录候选。
+	t.Setenv("T3CODE_HOME", "")
+	t.Setenv("DEEPAI_CODE_HOME", "")
+	if got := desktopBaseDirs(""); len(got) != 1 {
+		t.Fatalf("无环境变量时应只有一个候选，得到 %v", got)
+	}
+}
+
+// TestDesktopSecretDirsLayouts 覆盖“用户可能指到任意一层”的四种形态。
+func TestDesktopSecretDirsLayouts(t *testing.T) {
+	base := t.TempDir()
+
+	// 1) 指向 baseDir：展开成三个候选（userdata/secrets、secrets、dev/secrets）。
+	got := desktopSecretDirs(base)
+	want := []string{
+		filepath.Join(base, "userdata", "secrets"),
+		filepath.Join(base, "secrets"),
+		filepath.Join(base, "dev", "secrets"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("baseDir 展开 = %v，期望 %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("baseDir 展开[%d] = %q，期望 %q", i, got[i], want[i])
+		}
+	}
+
+	// 2) 直接指向凭据文件：回落到它所在目录。
+	file := filepath.Join(base, CredentialFile)
+	if err := os.WriteFile(file, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := desktopSecretDirs(file); len(got) != 1 || got[0] != base {
+		t.Fatalf("凭据文件应回落到所在目录，得到 %v", got)
+	}
+
+	// 3) 指向不存在的路径：仍展开三个候选（调用方自己 Stat）。
+	missing := filepath.Join(base, "nope")
+	if got := desktopSecretDirs(missing); len(got) != 3 {
+		t.Fatalf("不存在的路径也应展开候选，得到 %v", got)
+	}
+
+	// 4) 空串：沿用 DesktopBaseDirs 的探测结果。
+	t.Setenv("T3CODE_HOME", base)
+	t.Setenv("DEEPAI_CODE_HOME", "")
+	got = desktopSecretDirs("")
+	if len(got) != 6 { // base 的 3 个 + ~/.deepai-code 的 3 个
+		t.Fatalf("空串探测应有 6 个候选，得到 %v", got)
+	}
+}
+
+func TestDedupeNormalizesCaseAndClean(t *testing.T) {
+	// Windows 下大小写不敏感，Linux 下 cleaner 只做 path.Clean；
+	// dedupe 统一小写比较，两种平台都应只保留一份。
+	got := dedupe([]string{"/a/b", "/a/b/", "/A/B", "/a//b", "/a/c"})
+	if len(got) != 2 {
+		t.Fatalf("dedupe 结果 = %v，期望 2 项", got)
+	}
+	if got[0] != "/a/b" {
+		t.Fatalf("dedupe 应保留首次出现的原值，得到 %q", got[0])
+	}
+	if got := dedupe(nil); len(got) != 0 {
+		t.Fatalf("nil 输入应返回空切片，得到 %v", got)
 	}
 }

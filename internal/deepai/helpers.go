@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -44,78 +43,6 @@ func MaskSecret(s string) string {
 		return s[:1] + "***"
 	}
 	return s[:6] + "..." + s[len(s)-4:]
-}
-
-// HomeDir 返回当前用户主目录（失败时回落到当前目录）。
-func HomeDir() string {
-	if h, err := os.UserHomeDir(); err == nil && h != "" {
-		return h
-	}
-	if h := os.Getenv("USERPROFILE"); h != "" {
-		return h
-	}
-	return "."
-}
-
-// DesktopBaseDirs 返回本机 DeepAI Code 桌面端数据目录候选。
-//
-// 上游逻辑（apps/desktop/DesktopStatePaths.ts）：
-//
-//	baseDir = T3CODE_HOME || ~/.deepai-code
-//	stateDir = baseDir/userdata（开发模式且未显式指定时用 baseDir/dev）
-//
-// secrets 位于 stateDir/secrets。
-func DesktopBaseDirs(explicit string) []string {
-	if explicit != "" {
-		return []string{explicit}
-	}
-	var out []string
-	for _, env := range []string{"T3CODE_HOME", "DEEPAI_CODE_HOME"} {
-		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
-			out = append(out, v)
-		}
-	}
-	out = append(out, filepath.Join(HomeDir(), ".deepai-code"))
-	return dedupe(out)
-}
-
-// DesktopSecretDirs 把 baseDir 展开为可能包含 secrets 的目录。
-//
-// 同时接受 baseDir、stateDir、secrets 目录或凭据文件本身，
-// 方便用户直接把路径指到任意层级。
-func DesktopSecretDirs(explicit string) []string {
-	var out []string
-	for _, base := range DesktopBaseDirs(explicit) {
-		base = strings.TrimSpace(base)
-		if base == "" {
-			continue
-		}
-		info, err := os.Stat(base)
-		if err == nil && !info.IsDir() {
-			out = append(out, filepath.Dir(base))
-			continue
-		}
-		out = append(out,
-			filepath.Join(base, "userdata", "secrets"),
-			filepath.Join(base, "secrets"),
-			filepath.Join(base, "dev", "secrets"),
-		)
-	}
-	return dedupe(out)
-}
-
-func dedupe(in []string) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(in))
-	for _, v := range in {
-		key := strings.ToLower(filepath.Clean(v))
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, v)
-	}
-	return out
 }
 
 // EnvOr 返回环境变量值或默认值。

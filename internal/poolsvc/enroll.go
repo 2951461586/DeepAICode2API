@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/deepai"
 )
 
@@ -32,7 +33,7 @@ func (p *Service) MarkVerified(id, email string) error {
 
 // EnrollRegistration 是入池的唯一写入口（管理接口与浏览器登录共用）。
 func (p *Service) EnrollRegistration(reg deepai.Registration, al *deepai.Allowance) (string, bool, error) {
-	acct, err := deepai.AccountFromRegistration(reg)
+	acct, err := credimport.AccountFromRegistration(reg)
 	if err != nil {
 		return "", false, err
 	}
