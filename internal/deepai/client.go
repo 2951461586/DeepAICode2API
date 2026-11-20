@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"deepaicode2api/internal/machine"
 )
 
 // maxJSONBytes 限制上游 JSON 响应体大小（模型目录 / 配额 / 搜索）。
@@ -339,7 +341,7 @@ func NewClientWithFingerprint(proxyRaw, userAgent string) *Client {
 	}
 	return &Client{
 		Origin:             origin,
-		Machine:            MachineID(),
+		Machine:            machine.ID(),
 		UserAgent:          strings.TrimSpace(userAgent),
 		Proxy:              proxyRaw,
 		Instance:           newInstanceID(),
@@ -394,14 +396,14 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 		req.Header.Set(HeaderInstance, c.Instance)
 	}
 	// 机器指纹优先取账号级：上游按它发放每日免费额度，共用会互相抵消。
-	machine := c.Machine
+	machineFP := c.Machine
 	if acct != nil && acct.MachineID != "" {
-		if fp := MachineFingerprint(acct.MachineID); fp != "" {
-			machine = fp
+		if derived := machine.Fingerprint(acct.MachineID); derived != "" {
+			machineFP = derived
 		}
 	}
-	if machine != "" {
-		req.Header.Set(HeaderMachine, machine)
+	if machineFP != "" {
+		req.Header.Set(HeaderMachine, machineFP)
 	}
 
 	// 两种指纹形态二选一，不混用：

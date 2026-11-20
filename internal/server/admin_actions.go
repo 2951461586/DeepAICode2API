@@ -23,6 +23,7 @@ import (
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
+	"deepaicode2api/internal/machine"
 	"deepaicode2api/internal/poolsvc"
 	"deepaicode2api/internal/proxy"
 )
@@ -193,7 +194,7 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 	}
 	// 每个账号必须有独立机器指纹；否则上游的每日免费额度会与其他账号互斥。
 	if reg.MachineID == "" {
-		reg.MachineID = deepai.NewMachineUUID()
+		reg.MachineID = machine.NewUUID()
 	}
 	acct, err := deepai.AccountFromRegistration(reg)
 	if err != nil {
@@ -292,7 +293,7 @@ func (s *Server) adminAssignMachine(w http.ResponseWriter, raw []byte) {
 		if strings.TrimSpace(a.MachineID) != "" {
 			return false
 		}
-		a.MachineID = deepai.NewMachineUUID()
+		a.MachineID = machine.NewUUID()
 		targets = append(targets, a.Clone())
 		return true
 	})

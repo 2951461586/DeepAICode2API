@@ -1,4 +1,13 @@
-package deepai
+// Package machine 负责「本机机器指纹」：读固件/系统标识 → sha256。
+//
+// 为什么单独成包：它要 exec 平台命令（Windows 的 powershell/reg、macOS 的
+// ioreg、Linux 的 /etc/machine-id）、做 sync.Once 缓存，而 internal/deepai
+// 的其余部分是「一个 HTTP 请求怎么发」。原先混在一起时，任何只想要
+// Account/Model 类型的包都会被拖进 OS 探测与 exec 的依赖里。
+//
+// 上游按机器每天发一次免费 Theos，所以指纹必须稳定；读不到时返回空串
+// （调用方据此不发该请求头，而不是发一个空值）。
+package machine
 
 import (
 	"context"
@@ -14,22 +23,22 @@ import (
 	"time"
 )
 
-// UUIDPattern 匹配标准 UUID 字符串。
-var UUIDPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+// uuidPattern 匹配标准 UUID 字符串。
+var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
-// SMBIOSPlaceholders 是固件常见的占位 UUID，不能作为稳定机器标识。
-var SMBIOSPlaceholders = map[string]bool{
+// smbiosPlaceholders 是固件常见的占位 UUID，不能作为稳定机器标识。
+var smbiosPlaceholders = map[string]bool{
 	"00000000-0000-0000-0000-000000000000": true,
 	"ffffffff-ffff-ffff-ffff-ffffffffffff": true,
 	"03000200-0400-0500-0006-000700080009": true,
 }
 
 var (
-	machineOnce sync.Once
-	machineID   string
+	idOnce  sync.Once
+	idValue string
 )
 
-// MachineID 返回本机稳定的机器指纹（原始标识的 sha256）。
+// ID 返回本机稳定的机器指纹（原始标识的 sha256）。
 //
 // 上游用它按天发放免费 Theos：同一台机器每天只发一次。
 // 结果在进程内只计算一次；读不到时返回空串（上游会拒绝免费额度，
@@ -39,23 +48,23 @@ var (
 // 便于容器 / 无 SMBIOS 环境部署。
 //
 // 注意：这是**本机**指纹，只适合不需要区分账号的请求（模型目录等）。
-// 推理 / 配额请求应优先使用 Account.MachineID（见 MachineFingerprint），
+// 推理 / 配额请求应优先使用账号自带的 MachineID（见 Fingerprint），
 // 否则多个账号共用一个指纹，上游只会给第一个账号发放每日额度。
-func MachineID() string {
-	machineOnce.Do(func() {
+func ID() string {
+	idOnce.Do(func() {
 		raw := strings.TrimSpace(os.Getenv("DEEPAI_MACHINE_ID"))
 		if raw == "" {
 			raw = detectMachineRaw()
 		}
-		machineID = MachineFingerprint(raw)
+		idValue = Fingerprint(raw)
 	})
-	return machineID
+	return idValue
 }
 
-// MachineFingerprint 把原始机器标识（UUID / machine-id）转成上游要求的 sha256 十六进制。
+// Fingerprint 把原始机器标识（UUID / machine-id）转成上游要求的 sha256 十六进制。
 //
 // 空串返回空串：调用方据此“不发该请求头”，而不是发一个空值。
-func MachineFingerprint(raw string) string {
+func Fingerprint(raw string) string {
 	raw = strings.ToLower(strings.TrimSpace(raw))
 	if raw == "" {
 		return ""
@@ -64,11 +73,11 @@ func MachineFingerprint(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// NewMachineUUID 生成一个新的随机 UUID（v4）。
+// NewUUID 生成一个新的随机 UUID（v4）（v4）。
 //
 // 每个注册账号分配一个独立的机器指纹，才能各自拿到上游按机器发放的每日额度；
 // 全局共用一个指纹时，只有第一个账号能拿到额度（其余 balance=0）。
-func NewMachineUUID() string {
+func NewUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return ""
@@ -109,7 +118,7 @@ func detectMachineRaw() string {
 	case "darwin":
 		out := run(ctx, "ioreg", "-rd1", "-c", "IOPlatformExpertDevice")
 		if m := regexp.MustCompile(`"IOPlatformUUID"\s*=\s*"([^"]+)"`).FindStringSubmatch(out); len(m) == 2 {
-			if UUIDPattern.MatchString(m[1]) {
+			if uuidPattern.MatchString(m[1]) {
 				return strings.ToLower(m[1])
 			}
 		}
@@ -131,12 +140,12 @@ func detectMachineRaw() string {
 
 // parseUUID 提取并校验第一个非占位 UUID。
 func parseUUID(s string) string {
-	m := UUIDPattern.FindString(s)
+	m := uuidPattern.FindString(s)
 	if m == "" {
 		return ""
 	}
 	low := strings.ToLower(m)
-	if SMBIOSPlaceholders[low] {
+	if smbiosPlaceholders[low] {
 		return ""
 	}
 	return low
@@ -168,7 +177,7 @@ func parseMachineGuid(out string) string {
 	if len(m) != 2 {
 		return ""
 	}
-	if UUIDPattern.MatchString(m[1]) {
+	if uuidPattern.MatchString(m[1]) {
 		return strings.ToLower(m[1])
 	}
 	return strings.TrimSpace(m[1])

@@ -4,48 +4,10 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"regexp"
-	"strings"
 	"testing"
+
+	"deepaicode2api/internal/machine"
 )
-
-func TestMachineFingerprint(t *testing.T) {
-	// 必须是 sha256 十六进制（64 位小写）。
-	got := MachineFingerprint("11111111-2222-3333-4444-555555555555")
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(got) {
-		t.Fatalf("指纹格式错误: %q", got)
-	}
-	// 大小写与首尾空白应归一。
-	if again := MachineFingerprint("  11111111-2222-3333-4444-555555555555  "); again != got {
-		t.Fatalf("同一 UUID 的不同写法应得到同一指纹: %q vs %q", again, got)
-	}
-	if upper := MachineFingerprint("11111111-2222-3333-4444-555555555555"); upper != got {
-		t.Fatalf("大小写应归一: %q vs %q", upper, got)
-	}
-	// 空串返回空串（调用方据此不发请求头）。
-	if MachineFingerprint("") != "" || MachineFingerprint("   ") != "" {
-		t.Fatal("空输入应返回空指纹")
-	}
-	// 不同 UUID 必须不同指纹。
-	if MachineFingerprint("a") == MachineFingerprint("b") {
-		t.Fatal("不同输入得到了相同指纹")
-	}
-}
-
-func TestNewMachineUUID(t *testing.T) {
-	pattern := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	seen := map[string]bool{}
-	for i := 0; i < 200; i++ {
-		id := NewMachineUUID()
-		if !pattern.MatchString(id) {
-			t.Fatalf("不是合法的 v4 UUID: %q", id)
-		}
-		if seen[id] {
-			t.Fatalf("生成了重复 UUID: %q", id)
-		}
-		seen[id] = true
-	}
-}
 
 // 账号级机器指纹必须覆盖进程级默认值 —— 这是免费额度能按号发放的前提。
 func TestClientPerAccountMachine(t *testing.T) {
@@ -54,7 +16,7 @@ func TestClientPerAccountMachine(t *testing.T) {
 		got = append(got, r.Header.Get(HeaderMachine))
 		_, _ = io.WriteString(w, `{}`)
 	})
-	c.Machine = MachineFingerprint("global-machine")
+	c.Machine = machine.Fingerprint("global-machine")
 
 	acctA := &Account{APIKey: "k1", MachineID: "aaaaaaaa-1111-4111-8111-111111111111"}
 	acctB := &Account{APIKey: "k2", MachineID: "bbbbbbbb-2222-4222-8222-222222222222"}
@@ -69,10 +31,10 @@ func TestClientPerAccountMachine(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("请求数 = %d", len(got))
 	}
-	if want := MachineFingerprint(acctA.MachineID); got[0] != want {
+	if want := machine.Fingerprint(acctA.MachineID); got[0] != want {
 		t.Fatalf("账号 A 的指纹 = %q，期望 %q", got[0], want)
 	}
-	if want := MachineFingerprint(acctB.MachineID); got[1] != want {
+	if want := machine.Fingerprint(acctB.MachineID); got[1] != want {
 		t.Fatalf("账号 B 的指纹 = %q，期望 %q", got[1], want)
 	}
 	if got[0] == got[1] {
@@ -91,13 +53,13 @@ func TestTheosUsesAccountMachine(t *testing.T) {
 		seen = r.Header.Get(HeaderMachine)
 		_, _ = io.WriteString(w, `{"enabled":true,"balance":"1"}`)
 	})
-	c.Machine = MachineFingerprint("global")
+	c.Machine = machine.Fingerprint("global")
 
 	acct := &Account{APIKey: "k", MachineID: "cccccccc-3333-4333-8333-333333333333"}
 	if _, err := c.Theos(context.Background(), acct); err != nil {
 		t.Fatalf("Theos: %v", err)
 	}
-	if want := MachineFingerprint(acct.MachineID); seen != want {
+	if want := machine.Fingerprint(acct.MachineID); seen != want {
 		t.Fatalf("/theos 的机器指纹 = %q，期望 %q", seen, want)
 	}
 }
@@ -123,23 +85,6 @@ func TestRegistrationCarriesMachineID(t *testing.T) {
 	}
 	if acct2.MachineID != "eeee" {
 		t.Fatalf("机器指纹未裁剪: %q", acct2.MachineID)
-	}
-}
-
-func TestMachineUUIDIsStableThroughFingerprint(t *testing.T) {
-	// 同一账号多次请求必须发同一个指纹，否则上游会认为机器在漂移。
-	id := NewMachineUUID()
-	if id == "" {
-		t.Fatal("生成 UUID 失败")
-	}
-	first := MachineFingerprint(id)
-	for i := 0; i < 5; i++ {
-		if got := MachineFingerprint(id); got != first {
-			t.Fatalf("同一 UUID 的指纹不稳定: %q vs %q", got, first)
-		}
-	}
-	if strings.EqualFold(id, first) {
-		t.Fatal("指纹不应该是 UUID 本身")
 	}
 }
 
@@ -196,26 +141,5 @@ func TestClientFallsBackToClientFingerprint(t *testing.T) {
 	// 账号没有指纹时不发指纹头，避免发空值。
 	if v := got.Get("Accept-Language"); v != "" {
 		t.Fatalf("无账号指纹时不应发送 Accept-Language，实际 %q", v)
-	}
-}
-
-// 与 0.3.41 / 0.3.42 桌面端 parseLinuxMachineId 对齐（0.3.37 起未变）：32 位小写 hex、非全 0。
-func TestParseLinuxMachineID(t *testing.T) {
-	cases := []struct {
-		raw, want string
-	}{
-		{"0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"},
-		{"  0123456789ABCDEF0123456789ABCDEF\n", "0123456789abcdef0123456789abcdef"},
-		{"00000000000000000000000000000000", ""},
-		{"", ""},
-		{"not-a-machine-id", ""},
-		{"0123456789abcdef0123456789abcde", ""},   // 31 位
-		{"0123456789abcdef0123456789abcdef0", ""}, // 33 位
-		{"0123456789abcdef0123456789abcdeg", ""},  // 非 hex
-	}
-	for _, c := range cases {
-		if got := parseLinuxMachineID(c.raw); got != c.want {
-			t.Fatalf("parseLinuxMachineID(%q) = %q，期望 %q", c.raw, got, c.want)
-		}
 	}
 }

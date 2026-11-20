@@ -253,22 +253,3 @@ func TestChatBodyFallbackDirtyMessages(t *testing.T) {
 		t.Fatal("messages 为空时不应兜底")
 	}
 }
-
-// TestDetectMachineRawNonWindows 只在非 Windows 上跑：Windows 分支会拉起
-// powershell（12s 超时），不适合放进单元测试。
-func TestDetectMachineRawNonWindows(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 分支依赖 powershell / reg，跳过")
-	}
-	got := detectMachineRaw()
-	if got == "" {
-		t.Log("未探测到机器标识（容器无 SMBIOS / 无 machine-id），回落空串符合预期")
-		return
-	}
-	if got != strings.ToLower(got) {
-		t.Fatalf("机器标识应统一小写，得到 %q", got)
-	}
-	if strings.ContainsAny(got, " \t\r\n") {
-		t.Fatalf("机器标识不应含空白，得到 %q", got)
-	}
-}

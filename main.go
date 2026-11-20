@@ -21,6 +21,7 @@ import (
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/envfile"
 	"deepaicode2api/internal/logx"
+	"deepaicode2api/internal/machine"
 	"deepaicode2api/internal/server"
 	"deepaicode2api/internal/store"
 )
@@ -83,10 +84,10 @@ func main() {
 		return
 	}
 
-	machine := deepai.MachineID()
-	if machine != "" {
-		st.SetMachineID(machine)
-		log.Printf("机器指纹: %s…（用于上游按天发放免费 Theos）", machine[:12])
+	machineID := machine.ID()
+	if machineID != "" {
+		st.SetMachineID(machineID)
+		log.Printf("机器指纹: %s…（用于上游按天发放免费 Theos）", machineID[:12])
 	} else {
 		log.Printf("⚠ 未能读取机器指纹：上游会拒绝所有模型请求（426 lane_version_unsupported）")
 		log.Printf("  请设置 DEEPAI_MACHINE_ID=<原始机器UUID>；Windows 可执行：")

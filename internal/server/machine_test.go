@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/machine"
 )
 
 // postAdmin 以本机来源调用管理接口。
@@ -115,7 +116,7 @@ func TestEnrollAssignsMachine(t *testing.T) {
 	if seen == "" {
 		t.Fatal("入池探测没有发送机器指纹")
 	}
-	if seen == deepai.MachineFingerprint("") {
+	if seen == machine.Fingerprint("") {
 		t.Fatal("机器指纹为空")
 	}
 }
