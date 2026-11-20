@@ -38,13 +38,13 @@ var LoginHTML = MustRead("login.html")
 // CSS 是控制台样式表（已从 index.html 抽出为独立资源）。
 var CSS = MustRead("style.css")
 
-// assetPrefix 是旧调用点残留的路径前缀（历史上资源在 internal/server/web/ 下，
-// 资源名写成 "web/js/app.js"）。Read 兼容带前缀与不带前缀两种写法。
-const assetPrefix = "web/"
-
 // Read 读取一个内嵌资源。
+//
+// 资源名相对本包目录（"index.html" / "js/app.js"），与 //go:embed 的写法一致。
+// 历史上还兼容过 "web/" 前缀（那时资源挂在 internal/server/web/ 下），
+// 两套写法并存只会让调用点无从判断该写哪个，已清掉。
 func Read(name string) ([]byte, error) {
-	return FS.ReadFile(strings.TrimPrefix(name, assetPrefix))
+	return FS.ReadFile(name)
 }
 
 // MustRead 读取一个内嵌资源，缺失即 panic（编译期资源，缺了就是构建错误）。
@@ -56,7 +56,7 @@ func MustRead(name string) []byte {
 	return b
 }
 
-// ScriptNames 返回全部内嵌脚本的资源名（已排序，带 "web/" 前缀）。
+// ScriptNames 返回全部内嵌脚本的资源名（已排序，可直接交给 Read）。
 //
 // 单独暴露的原因：契约测试要按「这个脚本属于哪个页面」分组校验 id 引用
 // （login.js 的 #loginPw 在 login.html 里，不在 index.html 里）。

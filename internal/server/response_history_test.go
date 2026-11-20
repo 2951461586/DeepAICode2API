@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/jsonx"
 	"deepaicode2api/internal/respstate"
 )
 
@@ -371,7 +372,7 @@ func TestResponsesTruncationAuto(t *testing.T) {
 	if len(msgs) > 1 {
 		for i, m := range msgs {
 			mm, _ := m.(map[string]any)
-			if i > 0 && strOf(mm["role"]) == "system" {
+			if i > 0 && jsonx.StrOf(mm["role"]) == "system" {
 				t.Fatalf("裁減後 system 出現在非首則（上游會 400）：%s", text)
 			}
 		}

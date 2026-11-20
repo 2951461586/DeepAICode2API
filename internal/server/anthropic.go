@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/gateway"
 	"deepaicode2api/internal/httpx"
 )
 
@@ -22,7 +23,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	start := time.Now()
 
-	req, ok := httpx.DecodeJSONRequest[anthropicRequest](w, r, func(code int, msg string) {
+	req, ok := httpx.DecodeJSONRequest[gateway.AnthropicRequest](w, r, func(code int, msg string) {
 		writeAnthropicErr(w, code, "invalid_request_error", msg)
 	})
 	if !ok {
@@ -38,7 +39,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		writeAnthropicErr(w, http.StatusNotFound, "invalid_request_error", s.unknownModelMessage(req.Model))
 		return
 	}
-	payload, err := anthropicToChatPayload(&req, model.ID)
+	payload, err := gateway.AnthropicToChatPayload(&req, model.ID)
 	if err != nil {
 		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -65,13 +66,13 @@ func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, paylo
 	out, acct, err := s.callJSON(ctx, deepai.PathChat, payload, affinity, s.requestGroup(r), rl.apiKey())
 	rl.acct = acct
 	if err != nil {
-		rl.done(0, Usage{}, err)
+		rl.done(0, gateway.Usage{}, err)
 		writeAnthropicUpstreamErr(w, err)
 		return
 	}
-	usage := parseUsage(out["usage"])
-	msg := chatToAnthropicMessage(out, rl.model)
-	outLen := anthropicTextLen(msg)
+	usage := gateway.ParseUsage(out["usage"])
+	msg := gateway.ChatToAnthropicMessage(out, rl.model)
+	outLen := gateway.AnthropicTextLen(msg)
 
 	rl.done(outLen, usage, nil)
 	httpx.WriteJSON(w, http.StatusOK, msg)
@@ -84,14 +85,14 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		rl.doneStatus(http.StatusBadRequest, 0, Usage{}, err)
+		rl.doneStatus(http.StatusBadRequest, 0, gateway.Usage{}, err)
 		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", "请求序列化失败")
 		return
 	}
 	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, s.requestGroup(r), rl.apiKey(), true)
 	rl.acct = acct
 	if err != nil {
-		rl.done(0, Usage{}, err)
+		rl.done(0, gateway.Usage{}, err)
 		writeAnthropicUpstreamErr(w, err)
 		return
 	}
@@ -115,21 +116,21 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 		},
 	})
 
-	block := newAnthropicBlockWriter(send)
+	block := gateway.NewAnthropicBlockWriter(send)
 	var (
-		usage      Usage
+		usage      gateway.Usage
 		outLen     int
 		stopReason = "end_turn"
 		streamErr  error
 	)
 
 	streamErr = forEachChatChunk(resp.Body, func(chunk map[string]any) bool {
-		if u := parseUsage(chunk["usage"]); u.TotalTokens > 0 || u.Cost > 0 {
+		if u := gateway.ParseUsage(chunk["usage"]); u.TotalTokens > 0 || u.Cost > 0 {
 			usage = u
 		}
 		d, finish := chatChunkDelta(chunk)
 		if finish != "" {
-			stopReason = anthropicStopReason(finish)
+			stopReason = gateway.AnthropicStopReason(finish)
 		}
 		if d.Reasoning != "" {
 			block.Thinking(d.Reasoning)
@@ -165,7 +166,7 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 	if outputTokens == 0 {
 		outputTokens = estTokens(outLen)
 	}
-	usageDelta := anthropicUsage(usage)
+	usageDelta := gateway.AnthropicUsage(usage)
 	usageDelta["output_tokens"] = outputTokens
 	send("message_delta", map[string]any{
 		"type":  "message_delta",
@@ -186,13 +187,13 @@ func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Reque
 		writeAnthropicErr(w, http.StatusMethodNotAllowed, "invalid_request_error", "仅支持 POST")
 		return
 	}
-	req, ok := httpx.DecodeJSONRequest[anthropicRequest](w, r, func(code int, msg string) {
+	req, ok := httpx.DecodeJSONRequest[gateway.AnthropicRequest](w, r, func(code int, msg string) {
 		writeAnthropicErr(w, code, "invalid_request_error", msg)
 	})
 	if !ok {
 		return
 	}
-	payload, err := anthropicToChatPayload(&req, s.resolveModel(req.Model).ID)
+	payload, err := gateway.AnthropicToChatPayload(&req, s.resolveModel(req.Model).ID)
 	if err != nil {
 		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return

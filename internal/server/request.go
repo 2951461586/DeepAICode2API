@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/sha256"
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/jsonx"
 	"encoding/hex"
 	"encoding/json"
 	"hash"
@@ -51,13 +52,13 @@ func sessionAffinity(r *http.Request, payload map[string]any) string {
 		return a
 	}
 	h := sha256.New()
-	h.Write([]byte(strOf(payload["model"])))
+	h.Write([]byte(jsonx.StrOf(payload["model"])))
 	// 只有「有可缓存前缀」的请求才派生：没有 system / tools 的裸请求
 	// （例如一句 "hi"）本来就没有前缀可命中，派生只会把大量互不相关的
 	// 短请求钉到同一个号上，白白把负载集中。
 	hasPrefix := false
 	// Responses 的系统提示通常在顶层 instructions；chat 在 messages 里。
-	if ins := strOf(payload["instructions"]); ins != "" {
+	if ins := jsonx.StrOf(payload["instructions"]); ins != "" {
 		h.Write([]byte(ins))
 		hasPrefix = true
 	}
@@ -94,7 +95,7 @@ func hashSystemMessages(h hash.Hash, v any) bool {
 		if !ok {
 			continue
 		}
-		role := strOf(m["role"])
+		role := jsonx.StrOf(m["role"])
 		if role != "system" && role != "developer" {
 			continue
 		}
@@ -148,12 +149,12 @@ func chatTextLen(m map[string]any) int {
 			continue
 		}
 		if msg, ok := cm["message"].(map[string]any); ok {
-			total += lenOfString(msg["content"])
-			total += lenOfString(msg["reasoning"])
+			total += jsonx.LenOfString(msg["content"])
+			total += jsonx.LenOfString(msg["reasoning"])
 		}
 		if d, ok := cm["delta"].(map[string]any); ok {
-			total += lenOfString(d["content"])
-			total += lenOfString(d["reasoning"])
+			total += jsonx.LenOfString(d["content"])
+			total += jsonx.LenOfString(d["reasoning"])
 		}
 	}
 	return total
@@ -215,7 +216,7 @@ func historyStats(payload map[string]any) (msgs int, hasSystem bool) {
 			if !ok {
 				continue
 			}
-			role := strOf(m["role"])
+			role := jsonx.StrOf(m["role"])
 			if role == "" {
 				if _, isStr := m["content"].(string); isStr {
 					msgs++ // 省略 role 的字面量消息（OpenAI 允许）
@@ -229,7 +230,7 @@ func historyStats(payload map[string]any) (msgs int, hasSystem bool) {
 		}
 		return msgs, hasSystem
 	}
-	if ins := strOf(payload["instructions"]); ins != "" {
+	if ins := jsonx.StrOf(payload["instructions"]); ins != "" {
 		hasSystem = true
 	}
 	if v, ok := payload["input"].([]any); ok {
@@ -238,10 +239,10 @@ func historyStats(payload map[string]any) (msgs int, hasSystem bool) {
 			if !ok {
 				continue
 			}
-			if t := strOf(m["type"]); t != "" && t != "message" {
+			if t := jsonx.StrOf(m["type"]); t != "" && t != "message" {
 				continue
 			}
-			role := strOf(m["role"])
+			role := jsonx.StrOf(m["role"])
 			if role == "" {
 				role = "user"
 			}
@@ -251,7 +252,7 @@ func historyStats(payload map[string]any) (msgs int, hasSystem bool) {
 			}
 		}
 	}
-	if msgs == 0 && strOf(payload["input"]) != "" {
+	if msgs == 0 && jsonx.StrOf(payload["input"]) != "" {
 		msgs = 1 // Responses 的字符串简写等价于一条 user 消息
 	}
 	return msgs, hasSystem

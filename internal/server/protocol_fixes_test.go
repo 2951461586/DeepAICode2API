@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/jsonx"
 	"deepaicode2api/internal/poolsvc"
 	"deepaicode2api/internal/store"
 )
@@ -379,7 +380,7 @@ func TestChatMultiTurnHistoryPreserved(t *testing.T) {
 		t.Fatalf("上游收到 %d 条消息，期望 4（历史被截断）：%s", len(msgs), string(u.last(t).Body))
 	}
 	first, _ := msgs[0].(map[string]any)
-	if strOf(first["content"]) != "Remember CODE=ALPHA-7." {
+	if jsonx.StrOf(first["content"]) != "Remember CODE=ALPHA-7." {
 		t.Fatalf("system 内容被改写: %v", first["content"])
 	}
 }
@@ -413,11 +414,11 @@ func TestAnthropicMultiTurnToolsPreserved(t *testing.T) {
 		t.Fatalf("assistant 消息缺少 tool_calls: %v", assistant)
 	}
 	tool, _ := msgs[2].(map[string]any)
-	if strOf(tool["role"]) != "tool" || strOf(tool["tool_call_id"]) != "call_1" {
+	if jsonx.StrOf(tool["role"]) != "tool" || jsonx.StrOf(tool["tool_call_id"]) != "call_1" {
 		t.Fatalf("tool 消息不合法: %v", tool)
 	}
 	last, _ := msgs[3].(map[string]any)
-	if strOf(last["role"]) != "user" {
+	if jsonx.StrOf(last["role"]) != "user" {
 		t.Fatalf("tool_result 之后的文本应成为 user 消息: %v", last)
 	}
 }
@@ -493,11 +494,11 @@ func TestShapeFallbackKeepsHistory(t *testing.T) {
 	wantRoles := []string{"system", "user", "assistant", "user"}
 	for i, mv := range msgs {
 		m, _ := mv.(map[string]any)
-		if got := strOf(m["role"]); got != wantRoles[i] {
+		if got := jsonx.StrOf(m["role"]); got != wantRoles[i] {
 			t.Fatalf("第 %d 条角色 = %q，期望 %q", i, got, wantRoles[i])
 		}
 	}
-	if got := strOf(msgs[2].(map[string]any)["content"]); got != "reply-1" {
+	if got := jsonx.StrOf(msgs[2].(map[string]any)["content"]); got != "reply-1" {
 		t.Fatalf("历史正文被改写: %q", got)
 	}
 }

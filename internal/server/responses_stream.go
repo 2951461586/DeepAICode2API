@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/gateway"
+	"deepaicode2api/internal/jsonx"
 )
 
 // --- Responses 流事件生成器 ---
@@ -68,7 +70,7 @@ func (g *responsesStreamGen) emit(event string, v map[string]any) {
 	}
 }
 
-func (g *responsesStreamGen) response(status string, usage Usage) map[string]any {
+func (g *responsesStreamGen) response(status string, usage gateway.Usage) map[string]any {
 	resp := map[string]any{
 		"id": g.respID, "object": "response", "created_at": g.createdAt,
 		"status": status, "model": g.model,
@@ -104,7 +106,7 @@ func (g *responsesStreamGen) sortedOutput() []any {
 
 func (g *responsesStreamGen) created() {
 	g.emit("response.created", map[string]any{
-		"response": g.response("in_progress", Usage{}),
+		"response": g.response("in_progress", gateway.Usage{}),
 	})
 }
 
@@ -162,7 +164,7 @@ func (g *responsesStreamGen) toolCall(idx int, id, name, args string) {
 	if !ok {
 		state = &responsesToolState{
 			itemID: "fc_" + deepai.RandomHex(12),
-			callID: firstString(id, "call_"+deepai.RandomHex(8)),
+			callID: jsonx.FirstString(id, "call_"+deepai.RandomHex(8)),
 			name:   name,
 			index:  g.outputIndex,
 		}
@@ -266,7 +268,7 @@ func (g *responsesStreamGen) fail(err error) {
 	g.emit("error", map[string]any{"message": err.Error()})
 }
 
-func (g *responsesStreamGen) complete(usage Usage) {
+func (g *responsesStreamGen) complete(usage gateway.Usage) {
 	g.closeText()
 	g.closeReasoning()
 	g.closeTools()

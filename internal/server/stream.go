@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"strings"
+
+	"deepaicode2api/internal/jsonx"
 )
 
 // --- 上游 SSE 读帧 ---
@@ -150,7 +152,7 @@ func chatChunkDelta(chunk map[string]any) (chatDelta, string) {
 		if !ok {
 			continue
 		}
-		td := chatToolDelta{Index: intOf(tc["index"])}
+		td := chatToolDelta{Index: jsonx.IntOf(tc["index"])}
 		td.ID, _ = tc["id"].(string)
 		if fn, ok := tc["function"].(map[string]any); ok {
 			td.Name, _ = fn["name"].(string)

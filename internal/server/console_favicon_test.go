@@ -68,7 +68,7 @@ func TestConsoleFaviconServed(t *testing.T) {
 // 只把文件嵌进二进制不够：页面不写 <link rel="icon">，浏览器仍会去猜默认路径，
 // 移动端「添加到主屏」也拿不到图标。
 func TestConsolePagesReferenceFavicon(t *testing.T) {
-	for _, name := range []string{"web/index.html", "web/login.html"} {
+	for _, name := range []string{"index.html", "login.html"} {
 		page := string(web.MustRead(name))
 		for _, want := range []string{
 			`<link rel="icon" href="/favicon.ico" sizes="any">`,
@@ -91,7 +91,7 @@ func TestConsoleFaviconMatchesDocsAsset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取 docs/assets/logo.ico 失败: %v", err)
 	}
-	got := web.MustRead("web/favicon.ico")
+	got := web.MustRead("favicon.ico")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("web/favicon.ico 与 docs/assets/logo.ico 不一致（%d vs %d 字节）："+
 			"换图标后要同时更新两份，见 docs/changes.md §58", len(got), len(want))

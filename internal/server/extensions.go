@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/gateway"
 	"deepaicode2api/internal/httpx"
 )
 
@@ -67,12 +68,12 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	rl := s.newReqLog(key, acct, "whisper-1", "audio", false, start, len(data))
 	if err != nil {
 		s.Store.MarkAccountFailure(acct.ID, err)
-		rl.done(0, Usage{}, err)
+		rl.done(0, gateway.Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	s.Store.MarkAccountResult(acct.ID, true, "")
-	rl.done(len(text), Usage{}, nil)
+	rl.done(len(text), gateway.Usage{}, nil)
 
 	if mode == "text" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -131,12 +132,12 @@ func (s *Server) proxyExtension(w http.ResponseWriter, r *http.Request, path str
 	rl := s.newReqLog(key, acct, "-", endpoint, false, start, len(body))
 	if err != nil {
 		s.Store.MarkAccountFailure(acct.ID, err)
-		rl.done(0, Usage{}, err)
+		rl.done(0, gateway.Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	s.Store.MarkAccountResult(acct.ID, true, "")
-	rl.done(len(raw), Usage{}, nil)
+	rl.done(len(raw), gateway.Usage{}, nil)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, bytes.NewReader(raw))
@@ -162,7 +163,7 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	if !force && acct.Theos != nil && acct.Theos.CheckedAt > 0 &&
 		time.Since(time.Unix(acct.Theos.CheckedAt, 0)) < theosCacheTTL {
 		rl := s.newReqLog(key, acct, "-", "theos", false, start, 0)
-		rl.done(0, Usage{}, nil)
+		rl.done(0, gateway.Usage{}, nil)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"account":  acct.ID,
 			"username": acct.Username,
@@ -177,12 +178,12 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	rl := s.newReqLog(key, acct, "-", "theos", false, start, 0)
 	if err != nil {
 		s.Store.MarkAccountFailure(acct.ID, err)
-		rl.done(0, Usage{}, err)
+		rl.done(0, gateway.Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	s.Store.SetAccountAllowance(acct.ID, al, nil)
-	rl.done(0, Usage{}, nil)
+	rl.done(0, gateway.Usage{}, nil)
 	s.persist()
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"account":  acct.ID,
@@ -206,12 +207,12 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	rl := s.newReqLog(key, acct, "-", "usage", false, start, 0)
 	if err != nil {
 		s.Store.MarkAccountFailure(acct.ID, err)
-		rl.done(0, Usage{}, err)
+		rl.done(0, gateway.Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
 	s.Store.MarkAccountResult(acct.ID, true, "")
-	rl.done(0, Usage{}, nil)
+	rl.done(0, gateway.Usage{}, nil)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"account":  acct.ID,
 		"username": acct.Username,

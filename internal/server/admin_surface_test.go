@@ -348,3 +348,52 @@ func TestAdminKeysDeleteReportsMissing(t *testing.T) {
 		}
 	}
 }
+
+// TestAdminStateIsDeprecatedButStillWorks 锁定旧全量端点的退役契约。
+//
+// 控制台已改用 overview + accounts 分页；这个端点只给外部脚本留迁移窗口。
+// 断言三件事：仍然能取到数据（不立刻破坏调用方）、带 Deprecation/Sunset 头、
+// 并指向 successor-version —— 少了任何一条，外部脚本都无从知道该往哪迁。
+func TestAdminStateIsDeprecatedButStillWorks(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+
+	rec := do(t, s, http.MethodGet, "/admin/api/state?accounts=0", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/api/state = %d，期望 200", rec.Code)
+	}
+	if got := rec.Header().Get("Deprecation"); got != "true" {
+		t.Fatalf("Deprecation = %q，期望 true", got)
+	}
+	if got := rec.Header().Get("Sunset"); got != stateSunset {
+		t.Fatalf("Sunset = %q，期望 %q", got, stateSunset)
+	}
+	if link := rec.Header().Get("Link"); !strings.Contains(link, "/admin/api/overview") ||
+		!strings.Contains(link, "successor-version") {
+		t.Fatalf("Link = %q，应指向 /admin/api/overview 并标注 successor-version", link)
+	}
+
+	var payload struct {
+		Settings map[string]any `json:"settings"`
+		Stats    map[string]any `json:"stats"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("旧端点仍应返回合法 JSON: %v", err)
+	}
+	if payload.Settings == nil || payload.Stats == nil {
+		t.Fatalf("旧端点字段缺失: %+v", payload)
+	}
+}
+
+// TestAdminStateHidesPassword 是安全断言：旧端点同样不能下发管理口令。
+func TestAdminStateHidesPassword(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	s.Store.UpdateSettings(func(st *store.Settings) { st.AdminPassword = "hunter2" })
+
+	rec := do(t, s, http.MethodGet, "/admin/api/state", "hunter2", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("带口令访问 = %d，期望 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "hunter2") {
+		t.Fatal("旧端点泄露了管理口令明文")
+	}
+}

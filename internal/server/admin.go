@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"deepaicode2api/internal/httpx"
+	"deepaicode2api/internal/logx"
 	"deepaicode2api/internal/registry"
 	"deepaicode2api/internal/store"
 )
@@ -34,9 +35,25 @@ func sanitizedSettings(st store.Settings) map[string]any {
 
 // --- 控制台 API ---
 
+// stateSunset 是旧全量端点的下线日期（RFC 8594 的 Sunset 头）。
+//
+// 控制台早已改用 /admin/api/overview + /admin/api/accounts（分页），
+// 保留这个端点只是为了给外部脚本留迁移窗口：响应里带 Deprecation /
+// Sunset / Link(successor-version) 三个头，并在日志里留一行痕迹，
+// 这样「谁还在用」可以从日志直接查，而不是靠猜。
+const stateSunset = "Wed, 20 May 2026 00:00:00 GMT"
+
 func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
-	// 兼容端点：默认仍下发全部账号（外部脚本可能在用）。控制台已改用
-	// /admin/api/overview + /admin/api/accounts（分页）；需要小响应时加 ?accounts=0。
+	// Deprecated: 见 stateSunset。新代码请用分页端点。
+	h := w.Header()
+	h.Set("Deprecation", "true")
+	h.Set("Sunset", stateSunset)
+	h.Add("Link", `</admin/api/overview>; rel="successor-version"`)
+	logx.Warn("调用了已弃用的 /admin/api/state（请改用 overview + accounts 分页）",
+		"remote", r.RemoteAddr, "ua", r.UserAgent())
+
+	// 兼容端点：默认仍下发全量账号（外部脚本可能在用）。
+	// 需要小响应时加 ?accounts=0。
 	var safe []map[string]any
 	if r.URL.Query().Get("accounts") != "0" {
 		accts := s.Store.Accounts()

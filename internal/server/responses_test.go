@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/gateway"
+	"deepaicode2api/internal/jsonx"
 )
 
 func TestResponsesNonStreamMapping(t *testing.T) {
@@ -333,10 +335,10 @@ func TestResponsesPassthroughRewritesModel(t *testing.T) {
 		if err := json.Unmarshal([]byte(e.Data), &obj); err != nil {
 			t.Fatalf("下游事件不是合法 JSON: %q", e.Data)
 		}
-		if strOf(obj["model"]) == internal {
+		if jsonx.StrOf(obj["model"]) == internal {
 			t.Fatalf("顶层 model 未改写: %s", e.Data)
 		}
-		if resp, ok := obj["response"].(map[string]any); ok && strOf(resp["model"]) == internal {
+		if resp, ok := obj["response"].(map[string]any); ok && jsonx.StrOf(resp["model"]) == internal {
 			t.Fatalf("response.model 未改写: %s", e.Data)
 		}
 	}
@@ -357,7 +359,7 @@ func TestResponsesReasoningEffortMapping(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out, err := responsesToChatPayload(c.payload, "m")
+			out, err := gateway.ResponsesToChatPayload(c.payload, "m")
 			if err != nil {
 				t.Fatalf("翻译: %v", err)
 			}
@@ -380,7 +382,7 @@ func TestResponsesOutputSortedByOutputIndex(t *testing.T) {
 	g.toolCall(0, "call_a", "a", `{"x":1}`)
 	g.toolCall(1, "call_b", "b", `{"y":2}`)
 	g.textDelta("完成")
-	g.complete(Usage{})
+	g.complete(gateway.Usage{})
 
 	if len(g.output) != 3 {
 		t.Fatalf("output = %d 项，期望 3", len(g.output))

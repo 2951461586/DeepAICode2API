@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/gateway"
 	"deepaicode2api/internal/store"
 )
 
@@ -59,7 +60,7 @@ func (l reqLog) withHistory(payload map[string]any) reqLog {
 //
 // 幂等：同一个请求只会被记一次。这样「某条提前返回的分支忘了记 / 加了一层 defer
 // 兜底」都不会造成重复计数，调用方也不必先判断有没有记过。
-func (l reqLog) done(outLen int, usage Usage, err error) {
+func (l reqLog) done(outLen int, usage gateway.Usage, err error) {
 	l.doneStatus(StatusOf(err), outLen, usage, err)
 }
 
@@ -68,7 +69,7 @@ func (l reqLog) done(outLen int, usage Usage, err error) {
 // 用于「响应已按某个码写给客户端，日志还需额外说明原因」的场景：典型是上游回的
 // 不是 JSON、我们按原样透传成 200 —— 日志里要同时保留 200（客户端实际收到）
 // 与失败原因（Record 会把 e.Err != "" 计入失败数，不会丢出统计）。
-func (l reqLog) doneStatus(status int, outLen int, usage Usage, err error) {
+func (l reqLog) doneStatus(status int, outLen int, usage gateway.Usage, err error) {
 	if l.s == nil || l.state == nil {
 		return
 	}
