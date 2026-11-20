@@ -54,6 +54,11 @@ jobs:
       - name: test
         run: go test -race -count=1 ./...
 
+      # 每包最低覆盖率门禁：搬代码时最容易丢掉的是「同包测试」，
+      # go test ./... 全绿并不能发现（PR-4 后 poolsvc 一度只有 8.8%）。
+      - name: coverage gate
+        run: bash scripts/coverage-gate.sh
+
       # govulncheck 是 Go 模块，不能直接跟 @latest：它的 go.mod 会要求更高的 Go
       # 版本，而 setup-go 把 GOTOOLCHAIN 设为 local，不匹配时会在 300ms 内直接失败：
       #   requires go >= 1.26.0 (running go 1.24.13; GOTOOLCHAIN=local)

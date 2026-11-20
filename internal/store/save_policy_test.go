@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // Save 落盘时 LastUsed 应量化到 5 分钟：它每个请求都变，秒级精度会让
@@ -17,9 +17,9 @@ func TestSaveQuantizesLastUsed(t *testing.T) {
 	st := newStore(t)
 	acct := addAccount(t, st, "sk-quant", "default")
 	now := time.Now().Unix()
-	st.UpdateAccount(acct.ID, func(a *deepai.Account) {
+	st.UpdateAccount(acct.ID, func(a *model.Account) {
 		a.LastUsed = now
-		a.Theos = &deepai.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}
+		a.Theos = &model.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}
 	})
 
 	if err := st.Save(); err != nil {
@@ -66,13 +66,13 @@ func TestSaveSkipsRewriteWithinGranularityWindow(t *testing.T) {
 	st := newStore(t)
 	acct := addAccount(t, st, "sk-window", "default")
 	base := time.Now().Unix() - time.Now().Unix()%saveTimestampGranularity
-	st.UpdateAccount(acct.ID, func(a *deepai.Account) { a.LastUsed = base + 1 })
+	st.UpdateAccount(acct.ID, func(a *model.Account) { a.LastUsed = base + 1 })
 	if err := st.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	saves, _ := st.SaveCounters()
 
-	st.UpdateAccount(acct.ID, func(a *deepai.Account) { a.LastUsed = base + 120 })
+	st.UpdateAccount(acct.ID, func(a *model.Account) { a.LastUsed = base + 120 })
 	if err := st.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestSnapshotIsolatesKeysAndModels(t *testing.T) {
 	st := newStore(t)
 	k1 := st.AddKey("a", "")
 	k2 := st.AddKey("b", "")
-	st.SetModels([]deepai.Model{{
+	st.SetModels([]model.Model{{
 		ID:             "m1",
 		Input:          []string{"text"},
 		TheosPerSecond: map[string]string{"out": "1"},
@@ -143,7 +143,7 @@ func TestSnapshotIsolatesKeysAndModels(t *testing.T) {
 	// 快照之后的改动不得反向污染快照。
 	st.ToggleKey(k1.Key)
 	st.DeleteKey(k2.Key)
-	st.SetModels([]deepai.Model{{ID: "m2"}}, "m2")
+	st.SetModels([]model.Model{{ID: "m2"}}, "m2")
 
 	if len(snap.Keys) != 2 {
 		t.Fatalf("快照密钥数 = %d，期望 2", len(snap.Keys))

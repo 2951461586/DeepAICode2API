@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"deepaicode2api/internal/gateway"
 )
 
 // anthropicChatResponse 是上游返回的标准 OpenAI chat 响应（含思维链与工具调用）。
@@ -30,7 +32,7 @@ const anthropicChatResponse = `{
   "usage": {"prompt_tokens": 11, "completion_tokens": 22, "total_tokens": 33}
 }`
 
-// anthropicRequest 是一个覆盖 system / 图片 / 工具 / stop 的典型 Claude Code 请求。
+// gateway.AnthropicRequest 是一个覆盖 system / 图片 / 工具 / stop 的典型 Claude Code 请求。
 const anthropicRequestBody = `{
   "model": "claude-sonnet-4",
   "max_tokens": 512,
@@ -298,7 +300,7 @@ func TestAnthropicStopReasonMapping(t *testing.T) {
 		"":               "end_turn",
 	}
 	for in, want := range cases {
-		if got := anthropicStopReason(in); got != want {
+		if got := gateway.AnthropicStopReason(in); got != want {
 			t.Errorf("finish_reason=%q → %q，期望 %q", in, got, want)
 		}
 	}
@@ -382,7 +384,7 @@ func TestAnthropicToolChoiceMapping(t *testing.T) {
 		if c.raw != "" {
 			raw = []byte(c.raw)
 		}
-		got := anthropicToolChoice(raw)
+		got := gateway.AnthropicToolChoice(raw)
 		if c.want == `map` {
 			m, ok := got.(map[string]any)
 			if !ok || m["type"] != "function" {
@@ -405,13 +407,13 @@ func TestAnthropicSystemTextExtraction(t *testing.T) {
 	for raw, want := range cases {
 		var got string
 		if want == `""` {
-			got = anthropicSystemText([]byte(raw))
+			got = gateway.AnthropicSystemText([]byte(raw))
 			if got != "" {
 				t.Errorf("%q → %q，期望空", raw, got)
 			}
 			continue
 		}
-		got = anthropicSystemText([]byte(raw))
+		got = gateway.AnthropicSystemText([]byte(raw))
 		if got != want {
 			t.Errorf("%q → %q，期望 %q", raw, got, want)
 		}
@@ -478,11 +480,11 @@ func TestAnthropicEffortMapping(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			var req anthropicRequest
+			var req gateway.AnthropicRequest
 			if err := json.Unmarshal([]byte(c.body), &req); err != nil {
 				t.Fatalf("解析请求: %v", err)
 			}
-			payload, err := anthropicToChatPayload(&req, "m")
+			payload, err := gateway.AnthropicToChatPayload(&req, "m")
 			if err != nil {
 				t.Fatalf("翻译: %v", err)
 			}

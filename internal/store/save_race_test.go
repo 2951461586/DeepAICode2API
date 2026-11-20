@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // 并发 Save 必须保证落盘文件始终是完整合法的状态文件。
@@ -24,7 +24,7 @@ func TestConcurrentSaveKeepsFileValid(t *testing.T) {
 	}
 	// 先塞入足够多的账号，让单次序列化体足够大，更容易撞上临时文件竞争。
 	for i := 0; i < 200; i++ {
-		st.UpsertAccount(&deepai.Account{
+		st.UpsertAccount(&model.Account{
 			ID: fmt.Sprintf("seed-%03d", i), APIKey: fmt.Sprintf("sk-seed-%03d", i),
 			Email: fmt.Sprintf("seed%03d@x.com", i), Enabled: true,
 		})
@@ -42,7 +42,7 @@ func TestConcurrentSaveKeepsFileValid(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < rounds; i++ {
 				id := fmt.Sprintf("acc-%d-%d", g, i)
-				st.UpsertAccount(&deepai.Account{
+				st.UpsertAccount(&model.Account{
 					ID: id, APIKey: "sk-" + id, Email: id + "@x.com", Enabled: true,
 				})
 				st.Record(LogEntry{Endpoint: "chat", Status: 200}, 1)
@@ -88,8 +88,8 @@ func TestConcurrentSaveAcrossInstances(t *testing.T) {
 		t.Fatalf("Open b: %v", err)
 	}
 	for i := 0; i < 100; i++ {
-		a.UpsertAccount(&deepai.Account{ID: fmt.Sprintf("a-%03d", i), APIKey: fmt.Sprintf("sk-a-%03d", i)})
-		b.UpsertAccount(&deepai.Account{ID: fmt.Sprintf("b-%03d", i), APIKey: fmt.Sprintf("sk-b-%03d", i)})
+		a.UpsertAccount(&model.Account{ID: fmt.Sprintf("a-%03d", i), APIKey: fmt.Sprintf("sk-a-%03d", i)})
+		b.UpsertAccount(&model.Account{ID: fmt.Sprintf("b-%03d", i), APIKey: fmt.Sprintf("sk-b-%03d", i)})
 	}
 
 	var wg sync.WaitGroup

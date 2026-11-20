@@ -348,3 +348,39 @@ func TestAdminKeysDeleteReportsMissing(t *testing.T) {
 		}
 	}
 }
+
+// TestAdminSettingsValidation 锁定「越界设置整批拒绝、不落地一半」。
+//
+// 此前 settingsPatch.apply 逐字段用 `> 0` 兜底，越界值被静默忽略，调用方拿到
+// 200 却不知道哪一项没生效。现在先在副本上合并 + 校验，通不过回 400 并说明原因。
+func TestAdminSettingsValidation(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	before := s.Store.Settings()
+
+	rec := do(t, s, http.MethodPost, "/admin/api/settings", "", `{"max_retries":99}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("越界重试次数应回 400，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "重试次数") {
+		t.Fatalf("错误文案应指出是哪一项：%s", rec.Body.String())
+	}
+	if got := s.Store.Settings(); got.MaxRetries != before.MaxRetries {
+		t.Fatalf("校验失败时不应落地改动：%d → %d", before.MaxRetries, got.MaxRetries)
+	}
+
+	// 通配符来源同样被拒（口径与 guard.Origin 一致）。
+	rec = do(t, s, http.MethodPost, "/admin/api/settings", "", `{"cors_origin":"*"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("通配符来源应回 400，实际 %d", rec.Code)
+	}
+
+	// 合法增量应生效。
+	rec = do(t, s, http.MethodPost, "/admin/api/settings", "", `{"request_timeout_sec":90,"max_retries":5}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("合法设置应回 200，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	got := s.Store.Settings()
+	if got.RequestTimeout != 90 || got.MaxRetries != 5 {
+		t.Fatalf("设置未生效: timeout=%d retries=%d", got.RequestTimeout, got.MaxRetries)
+	}
+}

@@ -21,8 +21,11 @@ import (
 	"net/http"
 	"strings"
 
+	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
+	"deepaicode2api/internal/machine"
+	"deepaicode2api/internal/poolsvc"
 	"deepaicode2api/internal/proxy"
 )
 
@@ -133,7 +136,7 @@ func (s *Server) adminImport(w http.ResponseWriter, raw []byte) {
 	if !ok {
 		return
 	}
-	results, err := deepai.ImportAllFromDesktop(body.Dir)
+	results, err := credimport.ImportAllFromDesktop(body.Dir)
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "导入失败: "+err.Error(), "invalid_request_error")
 		return
@@ -158,7 +161,7 @@ func (s *Server) adminManual(w http.ResponseWriter, raw []byte) {
 	if !ok {
 		return
 	}
-	acct, err := deepai.AccountFromAPIKey(body.APIKey, body.Name, "manual", false)
+	acct, err := credimport.AccountFromAPIKey(body.APIKey, body.Name, "manual", false)
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
@@ -170,7 +173,7 @@ func (s *Server) adminManual(w http.ResponseWriter, raw []byte) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	s.probeAndSaveAsync(acct)
+	s.Pool.ProbeAndSaveAsync(acct)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "new": isNew, "id": acct.ID})
 }
 
@@ -192,9 +195,9 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 	}
 	// 每个账号必须有独立机器指纹；否则上游的每日免费额度会与其他账号互斥。
 	if reg.MachineID == "" {
-		reg.MachineID = deepai.NewMachineUUID()
+		reg.MachineID = machine.NewUUID()
 	}
-	acct, err := deepai.AccountFromRegistration(reg)
+	acct, err := credimport.AccountFromRegistration(reg)
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
@@ -204,9 +207,9 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 	var al *deepai.Allowance
 	balance, granted := strings.TrimSpace(body.TheosBalance), strings.TrimSpace(body.TheosGranted)
 	if body.SkipProbe && balance != "" {
-		al = allowanceFromEnroll(balance, granted, "")
+		al = poolsvc.AllowanceFromEnroll(balance, granted, "")
 	} else {
-		probed, err := s.probeAccountQuota(acct)
+		probed, err := s.Pool.ProbeAccountQuota(acct)
 		if err != nil {
 			if deepai.IsSocialLoginRequired(err) {
 				httpx.WriteErr(w, http.StatusBadRequest, "上游已限制为 Google/Apple 登录（social_login_required），该 Key 无法推理", "social_login_required")
@@ -224,7 +227,7 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 		}
 	}
 
-	id, isNew, err := s.enrollRegistration(reg, al)
+	id, isNew, err := s.Pool.EnrollRegistration(reg, al)
 	if err != nil {
 		httpx.WriteErr(w, http.StatusInternalServerError, "入池失败: "+err.Error(), "server_error")
 		return
@@ -291,7 +294,7 @@ func (s *Server) adminAssignMachine(w http.ResponseWriter, raw []byte) {
 		if strings.TrimSpace(a.MachineID) != "" {
 			return false
 		}
-		a.MachineID = deepai.NewMachineUUID()
+		a.MachineID = machine.NewUUID()
 		targets = append(targets, a.Clone())
 		return true
 	})
@@ -300,7 +303,7 @@ func (s *Server) adminAssignMachine(w http.ResponseWriter, raw []byte) {
 	}
 	// 重新探测配额，让调度能立即看到新指纹下的额度。
 	// 走登记过的批量入口：进程关停时要等这次落盘跑完。
-	s.probeBatchAsync(targets)
+	s.Pool.ProbeBatchAsync(targets)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
 }
 
@@ -344,7 +347,7 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 		return
 	}
 
-	pool, err := loadProxyPool()
+	pool, err := poolsvc.LoadProxyPool()
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "代理池配置错误: "+err.Error(), "invalid_request_error")
 		return
@@ -384,7 +387,7 @@ func (s *Server) adminMarkVerified(w http.ResponseWriter, raw []byte) {
 	if !ok {
 		return
 	}
-	if err := s.markAccountVerified(body.ID, body.Email); err != nil {
+	if err := s.Pool.MarkVerified(body.ID, body.Email); err != nil {
 		httpx.WriteErr(w, http.StatusNotFound, err.Error(), "invalid_request_error")
 		return
 	}

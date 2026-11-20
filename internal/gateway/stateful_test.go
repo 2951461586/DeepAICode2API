@@ -3,6 +3,8 @@ package gateway
 import (
 	"errors"
 	"testing"
+
+	"deepaicode2api/internal/jsonx"
 )
 
 // TestStatefulParam 覆盖「需要上游状态」的三种形态与它们的空值变体。
@@ -89,7 +91,7 @@ func TestResponsesInputMessagesPreservesHistory(t *testing.T) {
 	roles := make([]string, 0, len(msgs))
 	for _, m := range msgs {
 		mm, _ := m.(map[string]any)
-		roles = append(roles, StrOf(mm["role"]))
+		roles = append(roles, jsonx.StrOf(mm["role"]))
 	}
 	want := []string{"system", "user", "assistant", "tool", "assistant", "user"}
 	for i := range want {
@@ -99,7 +101,7 @@ func TestResponsesInputMessagesPreservesHistory(t *testing.T) {
 	}
 	// tool 条目要带 tool_call_id，否则上游会把它当普通消息。
 	tool, _ := msgs[3].(map[string]any)
-	if StrOf(tool["tool_call_id"]) != "call_1" {
+	if jsonx.StrOf(tool["tool_call_id"]) != "call_1" {
 		t.Fatalf("tool_call_id = %v，期望 call_1", tool["tool_call_id"])
 	}
 }

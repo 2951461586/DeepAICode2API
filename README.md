@@ -16,11 +16,6 @@
 
 </div>
 
-> ℹ️ 0.3.19 曾把 DeepAI Code 推理收窄到 **Google/Apple 登录**的账号（邮箱密码号
-> `403 social_login_required`）。**2026-11-09 复测该限制已解除**：邮箱注册号在
-> `/theos` 与推理端点均恢复 200（见 `docs/recon.md` §4.1）。网关仍保留 `blocked`
-> 终态处理，策略若再次收紧无需改代码。
-
 | 能力 | 说明 |
 | --- | --- |
 | 双协议 | OpenAI `/v1/chat/completions`、`/v1/responses`；Anthropic `/v1/messages` |
@@ -297,6 +292,24 @@ export ANTHROPIC_MODEL=glm-5.3-flash
 | POST | `/admin/api/login/start` | 发起浏览器登录，返回 `session_id` / `port` / `loopback` / `expires_in` |
 | POST | `/admin/api/login/poll` | 轮询登录结果（本机回调自动收，`status=pending\|ok\|error\|expired`） |
 | POST | `/admin/api/login/callback` | **粘贴回调 URL 完成登录**（`{session_id, callback}`）。Docker / 远程部署必用：浏览器落在 `127.0.0.1:<port>/auth-callback?code=…&state=…` 打不开时，把地址栏完整 URL 粘回来即可 |
+
+#### 已下线的端点：`/admin/api/state`
+
+`GET /admin/api/state` 曾在一次响应里**拍平下发全部账号**（603 个号约 430KB），
+已于 2026-05-20（RFC 8594 的 `Sunset`）下线，现在返回 `410 Gone`。
+它由两个端点取代：
+
+| 需要什么 | 用哪个 |
+| --- | --- |
+| 元信息（设置 / 统计 / 密钥 / 模型 / 车道 / 延迟） | `GET /admin/api/overview` |
+| 账号列表（分页 + 过滤 + 排序） | `GET /admin/api/accounts?offset=&limit=&group=&status=&q=&sort=&order=` |
+
+如果你还有脚本在用旧端点，迁移就是两次请求：
+
+```bash
+curl -s -H "X-Admin-Password: $DEEPAI2API_ADMIN_PASSWORD"      http://127.0.0.1:10087/admin/api/overview
+curl -s -H "X-Admin-Password: $DEEPAI2API_ADMIN_PASSWORD"      'http://127.0.0.1:10087/admin/api/accounts?limit=200&offset=0'
+```
 
 ### 控制台
 
@@ -853,8 +866,8 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 | 文件 | 内容 | 状态 |
 | --- | --- | --- |
 | `README.md` | 总览、接口、参数、验收基线与已知坑（本文） | 维护中 |
-| `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） | 维护中（最近复核 2026-11-14） |
-| `docs/changes.md` | 2026-11 的改造记录：根因、决策与验收（§61/§62 是最新一轮） | 维护中 |
+| `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） | 维护中（最近复核 2026-11-20） |
+| `docs/changes.md` | 2026-11 的改造记录：根因、决策与验收（§71–§76 是最新一轮） | 维护中 |
 | `docs/lessons.md` | **工程经验沉淀**：十批压测 → 可复用规则 + 改动前检查清单 | 维护中 |
 | `docs/performance.md` | 压测数据与优化方案：单号 E2E、阶段分解、P0/P1/P2 收益测算 | 维护中（数据快照 2026-11-10） |
 | `docs/pi-lens.md` | 本仓的 pi-lens 配置说明：关了什么、为什么、怎么验证与恢复 | 维护中 |

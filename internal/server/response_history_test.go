@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/jsonx"
+	"deepaicode2api/internal/respstate"
 )
 
 // codewordUpstream 回一個假上游：它會把所有 chat messages 的字串化內容
@@ -84,7 +86,7 @@ func TestResponsesChainMemory3Rounds(t *testing.T) {
 	if id1 == "" {
 		t.Fatal("第 1 輪沒有 id")
 	}
-	if got := s.history.len(); got != 1 {
+	if got := s.history.Len(); got != 1 {
 		t.Fatalf("歷史條目 = %d，期望 1", got)
 	}
 
@@ -116,7 +118,7 @@ func TestResponsesChainMemory3Rounds(t *testing.T) {
 	if !strings.Contains(string(blob), codeword) {
 		t.Fatalf("上游未收到重放的暗號：%s", blob)
 	}
-	if n := s.metrics.statefulReject.Load(); n != 0 {
+	if n := s.metrics.Snapshot().Stateful["rejected"]; n != 0 {
 		t.Fatalf("續接成功不應記拒絕，實際 = %d", n)
 	}
 }
@@ -141,7 +143,7 @@ func TestResponsesNonChainInputUnchanged(t *testing.T) {
 	if !ok || len(msgs) != 3 {
 		t.Fatalf("上游 messages 數 = %d，期望 3（原樣 3 條）：%#v", len(msgs), last.Payload["messages"])
 	}
-	if n := s.metrics.statefulReject.Load(); n != 0 {
+	if n := s.metrics.Snapshot().Stateful["rejected"]; n != 0 {
 		t.Fatalf("非鏈式請求不應記 stateful 拒絕，實際 = %d", n)
 	}
 }
@@ -199,7 +201,7 @@ func TestResponsesStreamChainMemoryAndEvents(t *testing.T) {
 	if id1 == "" {
 		t.Fatal("串流第 1 輪 response.completed 缺少 id")
 	}
-	if got := s.history.len(); got != 1 {
+	if got := s.history.Len(); got != 1 {
 		t.Fatalf("串流後歷史條目 = %d，期望 1", got)
 	}
 
@@ -249,61 +251,59 @@ func TestResponsesStreamChainMemoryAndEvents(t *testing.T) {
 }
 
 func TestRememberResponseSkipsIncomplete(t *testing.T) {
-	s := &Server{history: newResponseHistory(time.Hour, 10)}
-	turn := &responseTurn{input: []any{"hello"}}
+	s := &Server{history: respstate.New(time.Hour, 10)}
+	turn := &respstate.Turn{Input: []any{"hello"}}
 	s.rememberResponse(turn, map[string]any{
 		"id": "resp_incomplete", "status": "incomplete",
 		"output": []any{map[string]any{"type": "message"}},
 	})
-	if s.history.get("resp_incomplete") != nil {
-		t.Fatal("incomplete response 不應進入歷史快取")
+	if n := s.history.Len(); n != 0 {
+		t.Fatalf("incomplete response 不應進入歷史快取，實際 %d 條", n)
 	}
 }
 
-// TestResponsesHistoryByteLimit 验证单条过大时不写入，且不会挤掉已有历史。
-func TestResponsesHistoryByteLimit(t *testing.T) {
-	h := newResponseHistory(time.Hour, 10)
-	h.maxBytes = 128
-	h.put("small", &historyEntry{input: []any{"ok"}})
-	h.put("large", &historyEntry{input: []any{strings.Repeat("x", 256)}})
-	if h.get("large") != nil || h.get("small") == nil {
-		t.Fatal("应拒绝过大的单条历史，并保留已有小条目")
-	}
-	if h.usedBytes > h.maxBytes {
-		t.Fatalf("缓存占用 %d 超过上限 %d", h.usedBytes, h.maxBytes)
-	}
-}
+// TestResponsesPartialInputWithPrevIDNotDuplicated 驗證「只重送歷史尾段」時
+// 也不重複拼接：客戶端帶回上一輪的 user + 上一輪的 assistant output + 新問題，
+// 網關按後綴重疊去重，開頭暗號仍保留、重送的內容只出現一次。
+func TestResponsesPartialInputWithPrevIDNotDuplicated(t *testing.T) {
+	u := codewordUpstream(t, "ZEBRA42")
+	s, key := newTestServer(t, u)
 
-// TestResponsesHistoryTTLAndMax 驗證 TTL 與容量上限。
-func TestResponsesHistoryTTLAndMax(t *testing.T) {
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	h := newResponseHistory(time.Hour, 2)
-	h.now = func() time.Time { return base }
-
-	h.put("a", &historyEntry{input: []any{"a"}})
-	h.now = func() time.Time { return base.Add(30 * time.Minute) }
-	h.put("b", &historyEntry{input: []any{"b"}})
-	h.now = func() time.Time { return base.Add(90 * time.Minute) } // a 已過期
-	h.put("c", &historyEntry{input: []any{"c"}})
-	if h.get("a") != nil {
-		t.Fatal("過期條目 a 應被清除")
+	r1 := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"glm-5.3-flash","input":"Remember codeword ZEBRA42"}`)
+	id1, _ := respIDAndText(t, r1)
+	r2 := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"glm-5.3-flash","previous_response_id":"`+id1+`","input":"turn 2"}`)
+	if r2.Code != http.StatusOK {
+		t.Fatalf("第 2 輪 = %d：%s", r2.Code, r2.Body.String())
 	}
-	if h.get("b") == nil || h.get("c") == nil {
-		t.Fatal("未過期條目應保留")
+	id2, _ := respIDAndText(t, r2)
+
+	var out map[string]any
+	if err := json.Unmarshal(r2.Body.Bytes(), &out); err != nil {
+		t.Fatalf("第 2 輪回應不是 JSON: %v", err)
+	}
+	output, _ := out["output"].([]any)
+	if len(output) == 0 {
+		t.Fatalf("第 2 輪沒有 output：%s", r2.Body.String())
 	}
 
-	// 容量上限：再加兩筆後只留最新 2 筆。
-	h.now = func() time.Time { return base.Add(95 * time.Minute) }
-	h.put("d", &historyEntry{input: []any{"d"}})
-	h.put("e", &historyEntry{input: []any{"e"}})
-	if h.len() != 2 {
-		t.Fatalf("容量上限後條目 = %d，期望 2", h.len())
+	// 只重送最後一輪（user「turn 2」+ 該輪 output）+ 新問題。
+	in := append([]any{map[string]any{"type": "message", "role": "user", "content": "turn 2"}}, output...)
+	in = append(in, map[string]any{"type": "message", "role": "user", "content": "What is the codeword?"})
+	r3 := do(t, s, http.MethodPost, "/v1/responses", key, mustMarshal(t, map[string]any{
+		"model": "glm-5.3-flash", "previous_response_id": id2, "input": in,
+	}))
+	if r3.Code != http.StatusOK {
+		t.Fatalf("第 3 輪 = %d：%s", r3.Code, r3.Body.String())
 	}
-	if h.get("b") != nil || h.get("c") != nil {
-		t.Fatal("最舊的 b/c 應被淘汰")
+	if _, text := respIDAndText(t, r3); !strings.Contains(text, "ZEBRA42") {
+		t.Fatalf("重送尾段後仍應保留開頭暗號，實際回答 %q", text)
 	}
-	if h.get("d") == nil || h.get("e") == nil {
-		t.Fatal("最新的 d/e 應保留")
+
+	blob, _ := json.Marshal(u.last(t).Payload["messages"])
+	if n := strings.Count(string(blob), `turn 2`); n != 1 {
+		t.Fatalf("重送的尾段不應重複（\"turn 2\" 出現 %d 次）：%s", n, blob)
 	}
 }
 
@@ -372,7 +372,7 @@ func TestResponsesTruncationAuto(t *testing.T) {
 	if len(msgs) > 1 {
 		for i, m := range msgs {
 			mm, _ := m.(map[string]any)
-			if i > 0 && strOf(mm["role"]) == "system" {
+			if i > 0 && jsonx.StrOf(mm["role"]) == "system" {
 				t.Fatalf("裁減後 system 出現在非首則（上游會 400）：%s", text)
 			}
 		}
@@ -382,22 +382,6 @@ func TestResponsesTruncationAuto(t *testing.T) {
 	}
 	if !strings.Contains(text, "What is the codeword") {
 		t.Fatalf("裁減後應保留最新提問：%s", text)
-	}
-}
-
-func TestTruncateHistoryRejectsOversizedItems(t *testing.T) {
-	items := []any{
-		map[string]any{"type": "message", "role": "user", "content": strings.Repeat("x", 500)},
-		map[string]any{"type": "message", "role": "assistant", "content": "ok"},
-		map[string]any{"type": "message", "role": "user", "content": "latest"},
-	}
-	got := truncateHistory(items, 100)
-	total := 0
-	for _, item := range got {
-		total += itemApproxTokens(item)
-	}
-	if total <= 100 {
-		t.Fatalf("期望单条消息仍超限以便 replay 返回错误，估算=%d", total)
 	}
 }
 
@@ -428,139 +412,112 @@ func TestResponsesTruncationRequired(t *testing.T) {
 	}
 }
 
-// TestItemApproxTokensCalibration 驗證估算與上游 input_tokens 偏差在 ±30% 內。
-// 壓力測試實測：160k ASCII bytes → 上游 input_tokens=100,761（比值 1.59）。
-func TestItemApproxTokensCalibration(t *testing.T) {
-	ascii := strings.Repeat("a", 160000)
-	got := itemApproxTokens(ascii)
-	want := 100761 // 上游實測值
-	if diff := float64(got-want) / float64(want); diff > 0.30 || diff < -0.30 {
-		t.Fatalf("ASCII token 估算 = %d，上游實測 %d，偏差 %.1f%% 超出 ±30%%", got, want, diff*100)
-	}
-	// 中文：一個字元約 1 token。
-	zh := itemApproxTokens(strings.Repeat("中", 1000))
-	if zh < 800 || zh > 1200 {
-		t.Fatalf("中文 token 估算 = %d，期望約 1000", zh)
-	}
-}
-
-// TestEffectiveContextWindow 驗證有效窗口按模型實測值查表、其餘模型用目錄標示、
-// 以及兩種環境覆寫（全域 + 按模型）都生效。
-func TestEffectiveContextWindow(t *testing.T) {
-	// 11 個免費模型的實測上限。
-	want := map[string]int{
-		"mimo-2.6-flash":      140000, // 140k 完整，170k 起靜默截斷 → 保守取 140k
-		"glyph-cluster":       256000, // 260k 完整，320k 硬拒絕 → 目錄標 256k
-		"glm-5.3-flash":       320000,
-		"deepseek-v4.1-flash": 320000,
-		"qwen-3.8-flash":      320000,
-		"minimax-m3.1-flash":  320000,
-		"muse-ember":          320000,
-		"solar-mini-4":        320000,
-		"gpt-6-luna":          320000,
-		"mimo-2.6-pro":        320000,
-		"deepai-cyber":        320000,
-	}
-	for id, exp := range want {
-		if got := effectiveContextWindow(id, 320000); got != exp {
-			t.Fatalf("%s 有效窗口 = %d，期望 %d", id, got, exp)
-		}
-	}
-	// 未知/付費模型：min(標示, 320k)，不再硬壓 120k。
-	if got := effectiveContextWindow("some-paid-model", 320000); got != 320000 {
-		t.Fatalf("未知模型 320k 標示應為 320000，實際 %d", got)
-	}
-	if got := effectiveContextWindow("some-paid-model", 200); got != 200 {
-		t.Fatalf("小於上限的標示應原樣保留，實際 %d", got)
-	}
-
-	// 全域環境覆寫（舊行為保留）。
-	t.Setenv("DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW", "64000")
-	if got := effectiveContextWindow("glm-5.3-flash", 320000); got != 64000 {
-		t.Fatalf("全域環境覆寫應為 64000，實際 %d", got)
-	}
-	t.Setenv("DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW", "0")
-	if got := effectiveContextWindow("glm-5.3-flash", 320000); got != 0 {
-		t.Fatalf("全域設 0 應關閉上限，實際 %d", got)
-	}
-}
-
-// TestEffectiveContextWindowPerModelOverride 驗證 DEEPAI2API_CONTEXT_WINDOWS
-// 按模型 JSON 覆寫：只改指定模型，不影響其他模型；全域覆寫優先於按模型。
-func TestEffectiveContextWindowPerModelOverride(t *testing.T) {
-	t.Setenv("DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW", "")
-	t.Setenv("DEEPAI2API_CONTEXT_WINDOWS", `{"glm-5.3-flash":64000,"mimo-2.6-flash":0}`)
-	if got := effectiveContextWindow("glm-5.3-flash", 320000); got != 64000 {
-		t.Fatalf("按模型覆寫 glm 應為 64000，實際 %d", got)
-	}
-	if got := effectiveContextWindow("mimo-2.6-flash", 320000); got != 0 {
-		t.Fatalf("按模型覆寫 mimo 設 0 應關閉上限，實際 %d", got)
-	}
-	// 未列入 JSON 的模型仍走表格/標示值。
-	if got := effectiveContextWindow("glyph-cluster", 320000); got != 256000 {
-		t.Fatalf("未覆寫的 glyph 應為 256000，實際 %d", got)
-	}
-	// 全域覆寫優先於按模型。
-	t.Setenv("DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW", "100000")
-	if got := effectiveContextWindow("glm-5.3-flash", 320000); got != 100000 {
-		t.Fatalf("全域覆寫應優先，實際 %d", got)
-	}
-	// 格式錯誤的 JSON 應忽略。
-	t.Setenv("DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW", "")
-	t.Setenv("DEEPAI2API_CONTEXT_WINDOWS", `not-json`)
-	if got := effectiveContextWindow("glm-5.3-flash", 320000); got != 320000 {
-		t.Fatalf("錯誤 JSON 應忽略，實際 %d", got)
-	}
-}
-
-// TestTruncationPointFollowsModelWindow 驗證 truncation:auto 的裁剪點跟著
-// 各模型上限走：同一段約 20 萬 token 的歷史，mimo-flash（140k）會被裁，
-// glm（320k）不會被裁——證明不再一律在 12 萬就提前裁剪。
-func TestTruncationPointFollowsModelWindow(t *testing.T) {
-	// 用 itemApproxTokens 反推：產生約 200000 tokens 的 ASCII（每 token ~1.6 bytes）。
-	bigFill := strings.Repeat("a", 200000*8/5) // 320000 bytes → 約 200000 tokens
-	items := []any{
-		map[string]any{"type": "message", "role": "user", "content": "開頭暗號 ZEBRA42"},
-		map[string]any{"type": "message", "role": "user", "content": bigFill},
-		map[string]any{"type": "message", "role": "user", "content": "最新提問"},
-	}
-	total := 0
-	for _, it := range items {
-		total += itemApproxTokens(it)
-	}
-	if total < 150000 || total > 250000 {
-		t.Fatalf("測試資料 token 估算 = %d，期望約 20 萬", total)
-	}
-
-	// 模擬 replay 的判斷：只有 total > limit 才裁剪。
-	maybeTruncate := func(modelID string) ([]any, int) {
-		limit := effectiveContextWindow(modelID, 320000)
-		if total > limit {
-			return truncateHistory(cloneAnySlice(items), limit), limit
-		}
-		return cloneAnySlice(items), limit
-	}
-
-	// mimo-2.6-flash：上限 140k，20 萬歷史超限 → 應裁剪並留標記。
-	mimoOut, mimoLimit := maybeTruncate("mimo-2.6-flash")
-	if mimoLimit != 140000 {
-		t.Fatalf("mimo 上限 = %d，期望 140000", mimoLimit)
-	}
-	mimoBlob, _ := json.Marshal(mimoOut)
-	if !strings.Contains(string(mimoBlob), "自動省略") {
-		t.Fatalf("mimo 在 140k 上限應裁剪並留標記，實際未裁")
-	}
-
-	// glm：上限 320k，同一段 20 萬歷史不超限 → 不應裁剪。
-	glmOut, glmLimit := maybeTruncate("glm-5.3-flash")
-	if glmLimit != 320000 {
-		t.Fatalf("glm 上限 = %d，期望 320000", glmLimit)
-	}
-	glmBlob, _ := json.Marshal(glmOut)
-	if strings.Contains(string(glmBlob), "自動省略") {
-		t.Fatalf("glm 在 320k 上限不應裁剪 20 萬歷史，卻被裁了")
-	}
-}
-
 // 確保 deepai import 被使用（模型的 IsResponses 路徑在別的測試覆蓋）。
 var _ = deepai.PathChat
+
+// TestResponsesReplayCountsTools 驗證重放時 tools 定義也計入上下文：
+// tools schema 每輪都隨請求送出，不算進去會讓剛好超限的請求穿過檢查、
+// 由上游靜默截斷歷史（正是 issue #5 的失憶形態）。
+func TestResponsesReplayCountsTools(t *testing.T) {
+	u := codewordUpstream(t, "ZEBRA42")
+	s, key := newTestServer(t, u)
+	t.Setenv("DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW", "120")
+
+	r1 := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"glm-5.3-flash","input":"hi"}`)
+	if r1.Code != http.StatusOK {
+		t.Fatalf("第 1 輪 = %d：%s", r1.Code, r1.Body.String())
+	}
+	id, _ := respIDAndText(t, r1)
+
+	// 歷史只有十幾 token，tools 定義約 250 token：合計超過 120 的窗口。
+	tools := `[{"type":"function","name":"lookup","description":"` +
+		strings.Repeat("d", 400) + `","parameters":{"type":"object"}}]`
+	body := `{"model":"glm-5.3-flash","previous_response_id":"` + id +
+		`","input":"again","tools":` + tools + `}`
+	r2 := do(t, s, http.MethodPost, "/v1/responses", key, body)
+	if r2.Code != http.StatusBadRequest {
+		t.Fatalf("tools 撑破窗口應回 400，實際 %d：%s", r2.Code, r2.Body.String())
+	}
+	if !strings.Contains(r2.Body.String(), "contextWindow") {
+		t.Fatalf("400 訊息應指明 contextWindow：%s", r2.Body.String())
+	}
+}
+
+// --- 增量存儲 / 前綴去重 / 輸出預留 / 窗口覆寫緩存 ---
+
+// TestResponsesFullInputWithPrevIDNotDuplicated 驗證「同時送 previous_response_id
+// 與完整 input」時不再把基底拼兩次：同一段歷史只出現一次。
+func TestResponsesFullInputWithPrevIDNotDuplicated(t *testing.T) {
+	u := codewordUpstream(t, "ZEBRA42")
+	s, key := newTestServer(t, u)
+
+	r1 := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"glm-5.3-flash","input":"Remember codeword ZEBRA42"}`)
+	if r1.Code != http.StatusOK {
+		t.Fatalf("第 1 輪 = %d：%s", r1.Code, r1.Body.String())
+	}
+	id, _ := respIDAndText(t, r1)
+
+	var out map[string]any
+	if err := json.Unmarshal(r1.Body.Bytes(), &out); err != nil {
+		t.Fatalf("第 1 輪回應不是 JSON: %v", err)
+	}
+	output, _ := out["output"].([]any)
+	if len(output) == 0 {
+		t.Fatalf("第 1 輪沒有 output：%s", r1.Body.String())
+	}
+
+	// 客戶端把「首輪 input + 首輪 output + 新問題」整包送回來。
+	in := []any{map[string]any{
+		"type": "message", "role": "user", "content": "Remember codeword ZEBRA42",
+	}}
+	in = append(in, output...)
+	in = append(in, map[string]any{
+		"type": "message", "role": "user", "content": "What is the codeword?",
+	})
+	r2 := do(t, s, http.MethodPost, "/v1/responses", key, mustMarshal(t, map[string]any{
+		"model": "glm-5.3-flash", "previous_response_id": id, "input": in,
+	}))
+	if r2.Code != http.StatusOK {
+		t.Fatalf("第 2 輪 = %d：%s", r2.Code, r2.Body.String())
+	}
+
+	blob, _ := json.Marshal(u.last(t).Payload["messages"])
+	if n := strings.Count(string(blob), "Remember codeword ZEBRA42"); n != 1 {
+		t.Fatalf("完整 input 不應再拼一次基底（暗號出現 %d 次）：%s", n, blob)
+	}
+}
+
+// TestResponsesReplayReservesMaxOutputTokens 驗證 max_output_tokens 會佔掉窗口：
+// 歷史貼近上限時，沒有給輸出留預算就會被上游靜默截斷。
+func TestResponsesReplayReservesMaxOutputTokens(t *testing.T) {
+	u := codewordUpstream(t, "ZEBRA42")
+	s, key := newTestServer(t, u)
+	t.Setenv("DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW", "200")
+
+	r1 := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"glm-5.3-flash","input":"hi"}`)
+	if r1.Code != http.StatusOK {
+		t.Fatalf("第 1 輪 = %d：%s", r1.Code, r1.Body.String())
+	}
+	id, _ := respIDAndText(t, r1)
+
+	// 歷史只有十幾 token，但 max_output_tokens=300 讓總需求超過 200。
+	r2 := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"glm-5.3-flash","previous_response_id":"`+id+
+			`","input":"again","max_output_tokens":300}`)
+	if r2.Code != http.StatusBadRequest {
+		t.Fatalf("輸出預算擠破窗口應回 400，實際 %d：%s", r2.Code, r2.Body.String())
+	}
+	if !strings.Contains(r2.Body.String(), "max_output_tokens") {
+		t.Fatalf("400 訊息應說明 max_output_tokens 預留：%s", r2.Body.String())
+	}
+
+	// 對照：不宣告輸出預算就照常放行。
+	r3 := do(t, s, http.MethodPost, "/v1/responses", key,
+		`{"model":"glm-5.3-flash","previous_response_id":"`+id+`","input":"again"}`)
+	if r3.Code != http.StatusOK {
+		t.Fatalf("未宣告 max_output_tokens 應回 200，實際 %d：%s", r3.Code, r3.Body.String())
+	}
+}

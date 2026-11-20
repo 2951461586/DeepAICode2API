@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 func testKey() []byte {
@@ -171,7 +171,7 @@ func TestOpenWithKeyEncryptsOnSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWithKey: %v", err)
 	}
-	st.UpsertAccount(&deepai.Account{APIKey: "sk-do-not-leak", Enabled: true})
+	st.UpsertAccount(&model.Account{APIKey: "sk-do-not-leak", Enabled: true})
 	st.AddKey("k", "")
 	if err := st.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -244,7 +244,7 @@ func TestOpenMigratesPlaintextToEncrypted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWithKey(nil): %v", err)
 	}
-	plain.UpsertAccount(&deepai.Account{APIKey: "sk-legacy", Enabled: true})
+	plain.UpsertAccount(&model.Account{APIKey: "sk-legacy", Enabled: true})
 	if err := plain.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestEncryptedFileHasNoKeyMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWithKey: %v", err)
 	}
-	st.UpsertAccount(&deepai.Account{
+	st.UpsertAccount(&model.Account{
 		APIKey: "sk-upstream-plaintext", Password: "hunter2-plaintext",
 		Email: "a@b.com", Enabled: true,
 	})

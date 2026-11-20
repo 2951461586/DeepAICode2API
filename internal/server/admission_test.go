@@ -18,12 +18,12 @@ func TestAllBusyQueuesInsteadOfRejecting(t *testing.T) {
 	s.admissionWait = 2 * time.Second
 
 	// 占满唯一账号的全部在途槽位。
-	if !s.acquireAccount("acc-1") || !s.acquireAccount("acc-1") {
+	if !s.Pool.Acquire("acc-1") || !s.Pool.Acquire("acc-1") {
 		t.Fatal("预占槽位失败")
 	}
 	go func() {
 		time.Sleep(150 * time.Millisecond)
-		s.releaseAccount("acc-1")
+		s.Pool.Release("acc-1")
 	}()
 
 	begin := time.Now()
@@ -45,7 +45,7 @@ func TestAllBusyRejectsAfterAdmissionWait(t *testing.T) {
 	})
 	s, key := newTestServer(t, u)
 	s.admissionWait = 120 * time.Millisecond
-	if !s.acquireAccount("acc-1") || !s.acquireAccount("acc-1") {
+	if !s.Pool.Acquire("acc-1") || !s.Pool.Acquire("acc-1") {
 		t.Fatal("预占槽位失败")
 	}
 

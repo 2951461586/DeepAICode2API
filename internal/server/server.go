@@ -6,15 +6,17 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/guard"
 	"deepaicode2api/internal/httpx"
-	"deepaicode2api/internal/proxy"
+	"deepaicode2api/internal/observe"
+	"deepaicode2api/internal/poolsvc"
 	"deepaicode2api/internal/registry"
+	"deepaicode2api/internal/respstate"
 	"deepaicode2api/internal/store"
 )
 
@@ -25,25 +27,14 @@ type Server struct {
 	// Login 保存进行中的浏览器登录会话（内存态）。
 	Login *loginSessions
 
+	// Pool 是号池的运行时状态（在途槽位 / 探测去重 / 会话粘性 / 入池代理）。
+	// 并发原语全部在 internal/poolsvc；server 只注入两件它不该知道的事：
+	// 按出口的客户端工厂（含代理缓存）与落盘入口。
+	Pool *poolsvc.Service
+
 	refreshMu    sync.Mutex
 	proxyMu      sync.Mutex
 	proxyClients map[string]*deepai.Client
-
-	// enrollPool 是入池自动分配代理用的进程内单例。
-	//
-	// 浏览器登录一次只入一个号；若每次新建池，轮询游标都会从 0 开始，
-	// 所有号就都落在第一个出口上（等于没分配）。单例让连续入池能真正轮转。
-	enrollPoolOnce sync.Once
-	enrollPool     *proxy.ProxyPool
-
-	// inflight 限制单账号同时进行的上游请求数。
-	// 调度只保证「这一轮选到谁」，不保证不会把并发全压在少数账号上：
-	// 压测时 12 并发可能全落在同一两个号上，放大上游限流后的长尾。
-	inflightMu sync.Mutex
-	inflight   map[string]int
-
-	// quotaReprobeDelays 是入池后 0 额度的复探退避序列（测试可注入短值）。
-	quotaReprobeDelays []time.Duration
 
 	// laneMu / laneCheckedAt 是车道探测的节流：426 会成批出现，
 	// 没有冷却就会把一次车道升级变成一轮探测风暴。
@@ -57,50 +48,18 @@ type Server struct {
 	// lane_version 是唯一信号，记下来给控制台 / 指标做升级提示。
 	upstreamLane atomic.Int64
 
-	// stickyMu / sticky 是会话粘性绑定（affinity → 账号），见 sticky.go。
-	// stickyDirty 标记绑定表有变化，等待 FlushSticky 攒批写盘。
-	stickyMu    sync.Mutex
-	sticky      map[string]store.StickyBinding
-	stickyDirty atomic.Bool
-
 	// admissionWait 是「槽位全满」时的排队上限（测试可注入 0 立即 429）。
 	admissionWait time.Duration
 
-	// quotaWG 跟踪已排期的后台落盘工作（配额复探 / 入池探活 / 按需复探）。
-	//
-	// 这些 goroutine 在写完内存后还要 Save() 落盘；测试必须等它完全收尾
-	// 再结束，否则 t.TempDir() 的清理会和落盘撞上（CI 上表现为
-	// "TempDir RemoveAll cleanup: directory not empty"）。
-	// 进程退出时由 Close 统一等待，避免「最后一次 Save 之后又有后台写」。
-	quotaWG sync.WaitGroup
-
-	// stopCh 在 Close 时关闭，用于打断后台任务里的长睡眠（配额复探退避最长 12 分钟）。
-	stopCh   chan struct{}
-	stopOnce sync.Once
-
-	// probing 是配额探测的在途去重表（按账号 ID）。
-	//
-	// 三条路径会同时探同一批账号：手动 checkin、入池后延迟复探、
-	// 推理时的按需复探。没有它时同一个号会被连打多次，既浪费额度
-	// 也容易触发上游风控。
-	probeMu sync.Mutex
-	probing map[string]struct{}
-
-	// probeSem 是全局在途探测上限（手动批次 / 后台守护 / 按需复探共用）。
-	//
-	// 653 个号的额度快照会同时变旧；若按需复探不加限制，一波流量就能
-	// 叠出几十上百个并行的 /theos 请求——那是最容易被上游风控的形态。
-	probeSem chan struct{}
-
 	// limiter 是按密钥的令牌桶 + 并发闸门（数据面限流）。
-	limiter *keyRateLimiter
+	limiter *guard.Limiter
 
 	// adminGuard 是管理口令的失败退避（防爆破）；adminGuardBase 可被测试注入。
-	adminGuard     *adminGuard
+	adminGuard     *guard.AdminGuard
 	adminGuardBase time.Duration
 
 	// metrics 是 /metrics 导出的进程内计数（原子量，无需锁）。
-	metrics *metrics
+	metrics *observe.Metrics
 
 	// Version 是构建版本（main 用 -ldflags 注入）；空值对外表现为 dev。
 	Version string
@@ -117,53 +76,49 @@ type Server struct {
 	shapeMu   sync.Mutex
 	shapeNeed map[string]time.Time
 
-	// history 是 /v1/responses 的伺服端對話歷史暫存（見 response_history.go）。
+	// history 是 /v1/responses 的伺服端對話歷史暫存（見 internal/respstate）。
 	// 讓 previous_response_id 在無狀態合成路徑上也能續接，而非回 400 造成失憶。
-	history *responseHistory
+	history *respstate.Store
 }
 
 // New 构造服务。
 func New(st *store.Store) *Server {
 	s := &Server{
 		Store: st, Up: deepai.NewClient(), Login: newLoginSessions(),
-		proxyClients:       map[string]*deepai.Client{},
-		inflight:           map[string]int{},
-		probing:            map[string]struct{}{},
-		probeSem:           make(chan struct{}, probeWorkers),
-		quotaReprobeDelays: quotaReprobeDelays,
-		admissionWait:      admissionWait,
-		stopCh:             make(chan struct{}),
-		limiter:            newKeyRateLimiter(),
-		adminGuard:         newAdminGuard(),
-		metrics:            newMetrics(),
-		sticky:             map[string]store.StickyBinding{},
-		history:            newResponseHistoryFromEnv(),
+		proxyClients:  map[string]*deepai.Client{},
+		admissionWait: admissionWait,
+		limiter:       guard.NewLimiter(),
+		adminGuard:    guard.NewAdminGuard(),
+		metrics:       observe.NewMetrics(),
+		history:       respstate.NewFromEnv(),
 	}
-	// 上次探测到的车道优先（跨重启保留）；CurrentLane 会区分「本次构建验证过
-	// 的探测值」与「旧版本残留」，后者才用较新的编译期默认值兜底。
-	if lane := strings.TrimSpace(st.Settings().Lane); lane != "" {
-		s.Up.SetLane(s.CurrentLane())
-	}
+	// 运行期可调项（车道 / 签到预算）走**拉取式**：客户端每次请求现取，
+	// 不再依赖 Server 主动推给「直连客户端 + 每个代理客户端」。
+	// 上次探测到的车道由 CurrentLane 从设置里读（跨重启保留）。
+	s.Up.Runtime = s.runtimeConfig
 	// 上游车道漂移的观测钩子：所有 /theos 成功都会回传 lane_version。
 	s.Up.LaneHook = s.noteUpstreamLane
+	s.Pool = poolsvc.New(poolsvc.Config{
+		Store:     st,
+		ClientFor: s.clientFor,
+		Save:      st.Save,
+	})
 	// 会话粘性绑定随重启保留（旁路文件，丢失不影响正确性）。
-	s.loadSticky()
-	s.applyRuntimeSettings()
+	s.Pool.LoadSticky()
 	return s
 }
 
-// applyRuntimeSettings 把「可运行期调整」的设置同步到已缓存的客户端。
+// runtimeConfig 返回上游客户端的运行期配置（拉取式真源）。
 //
-// 车道走 SetLane；签到预算走 SetCheckInBudget。两者都必须同时覆盖
-// s.Up 和按代理缓存的客户端，否则直连号与代理号表现不一致。
-func (s *Server) applyRuntimeSettings() {
-	budget := time.Duration(s.Store.Settings().CheckinBlockMS) * time.Millisecond
-	s.Up.SetCheckInBudget(budget)
-	s.proxyMu.Lock()
-	for _, c := range s.proxyClients {
-		c.SetCheckInBudget(budget)
+// 车道与签到预算都能在控制台运行期调整。此前是「推」模式：改设置时要遍历
+// 已缓存客户端逐个 Set，新建客户端时还要再补一遍（server.go / request.go
+// 两处重复注入），漏一处的表现是「走代理的号与直连号行为不一致」。
+// 现在客户端每次请求现取一次，只有这一份真源。
+func (s *Server) runtimeConfig() deepai.RuntimeConfig {
+	return deepai.RuntimeConfig{
+		Lane:          s.CurrentLane(),
+		CheckInBudget: time.Duration(s.Store.Settings().CheckinBlockMS) * time.Millisecond,
 	}
-	s.proxyMu.Unlock()
 }
 
 // Handler 返回完整路由。
@@ -202,7 +157,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/usage", s.withAuth(s.handleUsage))
 
 	// 控制台 API（统一走管理鉴权 + 同源校验）
-	mux.HandleFunc("/admin/api/state", s.withAdminAuth(s.handleAdminState))
 	mux.HandleFunc("/admin/api/overview", s.withAdminAuth(s.handleAdminOverview))
 	mux.HandleFunc("/admin/api/accounts", s.withAdminAuth(s.handleAdminAccounts))
 	mux.HandleFunc("/admin/api/keys", s.withAdminAuth(s.handleAdminKeys))
@@ -237,8 +191,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/js/", s.handleConsoleAsset)
 	mux.HandleFunc("/", s.handleRoot)
 
+	// 顺序（由外到内）：设置快照 → CORS → 观测 → 压缩 → 路由。
+	// 设置快照必须最外层：CORS 来源校验、鉴权、限流、handler 与上游调用
+	// 都必须看到同一份设置（同一请求里不能一半新一半旧）。
 	// 压缩在最内层：外层（观测）看到的是压缩后的字节数。
-	return s.withCORS(s.withObservability(httpx.WithGzip(mux)))
+	return s.withSettingsSnapshot(s.withCORS(observe.Middleware(s.metrics, httpx.WithGzip(mux))))
 }
 
 // RefreshModels 从上游拉取模型目录并落盘。
@@ -268,6 +225,7 @@ func (s *Server) RefreshModels(ctx context.Context) ([]deepai.Model, error) {
 // --- 基础端点 ---
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	settings := s.settings(r)
 	// 口径见 deepai.AccountReady / AccountDegraded 与额度时效；
 	// 与 /metrics 共用 poolSnapshot，避免两处给出互相矛盾的数。
 	pool := s.poolSnapshot()
@@ -287,11 +245,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"lane_drift":    s.LaneDrift(),
 		"models":        len(models),
 		"default_model": s.Store.DefaultModel(),
-		"strict_model":  s.Store.Settings().StrictModel,
+		"strict_model":  settings.StrictModel,
 		"machine_id":    shortMachine(s.Store.MachineID()),
 		"machine_ready": s.Store.MachineID() != "",
 		// 控制台据此决定是否把用户送到 /login：未设口令时本机直接放行。
-		"admin_required": s.Store.Settings().AdminPassword != "",
+		"admin_required": settings.AdminPassword != "",
 	})
 }
 
@@ -301,7 +259,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	catalog := s.catalog()
-	models := registry.List(catalog, s.Store.Settings().ModelAliases)
+	settings := s.settings(r)
+	models := registry.List(catalog, settings.ModelAliases)
 	data := make([]map[string]any, 0, len(models))
 	now := time.Now().Unix()
 	for _, m := range models {

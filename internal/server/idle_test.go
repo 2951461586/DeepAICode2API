@@ -5,6 +5,8 @@ import (
 	"io"
 	"sync"
 	"testing"
+
+	"deepaicode2api/internal/poolsvc"
 	"time"
 )
 
@@ -111,7 +113,7 @@ func TestIdleTimeoutFirstByteBudget(t *testing.T) {
 
 // TestHoldResponseBodyBudgets 固化「流式与非流式用不同首字节预算」。
 func TestHoldResponseBodyBudgets(t *testing.T) {
-	s := &Server{inflight: map[string]int{}}
+	s := &Server{Pool: poolsvc.New(poolsvc.Config{})}
 
 	streamBody := s.holdResponseBody(newSlowBody(), "acct", true)
 	defer streamBody.Close()

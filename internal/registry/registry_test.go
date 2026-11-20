@@ -3,11 +3,11 @@ package registry
 import (
 	"testing"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
-func catalog() []deepai.Model {
-	return []deepai.Model{
+func catalog() []model.Model {
+	return []model.Model{
 		{ID: "glm-5.3-flash", Name: "GLM 5.3 Flash"},
 		{ID: "gpt-6-luna", Name: "GPT 6 Luna"},
 		{ID: "claude-opus-5-5", Name: "Claude Opus 5.5"},
@@ -47,8 +47,8 @@ func TestResolveBuiltinAlias(t *testing.T) {
 	// Claude Code / Cline / OpenAI SDK 常见模型名都应落在默认免费模型上。
 	for _, name := range []string{"gpt-4o", "claude-3-5-sonnet", "deepseek-chat", "default", "deepai"} {
 		got := Resolve(catalog(), nil, name, "")
-		if got.ID != deepai.DefaultModel {
-			t.Errorf("%q → %q，期望回落 %q", name, got.ID, deepai.DefaultModel)
+		if got.ID != model.DefaultModel {
+			t.Errorf("%q → %q，期望回落 %q", name, got.ID, model.DefaultModel)
 		}
 	}
 }
@@ -86,8 +86,8 @@ func TestResolveAlwaysReturnsSomething(t *testing.T) {
 	if got.ID == "" {
 		t.Fatal("空目录时应返回兜底模型，而不是空 ID")
 	}
-	if got.ID != deepai.DefaultModel {
-		t.Fatalf("兜底模型 = %q，期望 %q", got.ID, deepai.DefaultModel)
+	if got.ID != model.DefaultModel {
+		t.Fatalf("兜底模型 = %q，期望 %q", got.ID, model.DefaultModel)
 	}
 }
 

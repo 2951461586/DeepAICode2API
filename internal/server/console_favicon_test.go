@@ -68,7 +68,7 @@ func TestConsoleFaviconServed(t *testing.T) {
 // 只把文件嵌进二进制不够：页面不写 <link rel="icon">，浏览器仍会去猜默认路径，
 // 移动端「添加到主屏」也拿不到图标。
 func TestConsolePagesReferenceFavicon(t *testing.T) {
-	for _, name := range []string{"web/index.html", "web/login.html"} {
+	for _, name := range []string{"index.html", "login.html"} {
 		page := string(web.MustRead(name))
 		for _, want := range []string{
 			`<link rel="icon" href="/favicon.ico" sizes="any">`,
@@ -91,27 +91,9 @@ func TestConsoleFaviconMatchesDocsAsset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取 docs/assets/logo.ico 失败: %v", err)
 	}
-	got := web.MustRead("web/favicon.ico")
+	got := web.MustRead("favicon.ico")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("web/favicon.ico 与 docs/assets/logo.ico 不一致（%d vs %d 字节）："+
 			"换图标后要同时更新两份，见 docs/changes.md §58", len(got), len(want))
-	}
-}
-
-// TestStaticAssetsSkipAccessLog 确认图标不会被写进访问日志。
-//
-// 浏览器每次打开页面都会自动请求 /favicon.ico（以及 Apple 的 touch icon），
-// 它们和 /style.css、/js/* 一样是纯静态资源：进日志只会把 access 行刷成
-// 「一半是图标」的噪声，还会让 /metrics 的 2xx 计数虚高。
-func TestStaticAssetsSkipAccessLog(t *testing.T) {
-	for _, p := range []string{"/favicon.ico", "/apple-touch-icon.png", "/style.css", "/js/app.js", "/ping"} {
-		if !isStaticAsset(p) {
-			t.Errorf("%s 应视为静态资源（不写访问日志）", p)
-		}
-	}
-	for _, p := range []string{"/", "/login", "/admin/api/logs", "/v1/models"} {
-		if isStaticAsset(p) {
-			t.Errorf("%s 不是静态资源，不应被跳过", p)
-		}
 	}
 }

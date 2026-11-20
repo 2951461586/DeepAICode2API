@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/machine"
 )
 
 // postAdmin 以本机来源调用管理接口。
@@ -115,12 +116,13 @@ func TestEnrollAssignsMachine(t *testing.T) {
 	if seen == "" {
 		t.Fatal("入池探测没有发送机器指纹")
 	}
-	if seen == deepai.MachineFingerprint("") {
+	if seen == machine.Fingerprint("") {
 		t.Fatal("机器指纹为空")
 	}
 }
 
-func TestStateExposesMachineSummary(t *testing.T) {
+// 账号列表里只下发机器指纹摘要（完整 UUID 不出网）。
+func TestAccountsExposeMachineSummary(t *testing.T) {
 	s := newEmptyServer(t)
 	s.Store.UpsertAccount(&deepai.Account{
 		ID: "a1", Name: "with", APIKey: "sk-1", Enabled: true,
@@ -128,12 +130,12 @@ func TestStateExposesMachineSummary(t *testing.T) {
 	})
 	s.Store.UpsertAccount(&deepai.Account{ID: "a2", Name: "without", APIKey: "sk-2", Enabled: true})
 
-	rec := call(t, s, "127.0.0.1:1", nil, "/admin/api/state")
+	rec := call(t, s, "127.0.0.1:1", nil, "/admin/api/accounts")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d", rec.Code)
 	}
 	out := decodeJSON[map[string]any](t, rec.Body.Bytes())
-	accts, _ := out["accounts"].([]any)
+	accts, _ := out["items"].([]any)
 	if len(accts) != 2 {
 		t.Fatalf("账号数 = %d", len(accts))
 	}
@@ -210,7 +212,7 @@ func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 	})
 	s, _ := newTestServer(t, u)
 	// 测试里把 3 分钟退避压到 10ms。
-	s.quotaReprobeDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
+	s.Pool.SetQuotaReprobeDelays([]time.Duration{10 * time.Millisecond, 10 * time.Millisecond})
 
 	rec := postAdmin(t, s, "/admin/api/accounts",
 		`{"action":"enroll","api_key":"sk-late-quota","email":"late@y.com"}`)
@@ -234,7 +236,7 @@ func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 			// 额度是复探 goroutine 先写内存、再 Save() 落盘的：只等内存就返回
 			// 会和 t.TempDir() 的清理抢同一批文件（CI 上偶发
 			// "TempDir RemoveAll cleanup: directory not empty"）。
-			s.waitQuotaReprobe()
+			s.Pool.Wait()
 			return // ok
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -254,7 +256,7 @@ func TestEnrollWithQuotaSkipsReprobe(t *testing.T) {
 		_, _ = io.WriteString(w, `{"enabled":true,"balance":"200.00000","granted":"200.00000"}`)
 	})
 	s, _ := newTestServer(t, u)
-	s.quotaReprobeDelays = []time.Duration{10 * time.Millisecond}
+	s.Pool.SetQuotaReprobeDelays([]time.Duration{10 * time.Millisecond})
 
 	if rec := postAdmin(t, s, "/admin/api/accounts",
 		`{"action":"enroll","api_key":"sk-has-quota","email":"q@y.com"}`); rec.Code != http.StatusOK {

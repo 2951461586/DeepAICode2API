@@ -18,9 +18,10 @@ import (
 	"syscall"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/envfile"
 	"deepaicode2api/internal/logx"
+	"deepaicode2api/internal/machine"
 	"deepaicode2api/internal/server"
 	"deepaicode2api/internal/store"
 )
@@ -83,10 +84,10 @@ func main() {
 		return
 	}
 
-	machine := deepai.MachineID()
-	if machine != "" {
-		st.SetMachineID(machine)
-		log.Printf("机器指纹: %s…（用于上游按天发放免费 Theos）", machine[:12])
+	machineID := machine.ID()
+	if machineID != "" {
+		st.SetMachineID(machineID)
+		log.Printf("机器指纹: %s…（用于上游按天发放免费 Theos）", machineID[:12])
 	} else {
 		log.Printf("⚠ 未能读取机器指纹：上游会拒绝所有模型请求（426 lane_version_unsupported）")
 		log.Printf("  请设置 DEEPAI_MACHINE_ID=<原始机器UUID>；Windows 可执行：")
@@ -111,7 +112,7 @@ func main() {
 	if !*noImport {
 		autoImport(st, *deepaiDir)
 	}
-	if envAcct := deepai.EnvAccount(); envAcct != nil {
+	if envAcct := credimport.EnvAccount(); envAcct != nil {
 		if isNew := st.UpsertAccount(envAcct); isNew {
 			log.Printf("已从 DEEPAI_API_KEY 添加账号 %s", envAcct.Name)
 			_ = st.Save()

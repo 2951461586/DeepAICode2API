@@ -34,12 +34,3 @@ type AnthropicTool struct {
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
 }
-
-func FirstString(vals ...any) string {
-	for _, v := range vals {
-		if s, ok := v.(string); ok && s != "" {
-			return s
-		}
-	}
-	return ""
-}

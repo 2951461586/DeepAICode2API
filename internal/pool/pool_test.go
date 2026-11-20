@@ -4,17 +4,17 @@ import (
 	"testing"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
-func acct(id, group string) *deepai.Account {
-	return &deepai.Account{ID: id, Name: id, APIKey: "sk-" + id, Group: group, Enabled: true}
+func acct(id, group string) *model.Account {
+	return &model.Account{ID: id, Name: id, APIKey: "sk-" + id, Group: group, Enabled: true}
 }
 
 // 三个健康账号应被均分。
 func TestPickRoundRobins(t *testing.T) {
 	s := New()
-	accounts := []*deepai.Account{acct("a", ""), acct("b", ""), acct("c", "")}
+	accounts := []*model.Account{acct("a", ""), acct("b", ""), acct("c", "")}
 
 	seen := map[string]int{}
 	for i := 0; i < 30; i++ {
@@ -37,7 +37,7 @@ func TestPickSkipsDisabledAndFailed(t *testing.T) {
 	bad.Failures = 3
 	bad.Status = "error"
 	off.Enabled = false
-	accounts := []*deepai.Account{good, bad, off}
+	accounts := []*model.Account{good, bad, off}
 
 	for i := 0; i < 10; i++ {
 		got := s.Pick(accounts, "")
@@ -53,14 +53,14 @@ func TestPickFallsBackWhenAllFailed(t *testing.T) {
 	a, b := acct("a", ""), acct("b", "")
 	a.Failures = 5
 	b.Failures = 2
-	if got := s.Pick([]*deepai.Account{a, b}, ""); got == nil {
+	if got := s.Pick([]*model.Account{a, b}, ""); got == nil {
 		t.Fatal("全部失败时应回退到失败最少的账号")
 	}
 }
 
 func TestPickRespectsGroup(t *testing.T) {
 	s := New()
-	accounts := []*deepai.Account{acct("g1", "g1"), acct("g2", "g2")}
+	accounts := []*model.Account{acct("g1", "g1"), acct("g2", "g2")}
 
 	for i := 0; i < 5; i++ {
 		if got := s.Pick(accounts, "g1"); got == nil || got.GroupName() != "g1" {
@@ -81,11 +81,11 @@ func TestPickPrefersQuota(t *testing.T) {
 	s := New()
 	now := time.Now().Unix()
 	empty, full := acct("empty", ""), acct("full", "")
-	empty.Theos = &deepai.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}
-	full.Theos = &deepai.Allowance{Enabled: true, Balance: "2.50000", CheckedAt: now}
+	empty.Theos = &model.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}
+	full.Theos = &model.Allowance{Enabled: true, Balance: "2.50000", CheckedAt: now}
 
 	for i := 0; i < 10; i++ {
-		if got := s.Pick([]*deepai.Account{empty, full}, ""); got == nil || got.ID != "full" {
+		if got := s.Pick([]*model.Account{empty, full}, ""); got == nil || got.ID != "full" {
 			t.Fatalf("应优先选择有额度的账号，实际 %v", got)
 		}
 	}
@@ -96,21 +96,21 @@ func TestHasQuota(t *testing.T) {
 	now := time.Now().Unix()
 	cases := []struct {
 		name string
-		a    *deepai.Account
+		a    *model.Account
 		want bool
 	}{
 		{"nil", nil, true},
-		{"无 Theos", &deepai.Account{}, true},
-		{"未启用配额", &deepai.Account{Theos: &deepai.Allowance{Enabled: false, Balance: "0"}}, true},
-		{"余额为空", &deepai.Account{Theos: &deepai.Allowance{Enabled: true}}, true},
-		{"无法解析", &deepai.Account{Theos: &deepai.Allowance{Enabled: true, Balance: "n/a"}}, true},
-		{"有余额", &deepai.Account{Theos: &deepai.Allowance{Enabled: true, Balance: "1.5"}}, true},
-		{"刚探到 0", &deepai.Account{Theos: &deepai.Allowance{Enabled: true, Balance: "0", CheckedAt: now}}, false},
-		{"陈旧的 0", &deepai.Account{Theos: &deepai.Allowance{
+		{"无 Theos", &model.Account{}, true},
+		{"未启用配额", &model.Account{Theos: &model.Allowance{Enabled: false, Balance: "0"}}, true},
+		{"余额为空", &model.Account{Theos: &model.Allowance{Enabled: true}}, true},
+		{"无法解析", &model.Account{Theos: &model.Allowance{Enabled: true, Balance: "n/a"}}, true},
+		{"有余额", &model.Account{Theos: &model.Allowance{Enabled: true, Balance: "1.5"}}, true},
+		{"刚探到 0", &model.Account{Theos: &model.Allowance{Enabled: true, Balance: "0", CheckedAt: now}}, false},
+		{"陈旧的 0", &model.Account{Theos: &model.Allowance{
 			Enabled: true, Balance: "0",
 			CheckedAt: now - int64(QuotaStaleAfter/time.Second) - 60,
 		}}, true},
-		{"0 但无时间戳", &deepai.Account{Theos: &deepai.Allowance{Enabled: true, Balance: "0"}}, true},
+		{"0 但无时间戳", &model.Account{Theos: &model.Allowance{Enabled: true, Balance: "0"}}, true},
 	}
 	for _, c := range cases {
 		if got := HasQuota(c.a); got != c.want {
@@ -129,15 +129,15 @@ func TestPickEmpty(t *testing.T) {
 func TestPickSkipsBlocked(t *testing.T) {
 	s := New()
 	blocked, good := acct("blocked", ""), acct("good", "")
-	blocked.Status = deepai.StatusBlocked
-	accounts := []*deepai.Account{blocked, good}
+	blocked.Status = model.StatusBlocked
+	accounts := []*model.Account{blocked, good}
 
 	for i := 0; i < 10; i++ {
 		if got := s.Pick(accounts, ""); got == nil || got.ID != "good" {
 			t.Fatalf("应跳过被拦截账号，实际 %v", got)
 		}
 	}
-	if got := s.Pick([]*deepai.Account{blocked}, ""); got != nil {
+	if got := s.Pick([]*model.Account{blocked}, ""); got != nil {
 		t.Fatalf("只剩被拦截账号时应返回 nil，实际 %v", got)
 	}
 }
@@ -146,7 +146,7 @@ func TestPickSkipsBlocked(t *testing.T) {
 // QuotaUntil 之前不可选（否则每个请求都白撞 403），到点自动恢复。
 func TestPickSkipsQuotaExhausted(t *testing.T) {
 	now := time.Now().Unix()
-	accts := []*deepai.Account{
+	accts := []*model.Account{
 		{ID: "a", Enabled: true, Status: "ok", QuotaUntil: now + 3600},
 		{ID: "b", Enabled: true, Status: "ok"},
 	}

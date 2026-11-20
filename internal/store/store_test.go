@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 	"deepaicode2api/internal/pool"
 )
 
@@ -22,10 +22,10 @@ func newStore(t *testing.T) *Store {
 	return st
 }
 
-func addAccount(t *testing.T, st *Store, key, group string) *deepai.Account {
+func addAccount(t *testing.T, st *Store, key, group string) *model.Account {
 	t.Helper()
-	a := &deepai.Account{
-		ID:      deepai.ShortHash(key)[:8],
+	a := &model.Account{
+		ID:      model.ShortHash(key)[:8],
 		Name:    key,
 		APIKey:  key,
 		Group:   group,
@@ -77,7 +77,7 @@ func TestSaveAndReopenRoundTrip(t *testing.T) {
 	addAccount(t, st, "sk-aaa", "g1")
 	k := st.AddKey("console", "")
 	st.SetMachineID("machine-1")
-	st.SetModels([]deepai.Model{{ID: "m1", Name: "M1"}}, "m1")
+	st.SetModels([]model.Model{{ID: "m1", Name: "M1"}}, "m1")
 	if err := st.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestUpsertDedupesByKeyAndEmail(t *testing.T) {
 	a := addAccount(t, st, "sk-same", "")
 
 	// 同一 Key 再导入 → 更新而非新增，且 ID 保持不变。
-	again := &deepai.Account{APIKey: "sk-same", Name: "renamed"}
+	again := &model.Account{APIKey: "sk-same", Name: "renamed"}
 	if st.UpsertAccount(again) {
 		t.Fatal("同 Key 应为更新")
 	}
@@ -151,9 +151,9 @@ func TestUpsertDedupesByKeyAndEmail(t *testing.T) {
 	}
 
 	// 邮箱相同、Key 已轮换 → 仍视为同一账号。
-	rotated := &deepai.Account{APIKey: "sk-new", Email: "x@y.com"}
+	rotated := &model.Account{APIKey: "sk-new", Email: "x@y.com"}
 	st.UpsertAccount(rotated)
-	sameEmailAcct := &deepai.Account{APIKey: "sk-newer", Email: "X@Y.com"}
+	sameEmailAcct := &model.Account{APIKey: "sk-newer", Email: "X@Y.com"}
 	if st.UpsertAccount(sameEmailAcct) {
 		t.Fatal("同邮箱（大小写不同）应为更新")
 	}
@@ -165,11 +165,11 @@ func TestUpsertDedupesByKeyAndEmail(t *testing.T) {
 func TestUpsertPreservesRuntimeState(t *testing.T) {
 	st := newStore(t)
 	a := addAccount(t, st, "sk-1", "")
-	st.MarkAccountResult(a.ID, false, "boom")
-	st.SetAccountAllowance(a.ID, &deepai.Allowance{Balance: "3"}, nil)
+	markResult(st, a.ID, false, "boom")
+	setAllowance(st, a.ID, &model.Allowance{Balance: "3"}, nil)
 
 	// 重新导入（例如桌面端换了 Key）不应清空故障计数与配额缓存。
-	st.UpsertAccount(&deepai.Account{APIKey: "sk-1", Name: "n"})
+	st.UpsertAccount(&model.Account{APIKey: "sk-1", Name: "n"})
 	got := st.Account(a.ID)
 	if got == nil {
 		t.Fatal("账号丢失")
@@ -210,9 +210,9 @@ func TestNextAccountSkipsFailedAndDisabled(t *testing.T) {
 	bad := addAccount(t, st, "sk-bad", "")
 	off := addAccount(t, st, "sk-off", "")
 
-	st.MarkAccountResult(bad.ID, false, "api down")
+	markResult(st, bad.ID, false, "api down")
 	// 与 /admin/api/accounts 的启停一致：写路径统一走 UpdateAccount。
-	st.UpdateAccount(off.ID, func(x *deepai.Account) { x.Enabled = false })
+	st.UpdateAccount(off.ID, func(x *model.Account) { x.Enabled = false })
 
 	for i := 0; i < 10; i++ {
 		if got := st.NextAccountGroup(""); got == nil || got.ID != good.ID {
@@ -226,8 +226,8 @@ func TestNextAccountFallsBackWhenAllFailed(t *testing.T) {
 	st := newStore(t)
 	a := addAccount(t, st, "sk-1", "")
 	addAccount(t, st, "sk-2", "")
-	st.MarkAccountResult(a.ID, false, "x")
-	st.MarkAccountResult(a.ID, false, "x")
+	markResult(st, a.ID, false, "x")
+	markResult(st, a.ID, false, "x")
 
 	if got := st.NextAccountGroup(""); got == nil {
 		t.Fatal("全部失败时应回退到失败最少的账号，而不是 nil")
@@ -257,21 +257,6 @@ func TestNextAccountEmptyPool(t *testing.T) {
 	st := newStore(t)
 	if got := st.NextAccountGroup(""); got != nil {
 		t.Fatalf("空号池应返回 nil，实际 %#v", got)
-	}
-}
-
-func TestMarkAccountResultResetsFailures(t *testing.T) {
-	st := newStore(t)
-	a := addAccount(t, st, "sk-1", "")
-	st.MarkAccountResult(a.ID, false, "boom")
-	st.MarkAccountResult(a.ID, false, "boom2")
-	if got := st.Account(a.ID); got.Failures != 2 || got.Status != "error" || got.LastErr != "boom2" {
-		t.Fatalf("失败计数错误: %#v", got)
-	}
-
-	st.MarkAccountResult(a.ID, true, "")
-	if got := st.Account(a.ID); got.Failures != 0 || got.Status != "ok" || got.LastErr != "" {
-		t.Fatalf("成功后应清零: %#v", got)
 	}
 }
 
@@ -392,11 +377,11 @@ func TestRecordCountsFailures(t *testing.T) {
 func TestModelCatalog(t *testing.T) {
 	st := newStore(t)
 	// 未拉取目录时 DefaultModel 为空；兜底由 server.resolveModel 负责
-	// （catalog 空 → deepai.DefaultModelEntry）。
+	// （catalog 空 → model.DefaultModelEntry）。
 	if got := st.DefaultModel(); got != "" {
 		t.Fatalf("未设置目录时 DefaultModel 应为空，实际 %q", got)
 	}
-	st.SetModels([]deepai.Model{{ID: "a"}, {ID: "b"}}, "b")
+	st.SetModels([]model.Model{{ID: "a"}, {ID: "b"}}, "b")
 	if st.DefaultModel() != "b" {
 		t.Fatalf("DefaultModel = %q", st.DefaultModel())
 	}
@@ -409,11 +394,11 @@ func TestModelCatalog(t *testing.T) {
 
 	// def 为空时回落到目录首项；已有默认值时不被空覆盖。
 	st2 := newStore(t)
-	st2.SetModels([]deepai.Model{{ID: "first"}}, "")
+	st2.SetModels([]model.Model{{ID: "first"}}, "")
 	if st2.DefaultModel() != "first" {
 		t.Fatalf("空 def 应回落到首个模型，实际 %q", st2.DefaultModel())
 	}
-	st2.SetModels([]deepai.Model{{ID: "second"}}, "")
+	st2.SetModels([]model.Model{{ID: "second"}}, "")
 	if st2.DefaultModel() != "first" {
 		t.Fatalf("已有默认值不应被空覆盖，实际 %q", st2.DefaultModel())
 	}
@@ -452,7 +437,7 @@ func TestConcurrentAccessIsRaceFree(t *testing.T) {
 			defer func() { done <- struct{}{} }()
 			for j := 0; j < 50; j++ {
 				if a := st.NextAccountGroup(""); a != nil {
-					st.MarkAccountResult(a.ID, j%2 == 0, "")
+					markResult(st, a.ID, j%2 == 0, "")
 				}
 				_ = st.ValidKey(key.Key)
 				st.Record(LogEntry{Status: 200}, 1)
@@ -476,8 +461,8 @@ func TestNextAccountPrefersAccountsWithQuota(t *testing.T) {
 	empty := addAccount(t, st, "sk-empty", "")
 	full := addAccount(t, st, "sk-full", "")
 	now := time.Now().Unix()
-	st.SetAccountAllowance(empty.ID, &deepai.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}, nil)
-	st.SetAccountAllowance(full.ID, &deepai.Allowance{Enabled: true, Balance: "2.50000", CheckedAt: now}, nil)
+	setAllowance(st, empty.ID, &model.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}, nil)
+	setAllowance(st, full.ID, &model.Allowance{Enabled: true, Balance: "2.50000", CheckedAt: now}, nil)
 
 	for i := 0; i < 10; i++ {
 		got := st.NextAccountGroup("")
@@ -493,8 +478,8 @@ func TestNextAccountFallsBackToZeroQuota(t *testing.T) {
 	a := addAccount(t, st, "sk-a", "")
 	b := addAccount(t, st, "sk-b", "")
 	now := time.Now().Unix()
-	st.SetAccountAllowance(a.ID, &deepai.Allowance{Enabled: true, Balance: "0", CheckedAt: now}, nil)
-	st.SetAccountAllowance(b.ID, &deepai.Allowance{Enabled: true, Balance: "0.0", CheckedAt: now}, nil)
+	setAllowance(st, a.ID, &model.Allowance{Enabled: true, Balance: "0", CheckedAt: now}, nil)
+	setAllowance(st, b.ID, &model.Allowance{Enabled: true, Balance: "0.0", CheckedAt: now}, nil)
 
 	if got := st.NextAccountGroup(""); got == nil {
 		t.Fatal("全组 0 额度时应回退，而不是返回 nil")
@@ -503,7 +488,7 @@ func TestNextAccountFallsBackToZeroQuota(t *testing.T) {
 
 func TestNextAccountUnknownQuotaIsUsable(t *testing.T) {
 	// 未探测 / 解析不了 / 免费额度关闭，都不能算“没额度”。
-	cases := []*deepai.Allowance{
+	cases := []*model.Allowance{
 		nil,
 		{Enabled: true, Balance: "abc"},
 		{Enabled: true, Balance: ""},
@@ -512,7 +497,7 @@ func TestNextAccountUnknownQuotaIsUsable(t *testing.T) {
 	for _, al := range cases {
 		st := newStore(t)
 		a := addAccount(t, st, "sk-1", "")
-		st.SetAccountAllowance(a.ID, al, nil)
+		setAllowance(st, a.ID, al, nil)
 		if got := st.NextAccountGroup(""); got == nil || got.ID != a.ID {
 			t.Fatalf("额度状态 %#v 不应导致账号被跳过", al)
 		}
@@ -523,17 +508,17 @@ func TestUpsertPreservesMachineID(t *testing.T) {
 	st := newStore(t)
 	a := addAccount(t, st, "sk-1", "")
 	// 号池不再对外交付活指针，改字段必须走 UpdateAccount。
-	st.UpdateAccount(a.ID, func(x *deepai.Account) { x.MachineID = "machine-keep" })
+	st.UpdateAccount(a.ID, func(x *model.Account) { x.MachineID = "machine-keep" })
 
 	// 重新导入（例如桌面端刷新了 Key）不应清掉机器指纹，
 	// 否则该账号在上游的额度归属会断掉。
-	st.UpsertAccount(&deepai.Account{APIKey: "sk-1", Name: "n"})
+	st.UpsertAccount(&model.Account{APIKey: "sk-1", Name: "n"})
 	if got := st.Account(a.ID); got.MachineID != "machine-keep" {
 		t.Fatalf("机器指纹被清空: %q", got.MachineID)
 	}
 
 	// 新值非空时应可以覆盖。
-	st.UpsertAccount(&deepai.Account{APIKey: "sk-1", MachineID: "machine-new"})
+	st.UpsertAccount(&model.Account{APIKey: "sk-1", MachineID: "machine-new"})
 	if got := st.Account(a.ID); got.MachineID != "machine-new" {
 		t.Fatalf("新指纹未生效: %q", got.MachineID)
 	}
@@ -593,22 +578,22 @@ func TestZeroQuotaGoesStale(t *testing.T) {
 	// 注册瞬间的 0 额度不能把账号永久判死；陈旧的 0 要重新被视为“未知”。
 	now := time.Now().Unix()
 
-	fresh := &deepai.Account{ID: "a", Enabled: true,
-		Theos: &deepai.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}}
+	fresh := &model.Account{ID: "a", Enabled: true,
+		Theos: &model.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}}
 	if pool.HasQuota(fresh) {
 		t.Fatal("刚探到的 0 额度不应算可用")
 	}
 
-	stale := &deepai.Account{ID: "b", Enabled: true,
-		Theos: &deepai.Allowance{Enabled: true, Balance: "0.00000",
+	stale := &model.Account{ID: "b", Enabled: true,
+		Theos: &model.Allowance{Enabled: true, Balance: "0.00000",
 			CheckedAt: now - int64(pool.QuotaStaleAfter/time.Second) - 60}}
 	if !pool.HasQuota(stale) {
 		t.Fatal("超过时限的 0 额度应视为未知（允许重探）")
 	}
 
 	// 没有探测时间戳的 0：按未知处理。
-	noStamp := &deepai.Account{ID: "c", Enabled: true,
-		Theos: &deepai.Allowance{Enabled: true, Balance: "0"}}
+	noStamp := &model.Account{ID: "c", Enabled: true,
+		Theos: &model.Allowance{Enabled: true, Balance: "0"}}
 	if !pool.HasQuota(noStamp) {
 		t.Fatal("无 CheckedAt 的 0 额度应按未知处理")
 	}
@@ -618,7 +603,7 @@ func TestStaleZeroQuotaIsSchedulable(t *testing.T) {
 	// 端到端：陈旧的 0 额度账号必须能被调度到。
 	st := newStore(t)
 	a := addAccount(t, st, "sk-stale", "")
-	st.SetAccountAllowance(a.ID, &deepai.Allowance{
+	setAllowance(st, a.ID, &model.Allowance{
 		Enabled: true, Balance: "0.00000",
 		CheckedAt: time.Now().Add(-time.Hour).Unix(),
 	}, nil)

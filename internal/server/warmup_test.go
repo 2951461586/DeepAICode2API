@@ -50,7 +50,7 @@ func TestWarmUpstreamPrimesDistinctEgresses(t *testing.T) {
 	}
 	s.Store.UpsertAccount(&deepai.Account{ID: "acc-off", Name: "off", APIKey: "k-off", Enabled: false})
 
-	if got := s.WarmUpstream(context.Background()); got != 1 {
+	if got := s.Pool.WarmUp(context.Background()); got != 1 {
 		t.Fatalf("预热出口数 = %d，期望 1（直连只有一个）", got)
 	}
 	if got := countPath(u, deepai.ModelBasePath+deepai.PathModels); got != 1 {
@@ -68,7 +68,7 @@ func TestWarmUpstreamEmptyPool(t *testing.T) {
 		return true
 	})
 
-	if got := s.WarmUpstream(context.Background()); got != 0 {
+	if got := s.Pool.WarmUp(context.Background()); got != 0 {
 		t.Fatalf("空号池预热数 = %d，期望 0", got)
 	}
 	if got := countPath(u, deepai.ModelBasePath+deepai.PathModels); got != 0 {
@@ -83,7 +83,7 @@ func TestWarmUpstreamFailureIsSilent(t *testing.T) {
 	})
 	s, _ := newTestServer(t, u)
 
-	if got := s.WarmUpstream(context.Background()); got != 0 {
+	if got := s.Pool.WarmUp(context.Background()); got != 0 {
 		t.Fatalf("上游 500 时预热数 = %d，期望 0", got)
 	}
 }
@@ -97,7 +97,7 @@ func TestWarmUpstreamCountsUnauthorizedAsReachable(t *testing.T) {
 	})
 	s, _ := newTestServer(t, u)
 
-	if got := s.WarmUpstream(context.Background()); got != 1 {
+	if got := s.Pool.WarmUp(context.Background()); got != 1 {
 		t.Fatalf("401 应算预热成功（链路已通），实际 %d", got)
 	}
 }
@@ -108,7 +108,7 @@ func TestWarmUpstreamSendsAccountKey(t *testing.T) {
 	u := newWarmupUpstream(t)
 	s, _ := newTestServer(t, u)
 
-	if got := s.WarmUpstream(context.Background()); got != 1 {
+	if got := s.Pool.WarmUp(context.Background()); got != 1 {
 		t.Fatalf("预热数 = %d，期望 1", got)
 	}
 	if key := u.last(t).Header.Get(deepai.HeaderKeyName); key != "upstream-key" {

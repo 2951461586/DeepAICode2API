@@ -7,7 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 	"deepaicode2api/internal/pool"
 )
 
@@ -43,7 +43,7 @@ type Settings struct {
 	// Server.UpstreamLane（来自 /theos 的 lane_version）。
 	Lane string `json:"lane,omitempty"`
 
-	// LaneBuild 是写入 Lane 时的编译期车道（deepai.LaneVersion）。
+	// LaneBuild 是写入 Lane 时的编译期车道（model.LaneVersion）。
 	//
 	// 它把「本次构建探测到的结果」和「旧版本残留」区分开：正常情况下车道
 	// 只向前走，但上游也可能只保留旧车道（或探测结果比编译值旧）。只有
@@ -136,28 +136,28 @@ type Stats struct {
 // “内容未变则跳过”永远失效。日志走 append-only 的 <base>-logs.jsonl，
 // 统计走 <base>-stats.json。
 type State struct {
-	Accounts      []*deepai.Account `json:"accounts"`
-	Keys          []*APIKey         `json:"keys"`
-	Settings      Settings          `json:"settings"`
-	Stats         Stats             `json:"-"`
-	Logs          []LogEntry        `json:"-"`
-	Models        []deepai.Model    `json:"models"`
-	DefaultModel  string            `json:"default_model"`
-	ModelsUpdated int64             `json:"models_updated"`
-	MachineID     string            `json:"machine_id"`
+	Accounts      []*model.Account `json:"accounts"`
+	Keys          []*APIKey        `json:"keys"`
+	Settings      Settings         `json:"settings"`
+	Stats         Stats            `json:"-"`
+	Logs          []LogEntry       `json:"-"`
+	Models        []model.Model    `json:"models"`
+	DefaultModel  string           `json:"default_model"`
+	ModelsUpdated int64            `json:"models_updated"`
+	MachineID     string           `json:"machine_id"`
 }
 
 // legacyState 是拆分前的状态文件格式（含 logs / stats），仅用于读取迁移。
 type legacyState struct {
-	Accounts      []*deepai.Account `json:"accounts"`
-	Keys          []*APIKey         `json:"keys"`
-	Settings      Settings          `json:"settings"`
-	Stats         Stats             `json:"stats"`
-	Logs          []LogEntry        `json:"logs"`
-	Models        []deepai.Model    `json:"models"`
-	DefaultModel  string            `json:"default_model"`
-	ModelsUpdated int64             `json:"models_updated"`
-	MachineID     string            `json:"machine_id"`
+	Accounts      []*model.Account `json:"accounts"`
+	Keys          []*APIKey        `json:"keys"`
+	Settings      Settings         `json:"settings"`
+	Stats         Stats            `json:"stats"`
+	Logs          []LogEntry       `json:"logs"`
+	Models        []model.Model    `json:"models"`
+	DefaultModel  string           `json:"default_model"`
+	ModelsUpdated int64            `json:"models_updated"`
+	MachineID     string           `json:"machine_id"`
 }
 
 // Store 是带锁的状态容器。
@@ -207,9 +207,9 @@ type Store struct {
 func DefaultSettings() Settings {
 	return Settings{
 		ModelAliases:   map[string]string{},
-		RequestTimeout: 600,
-		MaxRetries:     3,
-		LogKeep:        500,
+		RequestTimeout: DefaultRequestTimeout,
+		MaxRetries:     DefaultMaxRetries,
+		LogKeep:        DefaultLogKeep,
 		// 默认仅放行本机来源；如需局域网访问，在控制台显式配置。
 		CORSOrigin:    "",
 		FallbackModel: "",

@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // QuotaStaleAfter 是「0 额度」被判为陈旧、需要重探的时限。
@@ -42,7 +42,7 @@ func New() *Scheduler { return &Scheduler{} }
 //  2. 再在全集里选，保证有账号时绝不硬阻塞。
 //
 // 每轮内部优先选失败次数最少的账号，同失败度时按轮询游标推进。
-func (s *Scheduler) Pick(accounts []*deepai.Account, group string) *deepai.Account {
+func (s *Scheduler) Pick(accounts []*model.Account, group string) *model.Account {
 	return s.PickFiltered(accounts, group, nil)
 }
 
@@ -50,9 +50,9 @@ func (s *Scheduler) Pick(accounts []*deepai.Account, group string) *deepai.Accou
 //
 // skip 用于「并发槽位已满」这类与账号健康度无关的临时排除，必须是**纯函数**：
 // 第一轮扫描不到时会再扫第二轮，同一账号可能被问两次。
-func (s *Scheduler) PickFiltered(accounts []*deepai.Account, group string, skip func(*deepai.Account) bool) *deepai.Account {
+func (s *Scheduler) PickFiltered(accounts []*model.Account, group string, skip func(*model.Account) bool) *model.Account {
 	group = strings.TrimSpace(group)
-	eligible := func(a *deepai.Account) bool {
+	eligible := func(a *model.Account) bool {
 		return s.Eligible(a, group) && (skip == nil || !skip(a))
 	}
 	if a := s.pick(accounts, eligible, true); a != nil {
@@ -66,13 +66,13 @@ func (s *Scheduler) PickFiltered(accounts []*deepai.Account, group string, skip 
 // 这是选号策略的“单账号版本”：调度本身、会话粘性（先试绑定的那个号）、
 // 以及「池里还有没有号」的判断必须用同一套判定，否则会出现“说有号、选不到”
 // 或“绑到一个已被拦截的号”这类不一致。
-func (s *Scheduler) Eligible(a *deepai.Account, group string) bool {
+func (s *Scheduler) Eligible(a *model.Account, group string) bool {
 	if a == nil || !a.Enabled {
 		return false
 	}
 	// 上游策略拦截（social_login_required）是账号级终态：
 	// 继续轮询只会把每个请求都撞一次 403。
-	if a.Status == deepai.StatusBlocked {
+	if a.Status == model.StatusBlocked {
 		return false
 	}
 	// 当日额度用完（theos_exhausted）：到点前不参与调度，避免每个请求
@@ -89,11 +89,11 @@ func (s *Scheduler) Eligible(a *deepai.Account, group string) bool {
 
 // HasEligible 报告池里是否存在可调度账号（分组 / 启用 / 未拦截），
 // 忽略 PickFiltered 的 skip。调用方用它区分「全忙」与「池里没号」。
-func (s *Scheduler) HasEligible(accounts []*deepai.Account, group string) bool {
+func (s *Scheduler) HasEligible(accounts []*model.Account, group string) bool {
 	group = strings.TrimSpace(group)
 	now := time.Now().Unix()
 	for _, a := range accounts {
-		if a == nil || !a.Enabled || a.Status == deepai.StatusBlocked {
+		if a == nil || !a.Enabled || a.Status == model.StatusBlocked {
 			continue
 		}
 		if a.QuotaUntil > 0 && now < a.QuotaUntil {
@@ -109,7 +109,7 @@ func (s *Scheduler) HasEligible(accounts []*deepai.Account, group string) bool {
 // pick 在 eligible 里按「失败最少 + 轮询」选一个账号。
 //
 // needQuota 为 true 时跳过已知额度为 0 的账号。
-func (s *Scheduler) pick(accounts []*deepai.Account, eligible func(*deepai.Account) bool, needQuota bool) *deepai.Account {
+func (s *Scheduler) pick(accounts []*model.Account, eligible func(*model.Account) bool, needQuota bool) *model.Account {
 	n := len(accounts)
 	if n == 0 {
 		return nil
@@ -118,7 +118,7 @@ func (s *Scheduler) pick(accounts []*deepai.Account, eligible func(*deepai.Accou
 	if rot < 0 || rot >= n {
 		rot = 0
 	}
-	var best *deepai.Account
+	var best *model.Account
 	bestIdx := -1
 	for i := 0; i < n; i++ {
 		idx := (rot + i) % n
@@ -148,7 +148,7 @@ func (s *Scheduler) pick(accounts []*deepai.Account, eligible func(*deepai.Accou
 //
 // 保守为准：只有「探测过、启用、且余额能解析为 0」的账号才算耗尽，
 // 其余（未探测 / 解析不了 / 已付费）都当作可能可用。
-func HasQuota(a *deepai.Account) bool {
+func HasQuota(a *model.Account) bool {
 	if a == nil || a.Theos == nil || !a.Theos.Enabled {
 		return true
 	}

@@ -3,10 +3,13 @@ package server
 import (
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"deepaicode2api/internal/poolsvc"
 	"time"
 
 	"deepaicode2api/internal/store"
@@ -14,7 +17,7 @@ import (
 
 // TestShapeCacheTTLAndLimit 覆盖形状记忆的过期与条目上限。
 func TestShapeCacheTTLAndLimit(t *testing.T) {
-	s := &Server{}
+	s := &Server{Pool: poolsvc.New(poolsvc.Config{})}
 	if s.shapeNeeded("k1") {
 		t.Fatal("未标记时不应命中")
 	}
@@ -32,7 +35,7 @@ func TestShapeCacheTTLAndLimit(t *testing.T) {
 
 	// 超过上限后仍可用（内部会清理过期项 / 重建）。
 	for i := 0; i < presetShapeMax+10; i++ {
-		s.markShapeNeeded("key-" + strings.Repeat("x", i%7) + string(rune('a'+i%26)) + itoa64(int64(i)))
+		s.markShapeNeeded("key-" + strings.Repeat("x", i%7) + string(rune('a'+i%26)) + strconv.Itoa(i))
 	}
 	s.markShapeNeeded("last")
 	if !s.shapeNeeded("last") {

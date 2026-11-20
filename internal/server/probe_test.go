@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/poolsvc"
 )
 
 // 探测失败后的冷却必须真的挡住后台守护：否则每 5 分钟会把同一批失败号
@@ -15,10 +16,10 @@ func TestQuotaNeedsRefreshRespectsProbeCooldown(t *testing.T) {
 	now := time.Now()
 
 	cooling := &deepai.Account{ID: "a1", Enabled: true, ProbeAfter: now.Add(time.Hour).Unix()}
-	if quotaNeedsRefresh(cooling, now, 6*time.Hour) {
+	if poolsvc.NeedsRefresh(cooling, now, 6*time.Hour) {
 		t.Fatal("冷却期内不应再探测")
 	}
-	if !quotaNeedsRefresh(cooling, now.Add(2*time.Hour), 6*time.Hour) {
+	if !poolsvc.NeedsRefresh(cooling, now.Add(2*time.Hour), 6*time.Hour) {
 		t.Fatal("冷却到期且从未探到额度，应重新探测")
 	}
 
@@ -26,7 +27,7 @@ func TestQuotaNeedsRefreshRespectsProbeCooldown(t *testing.T) {
 		ID: "a2", Enabled: true,
 		Theos: &deepai.Allowance{Enabled: true, CheckedAt: now.Unix()},
 	}
-	if quotaNeedsRefresh(fresh, now, 6*time.Hour) {
+	if poolsvc.NeedsRefresh(fresh, now, 6*time.Hour) {
 		t.Fatal("额度快照新鲜时不应重探")
 	}
 }
@@ -41,7 +42,7 @@ func TestProbeCheckInRefusedLocksProbe(t *testing.T) {
 	})
 	s, _ := newTestServer(t, u)
 
-	s.probeAccounts(s.Store.Accounts())
+	s.Pool.ProbeAccounts(s.Store.Accounts())
 
 	a := s.Store.Account("acc-1")
 	if a == nil {
@@ -76,14 +77,14 @@ func TestProbeAsyncFailureRecordsBackoff(t *testing.T) {
 	if a == nil {
 		t.Fatal("账号不存在")
 	}
-	if !quotaNeedsRefresh(a, time.Now(), quotaStaleAfter) {
+	if !poolsvc.NeedsRefresh(a, time.Now(), quotaStaleAfter) {
 		t.Fatal("前置条件：额度快照过旧，应需要复探")
 	}
 
-	if !s.probeAsync(a) {
+	if !s.Pool.ProbeAsync(a) {
 		t.Fatal("应发起一次探测")
 	}
-	s.quotaWG.Wait()
+	s.Pool.Wait()
 
 	got := s.Store.Account("stale-1")
 	if got.ProbeFailures != 1 {
@@ -92,7 +93,7 @@ func TestProbeAsyncFailureRecordsBackoff(t *testing.T) {
 	if got.ProbeAfter <= time.Now().Unix() {
 		t.Fatalf("应落探测冷却，实际 ProbeAfter = %d", got.ProbeAfter)
 	}
-	if quotaNeedsRefresh(got, time.Now(), quotaStaleAfter) {
+	if poolsvc.NeedsRefresh(got, time.Now(), quotaStaleAfter) {
 		t.Fatal("冷却期内不应再被判为需要复探（否则每个请求都会重探一次）")
 	}
 	// 热路径失败不能污染调度：状态与失败计数都不动。

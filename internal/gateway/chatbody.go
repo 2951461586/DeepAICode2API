@@ -1,0 +1,141 @@
+package gateway
+
+import "encoding/json"
+
+// 本文件是「把 chat 请求体收敛成桌面端形状」的纯函数：上游偶尔以
+// “This request is not one DeepAI Code sends.” 拒绝纯 user-only 请求，
+// 网关据此补一条 system 消息（或整体裁剪字段）后重试。
+//
+// 与 internal/gateway 的其余部分同属协议适配：只依赖标准库，不碰 HTTP /
+// store / 号池。此前它住在 internal/deepai（传输层），调用方（server）为了
+// 一次形状修补要依赖整个上游客户端包。
+
+// DefaultSystemPrompt 是补齐 system 消息时使用的兜底提示词。
+//
+// 上游 0.3.19+ 的请求体校验只认“DeepAI Code 会发的那种形状”，桌面端每个
+// 请求都带 system 提示词与 tools；纯 user-only 的请求偶尔会被 400
+// invalid_request_error 拒绝。这里只补 system 消息，不改写用户内容；
+// 请求里已经有 system / developer 消息时原样保留，绝不替换。
+const DefaultSystemPrompt = "You are a helpful AI assistant. Answer the user's request directly."
+
+// desktopChatKeys 是「桌面端会发的字段 ∪ 会改变采样/用量的旋钮」。
+//
+// 仅在上游以 “This request is not one DeepAI Code sends.” 拒绝后作为兜底
+// 重试使用；正常路径仍然透传客户端的原始字段。
+//
+// 实测桌面端（0.3.20，2026-11-18 用 0.3.41、2026-11-20 用 0.3.42 复核；pi 运行时同为
+// 1.3.0 且 `openai-completions.js` 字节级一致，请求体形状未变）
+// 每个 chat 请求发的是：
+//
+//	model / messages / stream / stream_options / store=false /
+//	max_completion_tokens / temperature / tools / tool_choice /
+//	reasoning_effort（reasoning 模型关思考时发 "none"）
+//
+// 因此 store 必须留在白名单里（早期漏了它，重排后反而比桌面端少一个字段）。
+// 至于 seed / service_tier / top_p / stop / prompt_cache_key：桌面端本身不发，
+// 但它们是网关调用方显式给的采样/用量参数，丢掉会静默改掉请求语义，所以保留。
+var desktopChatKeys = map[string]bool{
+	"model":                 true,
+	"messages":              true,
+	"tools":                 true,
+	"tool_choice":           true,
+	"parallel_tool_calls":   true,
+	"max_tokens":            true,
+	"max_completion_tokens": true,
+	"temperature":           true,
+	"top_p":                 true,
+	"stop":                  true,
+	"stream":                true,
+	"stream_options":        true,
+	"store":                 true,
+	"seed":                  true,
+	"service_tier":          true,
+	"reasoning_effort":      true,
+	"prompt_cache_key":      true,
+}
+
+// ChatBodyFallback 把 chat 请求体收敛成桌面端形状，供 400 拒绝后的重试使用。
+//
+// 规则：
+//   - 只保留白名单字段；
+//   - 确保第一条消息是 system（缺失时插入默认提示词）。
+//
+// 返回 ok=false 表示请求体无法解析 / 没有 messages，不值得重试。
+func ChatBodyFallback(body []byte, systemPrompt string) ([]byte, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false
+	}
+	msgs, ok := payload["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return nil, false
+	}
+	if systemPrompt == "" {
+		systemPrompt = DefaultSystemPrompt
+	}
+
+	strict := make(map[string]any, len(desktopChatKeys))
+	for k, v := range payload {
+		if desktopChatKeys[k] {
+			strict[k] = v
+		}
+	}
+
+	if !hasSystemMessage(msgs) {
+		withSystem := make([]any, 0, len(msgs)+1)
+		withSystem = append(withSystem, map[string]any{"role": "system", "content": systemPrompt})
+		withSystem = append(withSystem, msgs...)
+		strict["messages"] = withSystem
+	}
+
+	out, err := json.Marshal(strict)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+func hasSystemMessage(msgs []any) bool {
+	for _, m := range msgs {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role == "system" || role == "developer" {
+			return true
+		}
+	}
+	return false
+}
+
+// EnsureSystemMessage 只在缺少 system / developer 消息时补一条默认提示词。
+//
+// 与 ChatBodyFallback 的区别：这里**不动**其它字段（不裁剪白名单），
+// 因此可以在正常路径上预置，而不会悄悄改掉调用方显式给出的采样参数。
+// 返回 inserted=true 表示请求体已被改写。
+func EnsureSystemMessage(body []byte, systemPrompt string) ([]byte, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false
+	}
+	msgs, ok := payload["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return nil, false
+	}
+	if hasSystemMessage(msgs) {
+		return body, false
+	}
+	if systemPrompt == "" {
+		systemPrompt = DefaultSystemPrompt
+	}
+	withSystem := make([]any, 0, len(msgs)+1)
+	withSystem = append(withSystem, map[string]any{"role": "system", "content": systemPrompt})
+	withSystem = append(withSystem, msgs...)
+	payload["messages"] = withSystem
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}

@@ -3,6 +3,8 @@ package gateway
 import (
 	"encoding/json"
 	"testing"
+
+	"deepaicode2api/internal/jsonx"
 )
 
 // 本文件补的是「转换层的边角分支」：平时都靠 internal/server 的端到端用例
@@ -129,52 +131,52 @@ func TestAnthropicDocumentDataURL(t *testing.T) {
 }
 
 func TestNumericCoercion(t *testing.T) {
-	if got := IntOf(float64(3.9)); got != 3 {
-		t.Fatalf("IntOf(float64 3.9) = %d，期望 3（截断）", got)
+	if got := jsonx.IntOf(float64(3.9)); got != 3 {
+		t.Fatalf("jsonx.IntOf(float64 3.9) = %d，期望 3（截断）", got)
 	}
-	if got := IntOf(7); got != 7 {
-		t.Fatalf("IntOf(int 7) = %d", got)
+	if got := jsonx.IntOf(7); got != 7 {
+		t.Fatalf("jsonx.IntOf(int 7) = %d", got)
 	}
-	if got := IntOf(json.Number("12")); got != 12 {
-		t.Fatalf("IntOf(json.Number 12) = %d", got)
+	if got := jsonx.IntOf(json.Number("12")); got != 12 {
+		t.Fatalf("jsonx.IntOf(json.Number 12) = %d", got)
 	}
-	if got := IntOf("12"); got != 0 {
-		t.Fatalf("IntOf(string) 应为 0，得到 %d", got)
+	if got := jsonx.IntOf("12"); got != 0 {
+		t.Fatalf("jsonx.IntOf(string) 应为 0，得到 %d", got)
 	}
-	if got := IntOf(nil); got != 0 {
-		t.Fatalf("IntOf(nil) 应为 0，得到 %d", got)
+	if got := jsonx.IntOf(nil); got != 0 {
+		t.Fatalf("jsonx.IntOf(nil) 应为 0，得到 %d", got)
 	}
 
-	if got := FloatOf(2); got != 2.0 {
-		t.Fatalf("FloatOf(int 2) = %v", got)
+	if got := jsonx.FloatOf(2); got != 2.0 {
+		t.Fatalf("jsonx.FloatOf(int 2) = %v", got)
 	}
-	if got := FloatOf(1.25); got != 1.25 {
-		t.Fatalf("FloatOf(1.25) = %v", got)
+	if got := jsonx.FloatOf(1.25); got != 1.25 {
+		t.Fatalf("jsonx.FloatOf(1.25) = %v", got)
 	}
-	if got := FloatOf(json.Number("0.5")); got != 0.5 {
-		t.Fatalf("FloatOf(json.Number 0.5) = %v", got)
+	if got := jsonx.FloatOf(json.Number("0.5")); got != 0.5 {
+		t.Fatalf("jsonx.FloatOf(json.Number 0.5) = %v", got)
 	}
-	if got := FloatOf("0.5"); got != 0 {
-		t.Fatalf("FloatOf(string) 应为 0，得到 %v", got)
+	if got := jsonx.FloatOf("0.5"); got != 0 {
+		t.Fatalf("jsonx.FloatOf(string) 应为 0，得到 %v", got)
 	}
 
 	// LenOfString 按 rune 计数：中文与 emoji 都不能按字节算，
 	// 否则 usage 里的 input_tokens 会和上游对不上。
-	if got := LenOfString("中文"); got != 2 {
-		t.Fatalf("LenOfString(中文) = %d，期望 2", got)
+	if got := jsonx.LenOfString("中文"); got != 2 {
+		t.Fatalf("jsonx.LenOfString(中文) = %d，期望 2", got)
 	}
-	if got := LenOfString("a😀b"); got != 3 {
-		t.Fatalf("LenOfString(a😀b) = %d，期望 3", got)
+	if got := jsonx.LenOfString("a😀b"); got != 3 {
+		t.Fatalf("jsonx.LenOfString(a😀b) = %d，期望 3", got)
 	}
-	if got := LenOfString(42); got != 0 {
-		t.Fatalf("LenOfString(非字符串) 应为 0，得到 %d", got)
+	if got := jsonx.LenOfString(42); got != 0 {
+		t.Fatalf("jsonx.LenOfString(非字符串) 应为 0，得到 %d", got)
 	}
 
-	if !BoolOf(true) || BoolOf("true") {
+	if !jsonx.BoolOf(true) || jsonx.BoolOf("true") {
 		t.Fatal("BoolOf 只认 bool 类型")
 	}
-	if got := StrOf(1); got != "" {
-		t.Fatalf("StrOf(非字符串) 应为空，得到 %q", got)
+	if got := jsonx.StrOf(1); got != "" {
+		t.Fatalf("jsonx.StrOf(非字符串) 应为空，得到 %q", got)
 	}
 }
 

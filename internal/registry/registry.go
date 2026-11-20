@@ -7,7 +7,7 @@ package registry
 import (
 	"strings"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // Resolve 把用户传入的模型名解析为目录中的模型。
@@ -17,7 +17,7 @@ import (
 //
 // 无法识别时不报错而是回落：这样任意客户端（Claude Code / Cline /
 // OpenAI SDK）都能用自己习惯的模型名开箱即用。
-func Resolve(catalog []deepai.Model, aliases map[string]string, name, defaultID string) deepai.Model {
+func Resolve(catalog []model.Model, aliases map[string]string, name, defaultID string) model.Model {
 	if m, ok := ResolveStrict(catalog, aliases, name, defaultID); ok {
 		return m
 	}
@@ -37,7 +37,7 @@ func Resolve(catalog []deepai.Model, aliases map[string]string, name, defaultID 
 	if len(catalog) > 0 {
 		return catalog[0]
 	}
-	return deepai.DefaultModelEntry()
+	return model.DefaultModelEntry()
 }
 
 // ResolveStrict 与 Resolve 的“有依据”解析部分一致，但不做任何隐式回落。
@@ -48,10 +48,10 @@ func Resolve(catalog []deepai.Model, aliases map[string]string, name, defaultID 
 // 这是严格模式（Settings.StrictModel）的依据：子串匹配会把 "gpt-6" 解成
 // 目录里第一个 “gpt-6-*“（可能是另一个模型），默认回落更会把任意拼写
 // 错误变成默认模型——两者都会让调用方以为自己测的是 A，实际跑的是 B。
-func ResolveStrict(catalog []deepai.Model, aliases map[string]string, name, defaultID string) (deepai.Model, bool) {
+func ResolveStrict(catalog []model.Model, aliases map[string]string, name, defaultID string) (model.Model, bool) {
 	n := normalize(name)
 	if n == "" {
-		return deepai.Model{}, false
+		return model.Model{}, false
 	}
 	if m, ok := lookup(catalog, n); ok {
 		return m, true
@@ -71,7 +71,7 @@ func ResolveStrict(catalog []deepai.Model, aliases map[string]string, name, defa
 			return m, true
 		}
 	}
-	return deepai.Model{}, false
+	return model.Model{}, false
 }
 
 // Suggest 返回与 name 相关的目录 ID，用于严格模式下的可执行错误提示。
@@ -79,7 +79,7 @@ func ResolveStrict(catalog []deepai.Model, aliases map[string]string, name, defa
 // 只做提示，不参与解析。相似度只要求“够像”：子串命中，或忽略标点后
 // 前 4 个字符相同（`gpt-6-sol` ↔ `gpt-6.1-sol` / `gpt-6-luna`，
 // `mimo-v2.6-flash` ↔ `mimo-2.6-flash`）。
-func Suggest(catalog []deepai.Model, name string, max int) []string {
+func Suggest(catalog []model.Model, name string, max int) []string {
 	n := normalize(name)
 	if n == "" || max <= 0 {
 		return nil
@@ -128,8 +128,8 @@ func commonPrefix(a, b string) int {
 }
 
 // List 返回对外模型清单（含自定义别名）。
-func List(catalog []deepai.Model, aliases map[string]string) []deepai.Model {
-	out := make([]deepai.Model, len(catalog))
+func List(catalog []model.Model, aliases map[string]string) []model.Model {
+	out := make([]model.Model, len(catalog))
 	copy(out, catalog)
 	for alias, target := range aliases {
 		alias = strings.TrimSpace(alias)
@@ -149,19 +149,19 @@ func List(catalog []deepai.Model, aliases map[string]string) []deepai.Model {
 //
 // 只包含默认免费模型：用户可在控制台覆盖为任意目标。
 var builtinAliases = map[string]string{
-	"deepai":            deepai.DefaultModel,
-	"deepai-code":       deepai.DefaultModel,
-	"default":           deepai.DefaultModel,
-	"gpt-3.5-turbo":     deepai.DefaultModel,
-	"gpt-4":             deepai.DefaultModel,
-	"gpt-4o":            deepai.DefaultModel,
-	"gpt-4o-mini":       deepai.DefaultModel,
-	"gpt-4.1":           deepai.DefaultModel,
-	"claude-3-5-sonnet": deepai.DefaultModel,
-	"claude-sonnet-4":   deepai.DefaultModel,
-	"claude-3-haiku":    deepai.DefaultModel,
-	"deepseek-chat":     deepai.DefaultModel,
-	"glm-4-flash":       deepai.DefaultModel,
+	"deepai":            model.DefaultModel,
+	"deepai-code":       model.DefaultModel,
+	"default":           model.DefaultModel,
+	"gpt-3.5-turbo":     model.DefaultModel,
+	"gpt-4":             model.DefaultModel,
+	"gpt-4o":            model.DefaultModel,
+	"gpt-4o-mini":       model.DefaultModel,
+	"gpt-4.1":           model.DefaultModel,
+	"claude-3-5-sonnet": model.DefaultModel,
+	"claude-sonnet-4":   model.DefaultModel,
+	"claude-3-haiku":    model.DefaultModel,
+	"deepseek-chat":     model.DefaultModel,
+	"glm-4-flash":       model.DefaultModel,
 }
 
 func normalize(name string) string {
@@ -177,16 +177,16 @@ func normalize(name string) string {
 	return strings.Join(strings.Fields(n), "-")
 }
 
-func lookup(catalog []deepai.Model, id string) (deepai.Model, bool) {
+func lookup(catalog []model.Model, id string) (model.Model, bool) {
 	if id == "" {
-		return deepai.Model{}, false
+		return model.Model{}, false
 	}
 	for _, m := range catalog {
 		if strings.EqualFold(m.ID, id) {
 			return m, true
 		}
 	}
-	return deepai.Model{}, false
+	return model.Model{}, false
 }
 
 func lookupAlias(aliases map[string]string, key string) (string, bool) {
@@ -199,6 +199,6 @@ func lookupAlias(aliases map[string]string, key string) (string, bool) {
 }
 
 // Find 返回 ID 精确匹配的模型。
-func Find(catalog []deepai.Model, id string) (deepai.Model, bool) {
+func Find(catalog []model.Model, id string) (model.Model, bool) {
 	return lookup(catalog, normalize(id))
 }

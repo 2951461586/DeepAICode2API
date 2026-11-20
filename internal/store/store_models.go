@@ -3,16 +3,16 @@ package store
 import (
 	"time"
 
-	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/model"
 )
 
 // --- 模型目录 ---
 
 // Models 返回模型目录快照。
-func (s *Store) Models() []deepai.Model {
+func (s *Store) Models() []model.Model {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]deepai.Model, len(s.st.Models))
+	out := make([]model.Model, len(s.st.Models))
 	copy(out, s.st.Models)
 	return out
 }
@@ -32,7 +32,7 @@ func (s *Store) ModelsUpdated() int64 {
 }
 
 // SetModels 更新模型目录缓存。
-func (s *Store) SetModels(models []deepai.Model, def string) {
+func (s *Store) SetModels(models []model.Model, def string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.st.Models = models

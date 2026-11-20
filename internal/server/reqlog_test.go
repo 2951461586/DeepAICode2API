@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
-	"deepaicode2api/internal/httpx"
+	"deepaicode2api/internal/gateway"
 	"deepaicode2api/internal/store"
 )
 
@@ -22,10 +22,10 @@ func TestReqLogDoneIsIdempotent(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	rl := s.newReqLog("sk-test", nil, "glm-5.3-flash", "chat", false, time.Now(), 12)
 
-	rl.done(3, Usage{PromptTokens: 5, CompletionTokens: 2}, nil)
-	rl.done(3, Usage{PromptTokens: 5, CompletionTokens: 2}, nil) // 第二次应被忽略
+	rl.done(3, gateway.Usage{PromptTokens: 5, CompletionTokens: 2}, nil)
+	rl.done(3, gateway.Usage{PromptTokens: 5, CompletionTokens: 2}, nil) // 第二次应被忽略
 	copied := rl
-	copied.done(3, Usage{}, nil) // 副本共享同一标记，同样被忽略
+	copied.done(3, gateway.Usage{}, nil) // 副本共享同一标记，同样被忽略
 
 	logs := s.Store.Logs(10)
 	if len(logs) != 1 {
@@ -62,7 +62,7 @@ func TestStatusOfUsesUpstreamStatusCode(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := httpx.StatusOf(c.err); got != c.want {
+			if got := StatusOf(c.err); got != c.want {
 				t.Fatalf("statusOf = %d，期望 %d", got, c.want)
 			}
 		})

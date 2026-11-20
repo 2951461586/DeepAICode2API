@@ -1,11 +1,13 @@
 package server
 
 import (
-	"bufio"
 	"encoding/json"
-	"errors"
 	"io"
+	"net/http"
 	"strings"
+
+	"deepaicode2api/internal/jsonx"
+	"deepaicode2api/internal/sse"
 )
 
 // --- 上游 SSE 读帧 ---
@@ -37,7 +39,7 @@ const sseDone = "[DONE]"
 // 统一了四个流式 handler 的读帧逻辑：data 前缀、[DONE] 终止、JSON 解析结果，
 // 以及 event: / 注释帧的透传信息。fn 返回 false 或读到 EOF 都算正常结束。
 func forEachSSEFrame(body io.Reader, fn func(f sseFrame) bool) error {
-	return readSSELines(body, func(line string) bool {
+	return sse.Lines(body, func(line string) bool {
 		trimmed := strings.TrimSpace(line)
 		switch {
 		case trimmed == "":
@@ -74,28 +76,6 @@ func forEachChatChunk(body io.Reader, fn func(chunk map[string]any) bool) error 
 		}
 		return fn(f.Object)
 	})
-}
-
-// readSSELines 逐行读取上游 SSE；回调返回 false 时停止。
-//
-// 刻意不复用 deepai.ReadSSE：那个实现按 SSE 规范把多行 data 合并后再分发，
-// 会丢失注释帧与 event: 行的原始形态，而网关的透传路径需要它们。
-func readSSELines(body io.Reader, fn func(line string) bool) error {
-	br := bufio.NewReaderSize(body, 64*1024)
-	for {
-		line, err := br.ReadString('\n')
-		if line != "" {
-			if !fn(line) {
-				return nil
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-	}
 }
 
 // --- chat completion 增量提取 ---
@@ -150,7 +130,7 @@ func chatChunkDelta(chunk map[string]any) (chatDelta, string) {
 		if !ok {
 			continue
 		}
-		td := chatToolDelta{Index: intOf(tc["index"])}
+		td := chatToolDelta{Index: jsonx.IntOf(tc["index"])}
 		td.ID, _ = tc["id"].(string)
 		if fn, ok := tc["function"].(map[string]any); ok {
 			td.Name, _ = fn["name"].(string)
@@ -159,4 +139,56 @@ func chatChunkDelta(chunk map[string]any) (chatDelta, string) {
 		d.ToolCalls = append(d.ToolCalls, td)
 	}
 	return d, finish
+}
+
+// sseWriter 统一 SSE 响应头与 flush。
+type sseWriter struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func newSSEWriter(w http.ResponseWriter) *sseWriter {
+	flusher, _ := w.(http.Flusher)
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream; charset=utf-8")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	// 在这里提交 200：调用方随后再写 header 会被 net/http 判为
+	// superfluous（旧实现正是如此，只在日志里制造噪音）。
+	w.WriteHeader(http.StatusOK)
+	if flusher != nil {
+		flusher.Flush()
+	}
+	return &sseWriter{w: w, flusher: flusher}
+}
+
+func (s *sseWriter) data(raw []byte) {
+	_ = sse.WriteData(s.w, raw)
+	s.flush()
+}
+
+func (s *sseWriter) event(name string, raw []byte) {
+	_ = sse.WriteEvent(s.w, name, raw)
+	s.flush()
+}
+
+func (s *sseWriter) done() {
+	_, _ = s.w.Write([]byte("data: [DONE]\n\n"))
+	s.flush()
+}
+
+func (s *sseWriter) flush() {
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+// jsonEvent 序列化事件载荷，失败时返回 nil。
+func jsonEvent(v any) []byte {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return raw
 }

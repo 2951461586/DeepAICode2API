@@ -34,32 +34,6 @@ func sanitizedSettings(st store.Settings) map[string]any {
 
 // --- 控制台 API ---
 
-func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
-	// 兼容端点：默认仍下发全部账号（外部脚本可能在用）。控制台已改用
-	// /admin/api/overview + /admin/api/accounts（分页）；需要小响应时加 ?accounts=0。
-	var safe []map[string]any
-	if r.URL.Query().Get("accounts") != "0" {
-		accts := s.Store.Accounts()
-		safe = make([]map[string]any, 0, len(accts))
-		for _, a := range accts {
-			safe = append(safe, accountView(a))
-		}
-	}
-	safeKeys := safeKeyList(s.Store.Keys())
-	catalog := s.catalog()
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"accounts":       safe,
-		"keys":           safeKeys,
-		"models":         registry.List(catalog, s.Store.Settings().ModelAliases),
-		"default_model":  s.Store.DefaultModel(),
-		"models_updated": s.Store.ModelsUpdated(),
-		"machine_id":     shortMachine(s.Store.MachineID()),
-		"settings":       sanitizedSettings(s.Store.Settings()),
-		"stats":          s.Store.Stats(),
-		"upstream":       s.Up.Origin,
-	})
-}
-
 func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -240,12 +214,21 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
 		return
 	}
-	s.Store.UpdateSettings(func(st *store.Settings) { body.apply(st) })
+	// 先合进副本再校验，通不过就不落地：只改一半的状态比不改更难排障。
+	// 校验规则与默认值都在 store.Settings 上（Normalize / Validate），
+	// 与运行期读取共用同一套口径。
+	next := s.Store.Settings()
+	body.apply(&next)
+	next = next.Normalize()
+	if err := next.Validate(); err != nil {
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		return
+	}
+	s.Store.UpdateSettings(func(st *store.Settings) { *st = next })
 	if !s.persistOrFail(w) {
 		return
 	}
-	// 预算类设置要让已缓存的客户端立刻生效，不能等重启。
-	s.applyRuntimeSettings()
+	// 预算类设置在客户端侧是「拉取式」的，下一次请求即生效，无需推送。
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": sanitizedSettings(s.Store.Settings())})
 }
 

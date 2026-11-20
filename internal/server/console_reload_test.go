@@ -49,7 +49,7 @@ func TestConsoleModulesUseInjectedReload(t *testing.T) {
 // TestConsoleActionsInjectsReload 确认注入点在 actions.js 里仍然成立：
 // 有 setReload 导出、有默认空实现，且收尾用的是 reload()。
 func TestConsoleActionsInjectsReload(t *testing.T) {
-	raw, err := web.Read("web/js/actions.js")
+	raw, err := web.Read("js/actions.js")
 	if err != nil {
 		t.Fatalf("读取 web/js/actions.js 失败: %v", err)
 	}

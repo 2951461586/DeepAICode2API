@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/jsonx"
+	"deepaicode2api/internal/poolsvc"
 	"deepaicode2api/internal/store"
 )
 
@@ -122,58 +124,6 @@ func TestResponsesStreamCachedTokens(t *testing.T) {
 	}
 }
 
-// TestStickyPickPrefersBoundAccount 验证会话粘性只影响「先试谁」。
-func TestStickyPickPrefersBoundAccount(t *testing.T) {
-	s, _ := newTestServer(t, nil)
-	fillPool(t, s, 2)
-
-	s.bindSticky("sess-1", "acc-1")
-	if got := s.stickyAccount("sess-1"); got != "acc-1" {
-		t.Fatalf("绑定 = %q，期望 acc-1", got)
-	}
-	a, ok, _ := s.pickFreeAccount("", s.stickyAccount("sess-1"))
-	if !ok || a == nil || a.ID != "acc-1" {
-		t.Fatalf("应优先选到绑定的 acc-1，实际 %+v ok=%v", a, ok)
-	}
-	s.releaseAccount(a.ID)
-
-	// 绑定的号忙时静默回退，不阻塞请求。
-	for i := 0; i < maxInFlightPerAccount; i++ {
-		if !s.acquireAccount("acc-1") {
-			t.Fatalf("第 %d 次占用 acc-1 应成功", i)
-		}
-	}
-	a2, ok, _ := s.pickFreeAccount("", s.stickyAccount("sess-1"))
-	if !ok || a2 == nil || a2.ID == "acc-1" {
-		t.Fatalf("acc-1 已满仍被选中: %+v", a2)
-	}
-}
-
-// TestStickyDropsOnBlockAndExpiry 覆盖绑定的两种失效路径。
-func TestStickyDropsOnBlockAndExpiry(t *testing.T) {
-	s, _ := newTestServer(t, nil)
-	fillPool(t, s, 2)
-
-	s.bindSticky("sess-2", "acc-0")
-	s.dropSticky("sess-2", "acc-1") // 不匹配的账号不应误删
-	if got := s.stickyAccount("sess-2"); got != "acc-0" {
-		t.Fatalf("dropSticky 误删了别的绑定: %q", got)
-	}
-	s.dropSticky("sess-2", "acc-0")
-	if got := s.stickyAccount("sess-2"); got != "" {
-		t.Fatalf("dropSticky 后仍有绑定: %q", got)
-	}
-
-	// 过期的绑定按未绑定处理。
-	s.bindSticky("sess-3", "acc-0")
-	s.stickyMu.Lock()
-	s.sticky["sess-3"] = store.StickyBinding{AccountID: "acc-0", At: timeAgo(stickyTTL * 2).Unix()}
-	s.stickyMu.Unlock()
-	if got := s.stickyAccount("sess-3"); got != "" {
-		t.Fatalf("过期绑定应失效，实际 %q", got)
-	}
-}
-
 // TestStickyPersistsAcrossRestart 验证绑定表走旁路文件随重启保留。
 //
 // 绑定是缓存：丢了不影响正确性，但重启就重新学一遍等于每次升级都把前缀缓存
@@ -181,16 +131,16 @@ func TestStickyDropsOnBlockAndExpiry(t *testing.T) {
 func TestStickyPersistsAcrossRestart(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	fillPool(t, s, 2)
-	s.bindSticky("sess-restart", "acc-1")
-	s.FlushSticky()
+	s.Pool.BindSticky("sess-restart", "acc-1")
+	s.Pool.FlushSticky()
 
 	// 同一个状态文件重新打开一个 Server：绑定应当已经回来了。
 	s2 := New(s.Store)
 	defer s2.Close(ctxT(t))
-	if got := s2.stickyAccount("sess-restart"); got != "acc-1" {
+	if got := s2.Pool.StickyAccount("sess-restart"); got != "acc-1" {
 		t.Fatalf("重启后绑定 = %q，期望 acc-1", got)
 	}
-	if n := s2.StickyBindings(); n != 1 {
+	if n := s2.Pool.Bindings(); n != 1 {
 		t.Fatalf("重启后绑定数 = %d，期望 1", n)
 	}
 }
@@ -200,7 +150,7 @@ func TestStickySkipsExpiredOnLoad(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	fillPool(t, s, 2)
 	if err := s.Store.SaveSticky(map[string]store.StickyBinding{
-		"old": {AccountID: "acc-0", At: timeAgo(stickyTTL * 2).Unix()},
+		"old": {AccountID: "acc-0", At: timeAgo(poolsvc.StickyTTL * 2).Unix()},
 		"new": {AccountID: "acc-1", At: time.Now().Unix()},
 	}); err != nil {
 		t.Fatalf("SaveSticky: %v", err)
@@ -208,23 +158,11 @@ func TestStickySkipsExpiredOnLoad(t *testing.T) {
 
 	s2 := New(s.Store)
 	defer s2.Close(ctxT(t))
-	if got := s2.stickyAccount("old"); got != "" {
+	if got := s2.Pool.StickyAccount("old"); got != "" {
 		t.Fatalf("过期绑定不应恢复，实际 %q", got)
 	}
-	if got := s2.stickyAccount("new"); got != "acc-1" {
+	if got := s2.Pool.StickyAccount("new"); got != "acc-1" {
 		t.Fatalf("有效绑定未恢复，实际 %q", got)
-	}
-}
-
-// TestStickyTableBounded 保证绑定表不会随 affinity 数量无限增长。
-func TestStickyTableBounded(t *testing.T) {
-	s, _ := newTestServer(t, nil)
-	fillPool(t, s, 2)
-	for i := 0; i < stickyMax*2; i++ {
-		s.bindSticky("k-"+itoa64(int64(i)), "acc-0")
-	}
-	if n := s.StickyBindings(); n > stickyMax {
-		t.Fatalf("绑定表 = %d，超过上限 %d", n, stickyMax)
 	}
 }
 
@@ -386,7 +324,7 @@ func TestResponsesStatefulRejectedWhenHistoryMissing(t *testing.T) {
 		!strings.Contains(rec.Body.String(), "previous_response_id") {
 		t.Fatalf("错误应点名字段与类型: %s", rec.Body.String())
 	}
-	if n := s.metrics.statefulReject.Load(); n != 1 {
+	if n := s.metrics.Snapshot().Stateful["rejected"]; n != 1 {
 		t.Fatalf("拒绝计数 = %d，期望 1", n)
 	}
 }
@@ -415,7 +353,7 @@ func TestResponsesStatefulForwardedOnResponsesModel(t *testing.T) {
 	if got, _ := last.Payload["previous_response_id"].(string); got != "resp_1" {
 		t.Fatalf("previous_response_id 被改写/丢弃: %#v", last.Payload["previous_response_id"])
 	}
-	if n := s.metrics.statefulPrevID.Load(); n != 1 {
+	if n := s.metrics.Snapshot().Stateful["previous_response_id"]; n != 1 {
 		t.Fatalf("previous_response_id 计数 = %d，期望 1", n)
 	}
 }
@@ -442,7 +380,7 @@ func TestChatMultiTurnHistoryPreserved(t *testing.T) {
 		t.Fatalf("上游收到 %d 条消息，期望 4（历史被截断）：%s", len(msgs), string(u.last(t).Body))
 	}
 	first, _ := msgs[0].(map[string]any)
-	if strOf(first["content"]) != "Remember CODE=ALPHA-7." {
+	if jsonx.StrOf(first["content"]) != "Remember CODE=ALPHA-7." {
 		t.Fatalf("system 内容被改写: %v", first["content"])
 	}
 }
@@ -476,11 +414,11 @@ func TestAnthropicMultiTurnToolsPreserved(t *testing.T) {
 		t.Fatalf("assistant 消息缺少 tool_calls: %v", assistant)
 	}
 	tool, _ := msgs[2].(map[string]any)
-	if strOf(tool["role"]) != "tool" || strOf(tool["tool_call_id"]) != "call_1" {
+	if jsonx.StrOf(tool["role"]) != "tool" || jsonx.StrOf(tool["tool_call_id"]) != "call_1" {
 		t.Fatalf("tool 消息不合法: %v", tool)
 	}
 	last, _ := msgs[3].(map[string]any)
-	if strOf(last["role"]) != "user" {
+	if jsonx.StrOf(last["role"]) != "user" {
 		t.Fatalf("tool_result 之后的文本应成为 user 消息: %v", last)
 	}
 }
@@ -556,11 +494,11 @@ func TestShapeFallbackKeepsHistory(t *testing.T) {
 	wantRoles := []string{"system", "user", "assistant", "user"}
 	for i, mv := range msgs {
 		m, _ := mv.(map[string]any)
-		if got := strOf(m["role"]); got != wantRoles[i] {
+		if got := jsonx.StrOf(m["role"]); got != wantRoles[i] {
 			t.Fatalf("第 %d 条角色 = %q，期望 %q", i, got, wantRoles[i])
 		}
 	}
-	if got := strOf(msgs[2].(map[string]any)["content"]); got != "reply-1" {
+	if got := jsonx.StrOf(msgs[2].(map[string]any)["content"]); got != "reply-1" {
 		t.Fatalf("历史正文被改写: %q", got)
 	}
 }
