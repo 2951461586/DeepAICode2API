@@ -211,7 +211,7 @@ func TestPickSkipsUnschedulableAccount(t *testing.T) {
 	st := newTestStore(t)
 	p := newService(t, st, nil)
 	seedAccounts(t, st, 2)
-	st.BlockAccount("acc-0", "social_login_required: use google")
+	p.Block("acc-0", "social_login_required: use google")
 
 	for i := 0; i < 10; i++ {
 		a, ok, _ := p.Pick("", "")

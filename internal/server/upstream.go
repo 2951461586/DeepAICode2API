@@ -101,7 +101,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			s.Pool.Release(acct.ID)
 			lastErr = err
 			s.metrics.ObserveUpstreamError(path, "transport", 0)
-			s.Store.MarkAccountFailure(acct.ID, err)
+			s.Pool.MarkFailure(acct.ID, err)
 			if ctx.Err() != nil {
 				break
 			}
@@ -109,7 +109,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		}
 
 		if resp.StatusCode/100 == 2 {
-			s.Store.MarkAccountResult(acct.ID, true, "")
+			s.Pool.MarkResult(acct.ID, true, "")
 			s.Pool.BindSticky(affinity, acct.ID)
 			resp.Body = s.holdResponseBody(resp.Body, acct.ID, stream)
 			return resp, acct, nil
@@ -120,7 +120,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		if readErr != nil {
 			s.Pool.Release(acct.ID)
 			lastErr = readErr
-			s.Store.MarkAccountFailure(acct.ID, readErr)
+			s.Pool.MarkFailure(acct.ID, readErr)
 			continue
 		}
 		httpErr := &deepai.HTTPError{Op: "上游推理", Status: resp.StatusCode, Body: payload}
@@ -134,7 +134,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 				log.Printf("[upstream] 请求体被拒，按桌面端形状重试：account=%s", acctLabel(acct))
 				if retry, err2 := client.OpenModel(ctx, acct, path, alt, affinity); err2 == nil {
 					if retry.StatusCode/100 == 2 {
-						s.Store.MarkAccountResult(acct.ID, true, "")
+						s.Pool.MarkResult(acct.ID, true, "")
 						s.Pool.BindSticky(affinity, acct.ID)
 						retry.Body = s.holdResponseBody(retry.Body, acct.ID, stream)
 						return retry, acct, nil
@@ -159,13 +159,13 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		// 不要把它当普通 403 反复重试。
 		case actBlockAndRetry:
 			s.Pool.DropSticky(affinity, acct.ID)
-			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
+			s.Pool.Block(acct.ID, blockedReason(httpErr))
 			lastErr = httpErr
 			continue
 		// 账号级策略拦截：记 blocked 后直接回传（下一次请求调度会跳过它）。
 		case actBlockAndReturn:
 			s.Pool.DropSticky(affinity, acct.ID)
-			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
+			s.Pool.Block(acct.ID, blockedReason(httpErr))
 			return nil, acct, httpErr
 		// 缺机器指纹 / 请求本身的问题：换号没用，直接回传。
 		case actReturn:
@@ -186,7 +186,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		case actQuotaExhausted:
 			until := httpErr.QuotaResetAt(quotaExhaustedFallback, time.Now())
 			s.Pool.DropSticky(affinity, acct.ID)
-			s.Store.MarkQuotaExhausted(acct.ID, until)
+			s.Pool.MarkQuotaExhausted(acct.ID, until)
 			logx.Warn("账号当日额度用完", "account", acctLabel(acct), "until", until.Format(time.RFC3339))
 			lastErr = httpErr
 			continue
@@ -207,7 +207,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		}
 
 		lastErr = httpErr
-		s.Store.MarkAccountFailure(acct.ID, httpErr)
+		s.Pool.MarkFailure(acct.ID, httpErr)
 		if ctx.Err() != nil {
 			break
 		}

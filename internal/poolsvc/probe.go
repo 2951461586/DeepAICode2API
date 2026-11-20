@@ -231,22 +231,22 @@ func (p *Service) ProbeBatch(ctx context.Context, accts []*deepai.Account, timeo
 		// Google/Apple 登录的号标成 blocked——只能靠退避每小时再磕一次，
 		// 而热路径的 ProbeAsync 却是会拦的，两条路径口径不一致。
 		if deepai.IsSocialLoginRequired(err) {
-			p.store.BlockAccount(a.ID, err.Error())
+			p.Block(a.ID, err.Error())
 			return
 		}
 		// 签到被限流也不是账号坏：推理照常，只是当天别想再签到。
 		// 锁住额度探测，避免后台守护每 5 分钟再来磕一次 403。
 		if deepai.IsCheckInRefused(err) {
-			p.store.LockAccountProbe(a.ID, time.Now().Add(deepai.CheckInRefusedLock), err.Error())
+			p.LockProbe(a.ID, time.Now().Add(deepai.CheckInRefusedLock), err.Error())
 			return
 		}
 		if err != nil && !strict {
 			// 自动批次同样要留退避（这里返回后不落任何状态，否则下一次
 			// NeedsRefresh 立刻又把这个号挑出来重探）。
-			p.store.RecordProbeFailure(a.ID)
+			p.RecordProbeFailure(a.ID)
 			return
 		}
-		p.store.SetAccountAllowance(a.ID, al, err)
+		p.SetAllowance(a.ID, al, err)
 	})
 
 	// 全部被去重跳过时无事可存。
@@ -326,7 +326,7 @@ func (p *Service) ProbeAsync(a *deepai.Account) bool {
 			// 把 transient 错误写进 Status/Failures 只会让调度误判。
 			// 但 social_login_required 是策略终态，必须落盘让调度器停下。
 			if deepai.IsSocialLoginRequired(err) {
-				p.store.BlockAccount(a.ID, err.Error())
+				p.Block(a.ID, err.Error())
 				if saveErr := p.store.Save(); saveErr != nil {
 					log.Printf("[quota] 保存策略拦截状态失败: %v", saveErr)
 				}
@@ -335,7 +335,7 @@ func (p *Service) ProbeAsync(a *deepai.Account) bool {
 			}
 			// 退避必须留下：否则额度永远判 stale，每个选中该号的请求都会再探
 			// 一次，热路径变成 /theos 风暴。
-			p.store.RecordProbeFailure(a.ID)
+			p.RecordProbeFailure(a.ID)
 			if saveErr := p.store.Save(); saveErr != nil {
 				log.Printf("[quota] 保存探测退避失败: %v", saveErr)
 			}
@@ -343,7 +343,7 @@ func (p *Service) ProbeAsync(a *deepai.Account) bool {
 				a.Name, cooldownLeft(p.store.Account(a.ID)), err)
 			return
 		}
-		p.store.SetAccountAllowance(a.ID, al, nil)
+		p.SetAllowance(a.ID, al, nil)
 		if err := p.store.Save(); err != nil {
 			log.Printf("[quota] 保存复探结果失败: %v", err)
 		}

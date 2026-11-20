@@ -165,8 +165,8 @@ func TestUpsertDedupesByKeyAndEmail(t *testing.T) {
 func TestUpsertPreservesRuntimeState(t *testing.T) {
 	st := newStore(t)
 	a := addAccount(t, st, "sk-1", "")
-	st.MarkAccountResult(a.ID, false, "boom")
-	st.SetAccountAllowance(a.ID, &model.Allowance{Balance: "3"}, nil)
+	markResult(st, a.ID, false, "boom")
+	setAllowance(st, a.ID, &model.Allowance{Balance: "3"}, nil)
 
 	// 重新导入（例如桌面端换了 Key）不应清空故障计数与配额缓存。
 	st.UpsertAccount(&model.Account{APIKey: "sk-1", Name: "n"})
@@ -210,7 +210,7 @@ func TestNextAccountSkipsFailedAndDisabled(t *testing.T) {
 	bad := addAccount(t, st, "sk-bad", "")
 	off := addAccount(t, st, "sk-off", "")
 
-	st.MarkAccountResult(bad.ID, false, "api down")
+	markResult(st, bad.ID, false, "api down")
 	// 与 /admin/api/accounts 的启停一致：写路径统一走 UpdateAccount。
 	st.UpdateAccount(off.ID, func(x *model.Account) { x.Enabled = false })
 
@@ -226,8 +226,8 @@ func TestNextAccountFallsBackWhenAllFailed(t *testing.T) {
 	st := newStore(t)
 	a := addAccount(t, st, "sk-1", "")
 	addAccount(t, st, "sk-2", "")
-	st.MarkAccountResult(a.ID, false, "x")
-	st.MarkAccountResult(a.ID, false, "x")
+	markResult(st, a.ID, false, "x")
+	markResult(st, a.ID, false, "x")
 
 	if got := st.NextAccountGroup(""); got == nil {
 		t.Fatal("全部失败时应回退到失败最少的账号，而不是 nil")
@@ -257,21 +257,6 @@ func TestNextAccountEmptyPool(t *testing.T) {
 	st := newStore(t)
 	if got := st.NextAccountGroup(""); got != nil {
 		t.Fatalf("空号池应返回 nil，实际 %#v", got)
-	}
-}
-
-func TestMarkAccountResultResetsFailures(t *testing.T) {
-	st := newStore(t)
-	a := addAccount(t, st, "sk-1", "")
-	st.MarkAccountResult(a.ID, false, "boom")
-	st.MarkAccountResult(a.ID, false, "boom2")
-	if got := st.Account(a.ID); got.Failures != 2 || got.Status != "error" || got.LastErr != "boom2" {
-		t.Fatalf("失败计数错误: %#v", got)
-	}
-
-	st.MarkAccountResult(a.ID, true, "")
-	if got := st.Account(a.ID); got.Failures != 0 || got.Status != "ok" || got.LastErr != "" {
-		t.Fatalf("成功后应清零: %#v", got)
 	}
 }
 
@@ -452,7 +437,7 @@ func TestConcurrentAccessIsRaceFree(t *testing.T) {
 			defer func() { done <- struct{}{} }()
 			for j := 0; j < 50; j++ {
 				if a := st.NextAccountGroup(""); a != nil {
-					st.MarkAccountResult(a.ID, j%2 == 0, "")
+					markResult(st, a.ID, j%2 == 0, "")
 				}
 				_ = st.ValidKey(key.Key)
 				st.Record(LogEntry{Status: 200}, 1)
@@ -476,8 +461,8 @@ func TestNextAccountPrefersAccountsWithQuota(t *testing.T) {
 	empty := addAccount(t, st, "sk-empty", "")
 	full := addAccount(t, st, "sk-full", "")
 	now := time.Now().Unix()
-	st.SetAccountAllowance(empty.ID, &model.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}, nil)
-	st.SetAccountAllowance(full.ID, &model.Allowance{Enabled: true, Balance: "2.50000", CheckedAt: now}, nil)
+	setAllowance(st, empty.ID, &model.Allowance{Enabled: true, Balance: "0.00000", CheckedAt: now}, nil)
+	setAllowance(st, full.ID, &model.Allowance{Enabled: true, Balance: "2.50000", CheckedAt: now}, nil)
 
 	for i := 0; i < 10; i++ {
 		got := st.NextAccountGroup("")
@@ -493,8 +478,8 @@ func TestNextAccountFallsBackToZeroQuota(t *testing.T) {
 	a := addAccount(t, st, "sk-a", "")
 	b := addAccount(t, st, "sk-b", "")
 	now := time.Now().Unix()
-	st.SetAccountAllowance(a.ID, &model.Allowance{Enabled: true, Balance: "0", CheckedAt: now}, nil)
-	st.SetAccountAllowance(b.ID, &model.Allowance{Enabled: true, Balance: "0.0", CheckedAt: now}, nil)
+	setAllowance(st, a.ID, &model.Allowance{Enabled: true, Balance: "0", CheckedAt: now}, nil)
+	setAllowance(st, b.ID, &model.Allowance{Enabled: true, Balance: "0.0", CheckedAt: now}, nil)
 
 	if got := st.NextAccountGroup(""); got == nil {
 		t.Fatal("全组 0 额度时应回退，而不是返回 nil")
@@ -512,7 +497,7 @@ func TestNextAccountUnknownQuotaIsUsable(t *testing.T) {
 	for _, al := range cases {
 		st := newStore(t)
 		a := addAccount(t, st, "sk-1", "")
-		st.SetAccountAllowance(a.ID, al, nil)
+		setAllowance(st, a.ID, al, nil)
 		if got := st.NextAccountGroup(""); got == nil || got.ID != a.ID {
 			t.Fatalf("额度状态 %#v 不应导致账号被跳过", al)
 		}
@@ -618,7 +603,7 @@ func TestStaleZeroQuotaIsSchedulable(t *testing.T) {
 	// 端到端：陈旧的 0 额度账号必须能被调度到。
 	st := newStore(t)
 	a := addAccount(t, st, "sk-stale", "")
-	st.SetAccountAllowance(a.ID, &model.Allowance{
+	setAllowance(st, a.ID, &model.Allowance{
 		Enabled: true, Balance: "0.00000",
 		CheckedAt: time.Now().Add(-time.Hour).Unix(),
 	}, nil)

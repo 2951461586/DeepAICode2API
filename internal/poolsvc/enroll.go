@@ -138,7 +138,7 @@ func (p *Service) ScheduleQuotaReprobe(id string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			al, err := p.clientFor(a).Theos(ctx, a)
 			cancel()
-			p.store.SetAccountAllowance(id, al, err)
+			p.SetAllowance(id, al, err)
 			if err := p.store.Save(); err != nil {
 				log.Printf("[quota] 保存复探结果失败: %v", err)
 			}

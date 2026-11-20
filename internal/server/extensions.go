@@ -67,12 +67,12 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	cancel()
 	rl := s.newReqLog(key, acct, "whisper-1", "audio", false, start, len(data))
 	if err != nil {
-		s.Store.MarkAccountFailure(acct.ID, err)
+		s.Pool.MarkFailure(acct.ID, err)
 		rl.done(0, gateway.Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
-	s.Store.MarkAccountResult(acct.ID, true, "")
+	s.Pool.MarkResult(acct.ID, true, "")
 	rl.done(len(text), gateway.Usage{}, nil)
 
 	if mode == "text" {
@@ -131,12 +131,12 @@ func (s *Server) proxyExtension(w http.ResponseWriter, r *http.Request, path str
 	}
 	rl := s.newReqLog(key, acct, "-", endpoint, false, start, len(body))
 	if err != nil {
-		s.Store.MarkAccountFailure(acct.ID, err)
+		s.Pool.MarkFailure(acct.ID, err)
 		rl.done(0, gateway.Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
-	s.Store.MarkAccountResult(acct.ID, true, "")
+	s.Pool.MarkResult(acct.ID, true, "")
 	rl.done(len(raw), gateway.Usage{}, nil)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -177,12 +177,12 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	al, err := s.clientFor(acct).Theos(ctx, acct)
 	rl := s.newReqLog(key, acct, "-", "theos", false, start, 0)
 	if err != nil {
-		s.Store.MarkAccountFailure(acct.ID, err)
+		s.Pool.MarkFailure(acct.ID, err)
 		rl.done(0, gateway.Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
-	s.Store.SetAccountAllowance(acct.ID, al, nil)
+	s.Pool.SetAllowance(acct.ID, al, nil)
 	rl.done(0, gateway.Usage{}, nil)
 	s.persist()
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -206,12 +206,12 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	usage, err := s.clientFor(acct).UsageSummary(ctx, acct)
 	rl := s.newReqLog(key, acct, "-", "usage", false, start, 0)
 	if err != nil {
-		s.Store.MarkAccountFailure(acct.ID, err)
+		s.Pool.MarkFailure(acct.ID, err)
 		rl.done(0, gateway.Usage{}, err)
 		writeUpstreamErr(w, err)
 		return
 	}
-	s.Store.MarkAccountResult(acct.ID, true, "")
+	s.Pool.MarkResult(acct.ID, true, "")
 	rl.done(0, gateway.Usage{}, nil)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"account":  acct.ID,
