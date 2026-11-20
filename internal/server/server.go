@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -93,11 +92,10 @@ func New(st *store.Store) *Server {
 		metrics:       observe.NewMetrics(),
 		history:       respstate.NewFromEnv(),
 	}
-	// 上次探测到的车道优先（跨重启保留）；CurrentLane 会区分「本次构建验证过
-	// 的探测值」与「旧版本残留」，后者才用较新的编译期默认值兜底。
-	if lane := strings.TrimSpace(st.Settings().Lane); lane != "" {
-		s.Up.SetLane(s.CurrentLane())
-	}
+	// 运行期可调项（车道 / 签到预算）走**拉取式**：客户端每次请求现取，
+	// 不再依赖 Server 主动推给「直连客户端 + 每个代理客户端」。
+	// 上次探测到的车道由 CurrentLane 从设置里读（跨重启保留）。
+	s.Up.Runtime = s.runtimeConfig
 	// 上游车道漂移的观测钩子：所有 /theos 成功都会回传 lane_version。
 	s.Up.LaneHook = s.noteUpstreamLane
 	s.Pool = poolsvc.New(poolsvc.Config{
@@ -107,22 +105,20 @@ func New(st *store.Store) *Server {
 	})
 	// 会话粘性绑定随重启保留（旁路文件，丢失不影响正确性）。
 	s.Pool.LoadSticky()
-	s.applyRuntimeSettings()
 	return s
 }
 
-// applyRuntimeSettings 把「可运行期调整」的设置同步到已缓存的客户端。
+// runtimeConfig 返回上游客户端的运行期配置（拉取式真源）。
 //
-// 车道走 SetLane；签到预算走 SetCheckInBudget。两者都必须同时覆盖
-// s.Up 和按代理缓存的客户端，否则直连号与代理号表现不一致。
-func (s *Server) applyRuntimeSettings() {
-	budget := time.Duration(s.Store.Settings().CheckinBlockMS) * time.Millisecond
-	s.Up.SetCheckInBudget(budget)
-	s.proxyMu.Lock()
-	for _, c := range s.proxyClients {
-		c.SetCheckInBudget(budget)
+// 车道与签到预算都能在控制台运行期调整。此前是「推」模式：改设置时要遍历
+// 已缓存客户端逐个 Set，新建客户端时还要再补一遍（server.go / request.go
+// 两处重复注入），漏一处的表现是「走代理的号与直连号行为不一致」。
+// 现在客户端每次请求现取一次，只有这一份真源。
+func (s *Server) runtimeConfig() deepai.RuntimeConfig {
+	return deepai.RuntimeConfig{
+		Lane:          s.CurrentLane(),
+		CheckInBudget: time.Duration(s.Store.Settings().CheckinBlockMS) * time.Millisecond,
 	}
-	s.proxyMu.Unlock()
 }
 
 // Handler 返回完整路由。

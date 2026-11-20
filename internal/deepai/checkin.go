@@ -270,7 +270,14 @@ func (c *Client) EnsureCheckIn(ctx context.Context, acct *Account) CheckInOutcom
 }
 
 // checkInBudget 返回同步签到的等待预算。
+//
+// 优先级：Runtime 拉取值 → 实例值（SetCheckInBudget）→ 默认 10s。
 func (c *Client) checkInBudget() time.Duration {
+	if c.Runtime != nil {
+		if d := c.Runtime().CheckInBudget; d > 0 {
+			return d
+		}
+	}
 	if c.CheckInBudget > 0 {
 		return c.CheckInBudget
 	}

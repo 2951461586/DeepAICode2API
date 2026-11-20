@@ -272,8 +272,7 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	// 预算类设置要让已缓存的客户端立刻生效，不能等重启。
-	s.applyRuntimeSettings()
+	// 预算类设置在客户端侧是「拉取式」的，下一次请求即生效，无需推送。
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": sanitizedSettings(s.Store.Settings())})
 }
 

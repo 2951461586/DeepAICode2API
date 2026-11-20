@@ -266,6 +266,17 @@ type Client struct {
 	UserAgent string
 	Proxy     string
 
+	// Runtime 非 nil 时，车道与签到预算改为**拉取式**：每次请求现取一次。
+	//
+	// 为什么要有它：这两项都能在控制台运行期调整，此前靠 Server 主动
+	// 「推」给每个已缓存的客户端（直连的 s.Up + 每个代理出口的客户端），
+	// 而新建客户端时还得再补一遍。三个地方漏一个，就表现为「走代理的号
+	// 与直连号行为不一致」——只在生产暴露。改成拉取后只有一处真源。
+	//
+	// nil 时回落到实例字段（SetLane / SetCheckInBudget），保留给测试与
+	// 独立使用客户端的场景。
+	Runtime RuntimeSource
+
 	// lane 是当前使用的 Theos 车道版本（atomic：探测/换道时会被并发读取）。
 	// 零值表示用编译期的 LaneVersion。
 	lane atomic.Value
@@ -470,13 +481,34 @@ func laneCandidates() []string {
 	return out
 }
 
+// RuntimeConfig 是「运行期可调」的两项上游参数。
+type RuntimeConfig struct {
+	// Lane 是本次请求要发的 Theos 车道（空 = 用编译期 LaneVersion）。
+	Lane string
+	// CheckInBudget 是推理前同步签到的等待预算（<=0 = 用默认 10s）。
+	CheckInBudget time.Duration
+}
+
+// RuntimeSource 返回当前的运行期配置（每次请求调用一次，必须便宜）。
+type RuntimeSource func() RuntimeConfig
+
 // SetLane 设置当前车道（空串 = 用编译期默认值）。
+//
+// 注意：Client.Runtime 非 nil 时以 Runtime 为准，这里的值只在 Runtime
+// 未提供的字段上生效。Server 侧已改用拉取式（见 Runtime）。
 func (c *Client) SetLane(lane string) {
 	c.lane.Store(strings.TrimSpace(lane))
 }
 
 // laneVersion 返回本次请求要发的车道版本。
+//
+// 优先级：Runtime 拉取值 → 实例值（SetLane）→ 编译期 LaneVersion。
 func (c *Client) laneVersion() string {
+	if c.Runtime != nil {
+		if v := strings.TrimSpace(c.Runtime().Lane); v != "" {
+			return v
+		}
+	}
 	if v, ok := c.lane.Load().(string); ok && v != "" {
 		return v
 	}

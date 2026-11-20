@@ -194,9 +194,8 @@ func (s *Server) clientFor(acct *deepai.Account) *deepai.Client {
 	// 代理出口的客户端也要上报上游车道，否则走代理的账号探到的 lane_version
 	// 就到不了控制台（s.Up 只覆盖直连）。
 	c.LaneHook = s.noteUpstreamLane
-	if budget := time.Duration(s.Store.Settings().CheckinBlockMS) * time.Millisecond; budget > 0 {
-		c.SetCheckInBudget(budget)
-	}
+	// 运行期可调项（车道 / 签到预算）由客户端拉取，这里不再逐项注入。
+	c.Runtime = s.runtimeConfig
 	s.proxyClients[acct.Proxy] = c
 	return c
 }
