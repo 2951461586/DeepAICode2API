@@ -31,6 +31,8 @@ type responsesStreamGen struct {
 	// output_index 不一定同序（上游可能先发工具再发文本），发出前必须按
 	// index 排序，否则 response.output 的顺序与流里报的 output_index 矛盾。
 	output []responsesOutputItem
+	// finalResponse 是 complete() 時的最終 response 物件；供伺服端歷史暫存使用。
+	finalResponse map[string]any
 }
 
 // responsesOutputItem 是最终 response.output 的一项（带排序键）。
@@ -268,7 +270,9 @@ func (g *responsesStreamGen) complete(usage Usage) {
 	g.closeText()
 	g.closeReasoning()
 	g.closeTools()
+	resp := g.response("completed", usage)
+	g.finalResponse = resp
 	g.emit("response.completed", map[string]any{
-		"response": g.response("completed", usage),
+		"response": resp,
 	})
 }

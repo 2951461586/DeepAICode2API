@@ -370,9 +370,9 @@ func TestSessionAffinitySkipsBareRequests(t *testing.T) {
 //
 // 非 openai-responses 模型走 chat 合成路径，只有 input 里的内容；
 // previous_response_id 若被忽略，客户端以为续接成功，实际模型只看得到本轮。
-func TestResponsesStatefulRejectedOnTranslatedModel(t *testing.T) {
+func TestResponsesStatefulRejectedWhenHistoryMissing(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("不应打到上游，路径 %s", r.URL.Path)
+		t.Errorf("找不到历史时不应打到上游，路径 %s", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
 	})
 	s, key := newTestServer(t, u)
