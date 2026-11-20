@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
-	"deepaicode2api/internal/parallel"
 )
 
 const (
@@ -53,7 +52,7 @@ func (p *Service) WarmUp(ctx context.Context) int {
 	sort.Strings(targets)
 
 	var ok atomic.Int64
-	parallel.For(ctx, WarmWorkers, len(targets), func(ctx context.Context, i int) {
+	parallelFor(ctx, WarmWorkers, len(targets), func(ctx context.Context, i int) {
 		attempt, cancel := context.WithTimeout(ctx, WarmTimeout)
 		defer cancel()
 		acct := byEgress[targets[i]]

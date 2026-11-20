@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"deepaicode2api/internal/deepai"
-	"deepaicode2api/internal/parallel"
-	"deepaicode2api/internal/retry"
 )
 
 // --- 账号配额探测 ---
@@ -211,7 +209,7 @@ func (p *Service) ProbeBatch(ctx context.Context, accts []*deepai.Account, timeo
 		}
 	}()
 
-	parallel.For(ctx, probeWorkers, len(indexes), func(ctx context.Context, k int) {
+	parallelFor(ctx, probeWorkers, len(indexes), func(ctx context.Context, k int) {
 		i := indexes[k]
 		a := accts[i]
 		cctx, cancel := context.WithTimeout(ctx, timeout)
@@ -383,7 +381,7 @@ func (p *Service) ReprobeStale(limit int) int {
 // ProbeAccountQuota 探测一个账号的配额；瞬时错误重试一次（入池专用，阻塞）。
 func (p *Service) ProbeAccountQuota(acct *deepai.Account) (*deepai.Allowance, error) {
 	var al *deepai.Allowance
-	err := retry.Do(context.Background(), probeRetryDelays, deepai.IsTransient, func(parent context.Context) error {
+	err := retryDo(context.Background(), probeRetryDelays, deepai.IsTransient, func(parent context.Context) error {
 		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 		defer cancel()
 		got, err := p.clientFor(acct).Theos(ctx, acct)

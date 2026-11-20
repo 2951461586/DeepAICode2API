@@ -1,18 +1,18 @@
-// Package retry 提供基于「瞬时错误」判定的退避重试。
+// 基于「瞬时错误」判定的退避重试。
 //
 // 网关里存在多处「失败就再来一次」的逻辑（/theos 验活、入池配额探测、
 // 代理连通性检查）。它们共享同一条判据（deepai.IsTransient）但各自
 // 手写退避循环，容易在改动时漏掉某一处。统一到这里后，
 // 「重试几次、每次等多久、什么错误不重试」只有一处定义。
-package retry
+package poolsvc
 
 import (
 	"context"
 	"time"
 )
 
-// Classifier 报告错误是否值得重试。
-type Classifier func(error) bool
+// retryClassifier 报告错误是否值得重试。
+type retryClassifier func(error) bool
 
 // Do 执行 fn；失败且 retryable 判定可重试时，按 delays 依次退避后重试。
 //
@@ -23,7 +23,7 @@ type Classifier func(error) bool
 //   - ctx 在退避期间到期时返回最后一次的错误（不再发起新尝试）。
 //
 // 返回 nil 表示某次尝试成功。
-func Do(ctx context.Context, delays []time.Duration, retryable Classifier, fn func(context.Context) error) error {
+func retryDo(ctx context.Context, delays []time.Duration, retryable retryClassifier, fn func(context.Context) error) error {
 	var lastErr error
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 && !sleep(ctx, delays[attempt-1]) {

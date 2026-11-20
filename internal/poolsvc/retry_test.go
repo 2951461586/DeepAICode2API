@@ -1,4 +1,4 @@
-package retry
+package poolsvc
 
 import (
 	"context"
@@ -13,7 +13,7 @@ func alwaysRetryable(error) bool { return true }
 
 func TestDoSucceedsFirstTry(t *testing.T) {
 	calls := 0
-	err := Do(t.Context(), []time.Duration{time.Second}, nil, func(context.Context) error {
+	err := retryDo(t.Context(), []time.Duration{time.Second}, nil, func(context.Context) error {
 		calls++
 		return nil
 	})
@@ -24,7 +24,7 @@ func TestDoSucceedsFirstTry(t *testing.T) {
 
 func TestDoRetriesThenSucceeds(t *testing.T) {
 	calls := 0
-	err := Do(t.Context(), []time.Duration{0, 0}, alwaysRetryable, func(context.Context) error {
+	err := retryDo(t.Context(), []time.Duration{0, 0}, alwaysRetryable, func(context.Context) error {
 		calls++
 		if calls < 3 {
 			return errBoom
@@ -43,7 +43,7 @@ func TestDoRetriesThenSucceeds(t *testing.T) {
 func TestDoStopsOnNonRetryable(t *testing.T) {
 	calls := 0
 	start := time.Now()
-	err := Do(t.Context(), []time.Duration{time.Hour}, func(error) bool { return false },
+	err := retryDo(t.Context(), []time.Duration{time.Hour}, func(error) bool { return false },
 		func(context.Context) error {
 			calls++
 			return errBoom
@@ -62,7 +62,7 @@ func TestDoStopsOnNonRetryable(t *testing.T) {
 // 退避用尽后返回最后一次错误。
 func TestDoReturnsLastErrorAfterExhausted(t *testing.T) {
 	calls := 0
-	err := Do(t.Context(), []time.Duration{0, 0}, alwaysRetryable, func(context.Context) error {
+	err := retryDo(t.Context(), []time.Duration{0, 0}, alwaysRetryable, func(context.Context) error {
 		calls++
 		return errBoom
 	})
@@ -83,7 +83,7 @@ func TestDoAbortsOnContextCancel(t *testing.T) {
 	cancel()
 
 	calls := 0
-	err := Do(ctx, []time.Duration{time.Hour}, alwaysRetryable, func(context.Context) error {
+	err := retryDo(ctx, []time.Duration{time.Hour}, alwaysRetryable, func(context.Context) error {
 		calls++
 		return errBoom
 	})
@@ -98,7 +98,7 @@ func TestDoAbortsOnContextCancel(t *testing.T) {
 // delays 为空表示只尝试一次。
 func TestDoSingleAttemptWithoutDelays(t *testing.T) {
 	calls := 0
-	err := Do(t.Context(), nil, alwaysRetryable, func(context.Context) error {
+	err := retryDo(t.Context(), nil, alwaysRetryable, func(context.Context) error {
 		calls++
 		return errBoom
 	})

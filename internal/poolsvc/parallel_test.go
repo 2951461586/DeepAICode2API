@@ -1,4 +1,4 @@
-package parallel
+package poolsvc
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 func TestForRunsEveryIndexOnce(t *testing.T) {
 	const count = 50
 	seen := make([]int32, count)
-	For(t.Context(), 4, count, func(_ context.Context, i int) {
+	parallelFor(t.Context(), 4, count, func(_ context.Context, i int) {
 		atomic.AddInt32(&seen[i], 1)
 	})
 	for i, n := range seen {
@@ -24,7 +24,7 @@ func TestForRunsEveryIndexOnce(t *testing.T) {
 func TestForRespectsConcurrencyLimit(t *testing.T) {
 	const limit, count = 3, 36
 	var cur, peak int32
-	For(t.Context(), limit, count, func(context.Context, int) {
+	parallelFor(t.Context(), limit, count, func(context.Context, int) {
 		n := atomic.AddInt32(&cur, 1)
 		for {
 			p := atomic.LoadInt32(&peak)
@@ -49,7 +49,7 @@ func TestForSkipsEverythingWhenCanceled(t *testing.T) {
 	cancel()
 
 	var calls int32
-	For(ctx, 4, 20, func(context.Context, int) {
+	parallelFor(ctx, 4, 20, func(context.Context, int) {
 		atomic.AddInt32(&calls, 1)
 	})
 	if calls != 0 {
@@ -59,6 +59,6 @@ func TestForSkipsEverythingWhenCanceled(t *testing.T) {
 
 // 边界：count<=0 / workers<=0 不应 panic。
 func TestForEdgeCases(t *testing.T) {
-	For(t.Context(), 4, 0, func(context.Context, int) { t.Fatal("不应执行") })
-	For(t.Context(), 0, 3, func(context.Context, int) {})
+	parallelFor(t.Context(), 4, 0, func(context.Context, int) { t.Fatal("不应执行") })
+	parallelFor(t.Context(), 0, 3, func(context.Context, int) {})
 }
