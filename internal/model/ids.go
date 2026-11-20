@@ -13,10 +13,18 @@ import (
 // guard（按密钥限流）都要用，而它们不该为此依赖传输层。
 
 // RandomHex 生成 n 字节的随机十六进制串。
+//
+// 熵源失败时**panic**，不返回可预测的占位串：
+// 这个函数的产物是账号 ID 与 OAuth state。静默返回全 0 会让两个账号拿到
+// 同一 ID（UpsertAccount 按 ID 去重 → 数据被覆盖），并让 state 变得可猜。
+// 拿不到熵的运行环境已经不可能安全工作，早失败比晚损坏好。
 func RandomHex(n int) string {
+	if n <= 0 {
+		return ""
+	}
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
-		return strings.Repeat("0", n*2)
+		panic("crypto/rand 不可用，拒绝生成可预测的标识: " + err.Error())
 	}
 	return hex.EncodeToString(b)
 }

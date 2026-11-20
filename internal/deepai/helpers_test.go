@@ -1,7 +1,6 @@
 package deepai
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -47,36 +46,5 @@ func TestMaskProxyNeverLeaksCredentials(t *testing.T) {
 		if strings.Contains(got, "secret") || strings.Contains(got, "u:p") {
 			t.Errorf("MaskProxy(%q) 泄露了凭据: %q", c.in, got)
 		}
-	}
-}
-
-func TestEnvIntAndEnvOr(t *testing.T) {
-	t.Setenv("DEEPAI_TEST_INT", " 42 ")
-	if got := EnvInt("DEEPAI_TEST_INT", 7); got != 42 {
-		t.Fatalf("EnvInt 合法值 = %d，期望 42", got)
-	}
-
-	t.Setenv("DEEPAI_TEST_INT", "abc")
-	if got := EnvInt("DEEPAI_TEST_INT", 7); got != 7 {
-		t.Fatalf("EnvInt 非法值应回退默认，得到 %d", got)
-	}
-
-	t.Setenv("DEEPAI_TEST_INT", "   ")
-	if got := EnvInt("DEEPAI_TEST_INT", 7); got != 7 {
-		t.Fatalf("EnvInt 纯空白应回退默认，得到 %d", got)
-	}
-
-	os.Unsetenv("DEEPAI_TEST_INT")
-	if got := EnvInt("DEEPAI_TEST_INT", 7); got != 7 {
-		t.Fatalf("EnvInt 未设置应回退默认，得到 %d", got)
-	}
-
-	t.Setenv("DEEPAI_TEST_STR", "  value  ")
-	if got := EnvOr("DEEPAI_TEST_STR", "def"); got != "value" {
-		t.Fatalf("EnvOr 应去空白，得到 %q", got)
-	}
-	t.Setenv("DEEPAI_TEST_STR", "   ")
-	if got := EnvOr("DEEPAI_TEST_STR", "def"); got != "def" {
-		t.Fatalf("EnvOr 纯空白应回退默认，得到 %q", got)
 	}
 }

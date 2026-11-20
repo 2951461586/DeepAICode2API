@@ -1,11 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"deepaicode2api/internal/configenv"
 )
 
 // 启动参数与环境变量解析。
@@ -26,32 +27,11 @@ func defaultDataPath() string {
 	return name
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func envBool(key string, def bool) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	}
-	return def
-}
+// 三个「读环境变量 + 默认值」的工具统一到 internal/configenv
+// （此前根包、deepai、respstate、credimport 各有一份，语义还不完全一致）。
+func envOr(key, def string) string      { return configenv.Or(key, def) }
+func envInt(key string, def int) int    { return configenv.Int(key, def) }
+func envBool(key string, def bool) bool { return configenv.Bool(key, def) }
 
 // isLoopbackListen 判断监听地址是否只接受本机连接。
 //

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"deepaicode2api/internal/configenv"
 	"deepaicode2api/internal/model"
 )
 
@@ -195,25 +196,13 @@ func normalizeGroup(g string) string {
 
 func timeNowUnix() int64 { return time.Now().Unix() }
 
-// envOr 返回环境变量值或默认值（去空白）。
-//
-// 本地实现而不是复用 deepai.EnvOr：本包只需要这一个三行工具，不值得为它
-// 保留一条 credimport → deepai 的依赖边（那样「凭据导入」又会把上游客户端
-// 拖进依赖图，与本次拆分的初衷相反）。
-func envOr(key, def string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		return v
-	}
-	return def
-}
-
 // EnvAccount 从 DEEPAI_API_KEY 环境变量构造账号（可选）。
 func EnvAccount() *model.Account {
 	key := strings.TrimSpace(os.Getenv("DEEPAI_API_KEY"))
 	if key == "" {
 		return nil
 	}
-	acct, err := AccountFromAPIKey(key, envOr("DEEPAI_API_KEY_NAME", ""), "env", false)
+	acct, err := AccountFromAPIKey(key, configenv.Or("DEEPAI_API_KEY_NAME", ""), "env", false)
 	if err != nil {
 		return nil
 	}

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"deepaicode2api/internal/configenv"
 	"deepaicode2api/internal/machine"
 )
 
@@ -172,7 +173,7 @@ func inferClient(c *Client) *Client {
 
 // NewClientWithFingerprint 构造带代理与 User-Agent 的上游客户端。
 func NewClientWithFingerprint(proxyRaw, userAgent string) *Client {
-	origin := strings.TrimRight(EnvOr("DEEPAI_API_ORIGIN", DefaultOrigin), "/")
+	origin := strings.TrimRight(configenv.Or("DEEPAI_API_ORIGIN", DefaultOrigin), "/")
 	if u, err := url.Parse(origin); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		origin = DefaultOrigin
 	}

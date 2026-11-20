@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"deepaicode2api/internal/configenv"
 	"deepaicode2api/internal/jsonx"
 )
 
@@ -98,8 +99,8 @@ type Store struct {
 // DEEPAI2API_HISTORY_TTL_HOURS  歷史存活小時數（預設 24，0/負數用預設）。
 // DEEPAI2API_HISTORY_MAX_ENTRIES 最多保留輪次（預設 500，0/負數用預設）。
 func NewFromEnv() *Store {
-	ttlH := envPositiveInt("DEEPAI2API_HISTORY_TTL_HOURS", 24)
-	max := envPositiveInt("DEEPAI2API_HISTORY_MAX_ENTRIES", 500)
+	ttlH := configenv.PositiveInt("DEEPAI2API_HISTORY_TTL_HOURS", 24)
+	max := configenv.PositiveInt("DEEPAI2API_HISTORY_MAX_ENTRIES", 500)
 	return New(time.Duration(ttlH)*time.Hour, max)
 }
 
@@ -118,18 +119,6 @@ func New(ttl time.Duration, max int) *Store {
 		now:             time.Now,
 		checkpointEvery: historyCheckpointEvery,
 	}
-}
-
-func envPositiveInt(key string, def int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
-		return def
-	}
-	return n
 }
 
 // put 存入一輪交互；同 id 重複存入為覆蓋。
