@@ -29,22 +29,6 @@ func benchStore(b *testing.B, n int) *Store {
 	return st
 }
 
-// BenchmarkAccountPage600 是控制台账号分页的基线。
-//
-// 600 个号、每页 50 行：应当只克隆 50 个账号，而不是整池。
-func BenchmarkAccountPage600(b *testing.B) {
-	st := benchStore(b, 600)
-	q := AccountQuery{Offset: 100, Limit: 50, Sort: "last_used", Desc: true}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		page := st.AccountPage(q)
-		if len(page.Items) != 50 {
-			b.Fatalf("应返回 50 条，实际 %d", len(page.Items))
-		}
-	}
-}
-
 // BenchmarkPickAccount600 覆盖「一次读锁 + 只拷贝选中账号」的选号路径。
 func BenchmarkPickAccount600(b *testing.B) {
 	st := benchStore(b, 600)

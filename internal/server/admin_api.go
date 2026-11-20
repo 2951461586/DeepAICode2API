@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"deepaicode2api/internal/accountview"
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/observe"
@@ -116,7 +117,8 @@ func (s *Server) handleAdminAccountsPage(w http.ResponseWriter, r *http.Request)
 	sortKey := strings.TrimSpace(q.Get("sort"))
 	desc := strings.EqualFold(q.Get("order"), "desc")
 
-	page := s.Store.AccountPage(store.AccountQuery{
+	// 过滤 / 排序 / 分页是展示层规则（见 internal/accountview）：store 只出快照。
+	page := accountview.Accounts(s.Store.Accounts(), accountview.Query{
 		Offset: offset, Limit: limit,
 		Group: q.Get("group"), Status: q.Get("status"), Query: q.Get("q"),
 		Sort: sortKey, Desc: desc,
