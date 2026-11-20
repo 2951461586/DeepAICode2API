@@ -349,20 +349,18 @@ func TestAdminKeysDeleteReportsMissing(t *testing.T) {
 	}
 }
 
-// TestAdminStateIsDeprecatedButStillWorks 锁定旧全量端点的退役契约。
+// TestAdminStateGoneAfterSunset 锁定旧全量端点的下线契约。
 //
-// 控制台已改用 overview + accounts 分页；这个端点只给外部脚本留迁移窗口。
-// 断言三件事：仍然能取到数据（不立刻破坏调用方）、带 Deprecation/Sunset 头、
-// 并指向 successor-version —— 少了任何一条，外部脚本都无从知道该往哪迁。
-func TestAdminStateIsDeprecatedButStillWorks(t *testing.T) {
+// Sunset（2026-05-20）已过，端点必须明确失败而不是继续下发数据：
+//   - 410 Gone（不是 404：那会让人以为路径拼错）；
+//   - 保留 Sunset / Link(successor-version) 头，给出迁移方向；
+//   - 响应体是可解析的错误信封，且不含任何账号数据。
+func TestAdminStateGoneAfterSunset(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 
-	rec := do(t, s, http.MethodGet, "/admin/api/state?accounts=0", "", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /admin/api/state = %d，期望 200", rec.Code)
-	}
-	if got := rec.Header().Get("Deprecation"); got != "true" {
-		t.Fatalf("Deprecation = %q，期望 true", got)
+	rec := do(t, s, http.MethodGet, "/admin/api/state", "", "")
+	if rec.Code != http.StatusGone {
+		t.Fatalf("GET /admin/api/state = %d，期望 410", rec.Code)
 	}
 	if got := rec.Header().Get("Sunset"); got != stateSunset {
 		t.Fatalf("Sunset = %q，期望 %q", got, stateSunset)
@@ -373,28 +371,20 @@ func TestAdminStateIsDeprecatedButStillWorks(t *testing.T) {
 	}
 
 	var payload struct {
-		Settings map[string]any `json:"settings"`
-		Stats    map[string]any `json:"stats"`
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("旧端点仍应返回合法 JSON: %v", err)
+		t.Fatalf("下线的端点也应返回合法 JSON: %v", err)
 	}
-	if payload.Settings == nil || payload.Stats == nil {
-		t.Fatalf("旧端点字段缺失: %+v", payload)
+	if payload.Error.Type != "endpoint_removed" || !strings.Contains(payload.Error.Message, "overview") {
+		t.Fatalf("错误信封应说明迁移方向: %+v", payload.Error)
 	}
-}
-
-// TestAdminStateHidesPassword 是安全断言：旧端点同样不能下发管理口令。
-func TestAdminStateHidesPassword(t *testing.T) {
-	s, _ := newTestServer(t, nil)
-	s.Store.UpdateSettings(func(st *store.Settings) { st.AdminPassword = "hunter2" })
-
-	rec := do(t, s, http.MethodGet, "/admin/api/state", "hunter2", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("带口令访问 = %d，期望 200", rec.Code)
-	}
-	if strings.Contains(rec.Body.String(), "hunter2") {
-		t.Fatal("旧端点泄露了管理口令明文")
+	// 不再下发任何业务字段（这是「下线」而不只是「弃用」的判据）。
+	if strings.Contains(rec.Body.String(), `"accounts"`) || strings.Contains(rec.Body.String(), `"settings"`) {
+		t.Fatalf("下线的端点不应再下发业务数据: %s", rec.Body.String())
 	}
 }
 
