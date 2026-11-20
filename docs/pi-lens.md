@@ -41,7 +41,7 @@ pi-lens 的配置分两层：**项目级** `.pi-lens.json`（本文件所在仓�
 | `high-complexity`（阈值 25） | `internal/server/upstream.go` | `openModel` 是已知的调度状态机（cc 39），拆分要单独设计；豁免只覆盖这一文件 |
 | `no-console-except-error-js` | `internal/server/web/js/api.js` | 控制台的错误诊断依赖 `console.warn` |
 | `no-array-reverse-mutation-js` | `internal/server/web/js/render/logs.js` | 就地反转日志数组是有意为之（渲染前排序） |
-| `string-concat-in-loop` | `internal/respstate/history.go`、`internal/observe/metrics.go` | **误报**：该规则按 `+=` 匹配，而这里的四处 `+=` 都是 token / 字节**计数器**（`remaining += ItemApproxTokens(it)`、`used += c`、`n += jsonBytesOf(it)`），不是字符串拼接。改成 `strings.Builder` 反而更慢更难读 |
+| `string-concat-in-loop` | `internal/respstate/history.go`、`internal/observe/metrics.go`、`internal/observe/exposition.go` | **误报**：该规则按 `+=` 匹配，而这里的四处 `+=` 都是 token / 字节**计数器**（`remaining += ItemApproxTokens(it)`、`used += c`、`n += jsonBytesOf(it)`、`cum += v.Counts[i]`），不是字符串拼接。改成 `strings.Builder` 反而更慢更难读 |
 
 ### 保留的检查
 

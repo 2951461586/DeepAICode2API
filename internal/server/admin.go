@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"deepaicode2api/internal/httpx"
-	"deepaicode2api/internal/logx"
 	"deepaicode2api/internal/registry"
 	"deepaicode2api/internal/store"
 )
@@ -34,39 +33,6 @@ func sanitizedSettings(st store.Settings) map[string]any {
 }
 
 // --- 控制台 API ---
-
-// stateSunset 是旧全量端点的下线日期（RFC 8594 的 Sunset 头）。
-//
-// 该日期已过（2026-05-20）。按 RFC 8594，Sunset 之后资源应视为不可用，
-// 因此这里返回 410 Gone 而不是继续下发数据 —— 静默继续工作只会让调用方
-// 一直不知道需要迁移。
-const stateSunset = "Wed, 20 May 2026 00:00:00 GMT"
-
-// handleAdminState 是已下线的全量端点（保留路径是为了给出可行动的 410）。
-//
-// 为什么不是 404：404 会让调用方以为路径拼错了；410 明确「这里曾经有、
-// 现在没有了」，并且响应头里还留着 Sunset 与 successor-version。
-//
-// 为什么不是继续返回数据：该端点一次下发全部账号（603 号约 430KB），
-// 既有传输放大也有超时风险。替代方案是 overview（元信息）+
-// accounts（分页），两个都在 README「已弃用的端点」一节里给了示例。
-func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
-	// 计数器进 Prometheus：日志只能人工 grep，而「连续 N 天为 0」才是
-	// 下一步彻底删除该路由的依据。
-	s.metrics.AddDeprecatedEndpoint(r.URL.Path)
-	logx.Warn("调用了已下线的 /admin/api/state（请改用 overview + accounts 分页）",
-		"remote", r.RemoteAddr, "ua", r.UserAgent())
-
-	h := w.Header()
-	h.Set("Deprecation", "true")
-	h.Set("Sunset", stateSunset)
-	h.Add("Link", `</admin/api/overview>; rel="successor-version"`)
-
-	httpx.WriteErr(w, http.StatusGone,
-		"该端点已于 2026-05-20 下线：请改用 /admin/api/overview（元信息）"+
-			"与 /admin/api/accounts（分页账号）；两者都在 README「已弃用的端点」一节有示例",
-		"endpoint_removed")
-}
 
 func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {

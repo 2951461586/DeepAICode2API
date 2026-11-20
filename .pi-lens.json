@@ -65,7 +65,8 @@
     "string-concat-in-loop": {
       "ignorePaths": [
         "internal/respstate/history.go",
-        "internal/observe/metrics.go"
+        "internal/observe/metrics.go",
+        "internal/observe/exposition.go"
       ]
     }
   }

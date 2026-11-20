@@ -349,45 +349,6 @@ func TestAdminKeysDeleteReportsMissing(t *testing.T) {
 	}
 }
 
-// TestAdminStateGoneAfterSunset 锁定旧全量端点的下线契约。
-//
-// Sunset（2026-05-20）已过，端点必须明确失败而不是继续下发数据：
-//   - 410 Gone（不是 404：那会让人以为路径拼错）；
-//   - 保留 Sunset / Link(successor-version) 头，给出迁移方向；
-//   - 响应体是可解析的错误信封，且不含任何账号数据。
-func TestAdminStateGoneAfterSunset(t *testing.T) {
-	s, _ := newTestServer(t, nil)
-
-	rec := do(t, s, http.MethodGet, "/admin/api/state", "", "")
-	if rec.Code != http.StatusGone {
-		t.Fatalf("GET /admin/api/state = %d，期望 410", rec.Code)
-	}
-	if got := rec.Header().Get("Sunset"); got != stateSunset {
-		t.Fatalf("Sunset = %q，期望 %q", got, stateSunset)
-	}
-	if link := rec.Header().Get("Link"); !strings.Contains(link, "/admin/api/overview") ||
-		!strings.Contains(link, "successor-version") {
-		t.Fatalf("Link = %q，应指向 /admin/api/overview 并标注 successor-version", link)
-	}
-
-	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-			Type    string `json:"type"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("下线的端点也应返回合法 JSON: %v", err)
-	}
-	if payload.Error.Type != "endpoint_removed" || !strings.Contains(payload.Error.Message, "overview") {
-		t.Fatalf("错误信封应说明迁移方向: %+v", payload.Error)
-	}
-	// 不再下发任何业务字段（这是「下线」而不只是「弃用」的判据）。
-	if strings.Contains(rec.Body.String(), `"accounts"`) || strings.Contains(rec.Body.String(), `"settings"`) {
-		t.Fatalf("下线的端点不应再下发业务数据: %s", rec.Body.String())
-	}
-}
-
 // TestAdminSettingsValidation 锁定「越界设置整批拒绝、不落地一半」。
 //
 // 此前 settingsPatch.apply 逐字段用 `> 0` 兜底，越界值被静默忽略，调用方拿到

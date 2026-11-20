@@ -157,7 +157,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/usage", s.withAuth(s.handleUsage))
 
 	// 控制台 API（统一走管理鉴权 + 同源校验）
-	mux.HandleFunc("/admin/api/state", s.withAdminAuth(s.handleAdminState))
 	mux.HandleFunc("/admin/api/overview", s.withAdminAuth(s.handleAdminOverview))
 	mux.HandleFunc("/admin/api/accounts", s.withAdminAuth(s.handleAdminAccounts))
 	mux.HandleFunc("/admin/api/keys", s.withAdminAuth(s.handleAdminKeys))

@@ -4408,3 +4408,35 @@ go test -race -count=1 ./internal/poolsvc ./internal/server
 - `clientFor` 的代理缓存仍在 server：poolsvc 只需要一个「按出口取客户端」的函数值。
 - PR-5（`relay` / `adminapi`）按计划**暂缓**：拆完的收益主要是包边界好看，
   代价是给 handler 造一个 30+ 字段的 Config。
+
+## 75. 2026-11-20 `/admin/api/state` 三层退役收尾（v0.1.12）
+
+### 75.1 事实基线
+
+`GET /admin/api/state` 曾在一次响应里拍平下发全部账号（603 号约 430KB），
+控制台早已改用 `/admin/api/overview`（元信息）+ `/admin/api/accounts`（分页），
+前端对它 **0 引用**。响应头自 v0.1.4 起就带 `Deprecation` / `Sunset` /
+`Link(successor-version)`，Sunset 日期定为 **2026-05-20**。
+
+本次复核时点 2026-11-20：Sunset 已过去 6 个月，具备走完 RFC 8594 剩余两步的条件。
+
+### 75.2 三个阶段
+
+| 阶段 | 动作 | 目的 |
+| --- | --- | --- |
+| P1 | 10 处「借端点」的测试改走替代端点；新增 `gateway_deprecated_endpoint_total{path="/admin/api/state"}`；README 补「已弃用的端点」迁移小节 | 让 P3 变成纯删除，并给「还有没有人在用」一个可查询的信号 |
+| P2 | 处理器改为 `410 Gone` + 保留 `Sunset`/`Link` 头 + `type=endpoint_removed` 错误信封 | 明确失败而不是静默继续；404 会被误认为拼错路径 |
+| P3 | 删除路由 / 处理器 / `stateSunset` / 410 契约用例 / 弃用计数指标；README 改为「已下线」 | 彻底移除 |
+
+### 75.3 为什么 P2 用 410 而不是继续返回数据
+
+继续返回数据会让调用方一直不知道需要迁移，而该端点的成本随号池规模线性增长
+（429KB / 603 号，且是同步深拷贝全池）。410 同时说明了「曾经存在」与
+「迁移去哪」，比 404 更可行动。
+
+### 75.4 遗留
+
+- `docs/optimization-plan-r2.md` §P0-2 仍按「旧端点保留兼容」描述，属历史记录，
+  保留原文（该文记录的是当时的决策）。
+- `internal/server/admin_api.go` 的包注释仍提到拆分的动机是「state 一次下发
+  全部账号」，属历史说明，保留。
