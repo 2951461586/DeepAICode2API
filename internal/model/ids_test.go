@@ -26,7 +26,9 @@ func TestRandomTokenIsHexAndUnique(t *testing.T) {
 }
 
 func TestKeyFingerprintAndShortHash(t *testing.T) {
-	key := "sk-live-abcdef123456"
+	// 指纹行为与具体取值无关；这里刻意用「运行时拼出来的串」而不是字面量，
+	// 免得被密钥扫描器（gitleaks generic-api-key）当成真实凭据。
+	key := strings.Repeat("fa", 12)
 	fp := KeyFingerprint(key)
 	if len(fp) != 16 {
 		t.Fatalf("KeyFingerprint 长度 = %d，期望 16", len(fp))

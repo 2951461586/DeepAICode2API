@@ -61,6 +61,9 @@
     },
     "no-array-reverse-mutation-js": {
       "ignorePaths": ["internal/server/web/js/render/logs.js"]
+    },
+    "string-concat-in-loop": {
+      "ignorePaths": ["internal/respstate/history.go"]
     }
   }
 }

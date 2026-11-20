@@ -343,6 +343,8 @@ func (h *Store) Replay(payload map[string]any, prevID, modelID string, contextWi
 			}
 			merged = truncateHistoryWithCosts(merged, costs, limit-fixedTokens-reserve)
 			// 重算裁剪後的實際規模（含插入的說明訊息）。
+			// 整数累加（不是字符串拼接）：ast-grep 的 string-concat-in-loop
+			// 按 `+=` 匹配，这里会误报；见 .pi-lens.json 的 ignorePaths。
 			remaining := fixedTokens
 			for _, it := range merged {
 				remaining += ItemApproxTokens(it)
@@ -661,21 +663,27 @@ func (h *Store) itemsBefore(e *historyEntry) []any {
 	for i := 0; cur != nil && i <= h.max; i++ { // 有界：鏈不可能比容量更長
 		if cur.snapshot != nil {
 			out := append([]any(nil), cur.snapshot...)
-			out = append(out, cur.input...)
-			out = append(out, cur.output...)
-			for j := len(newer) - 1; j >= 0; j-- {
-				out = append(out, newer[j].input...)
-				out = append(out, newer[j].output...)
-			}
-			return out
+			out = appendEntryItems(out, cur)
+			return appendReversedEntryItems(out, newer)
 		}
 		newer = append(newer, cur)
 		cur = h.entries[cur.parent]
 	}
-	out := make([]any, 0, 16)
-	for j := len(newer) - 1; j >= 0; j-- {
-		out = append(out, newer[j].input...)
-		out = append(out, newer[j].output...)
+	return appendReversedEntryItems(make([]any, 0, 16), newer)
+}
+
+// appendEntryItems 追加一條條目的本輪增量（input + output）。
+func appendEntryItems(out []any, e *historyEntry) []any {
+	out = append(out, e.input...)
+	return append(out, e.output...)
+}
+
+// appendReversedEntryItems 按「由舊到新」追加一批條目。
+//
+// 調用方的切片是「由新到舊」收集的（沿 parent 鏈向上走），所以這裡反向遍歷。
+func appendReversedEntryItems(out []any, entries []*historyEntry) []any {
+	for j := len(entries) - 1; j >= 0; j-- {
+		out = appendEntryItems(out, entries[j])
 	}
 	return out
 }
