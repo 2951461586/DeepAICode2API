@@ -2,11 +2,6 @@ package server
 
 import (
 	"context"
-	"deepaicode2api/internal/deepai"
-	"deepaicode2api/internal/gateway"
-	"deepaicode2api/internal/httpx"
-	"deepaicode2api/internal/logx"
-	"deepaicode2api/internal/poolsvc"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +9,13 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/gateway"
+	"deepaicode2api/internal/httpx"
+	"deepaicode2api/internal/logx"
+	"deepaicode2api/internal/poolsvc"
+	"deepaicode2api/internal/proxy"
 )
 
 // openModel 在账号池上打开一次上游推理请求。
@@ -133,6 +135,19 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		// `nginx/1.24.0 (Ubuntu)`），不是上游的 JSON 语义错误：这种要记出口失败，
 		// 让该账号的出口冷却并退回全局出口（clientFor 会检查 proxyCooling）。
 		s.noteProxyResult(acct, !looksLikeHTML(payload))
+
+		// 出口被 WAF 拦（HTML 错误页）+ 账号绑了专属出口：这是**出口级**故障，
+		// 不是账号坏了。不 MarkFailure / 不 Block（否则 17 个号里几个会被无���标
+		// error 而白掉容量），只冷却出口、换下一个候选；该账号下一轮会因为出口冷却
+		// 自动改走全局出口（clientFor 看 proxyCooling），成功后状态自然恢复。
+		if proxyKey(acct) != "" && looksLikeHTML(payload) {
+			s.Pool.Release(acct.ID)
+			s.Pool.DropSticky(affinity, acct.ID)
+			s.metrics.ObserveUpstreamError(path, httpErr.Code(), httpErr.Status)
+			logx.Warn("出口被上游 WAF 拦截，已冷却该出口", "account", acctLabel(acct), "proxy", proxy.ProxyLabel(acct.Proxy))
+			lastErr = httpErr
+			continue
+		}
 
 		// 上游 0.3.19 对请求体做了形状校验（400 + "This request is not one
 		// DeepAI Code sends."）。用桌面端字段白名单 + 补 system 消息同号重试一次。
