@@ -7,6 +7,7 @@ import (
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/registry"
+	"deepaicode2api/internal/respstate"
 )
 
 // catalog 返回当前模型目录；目录为空时回落到内置兜底模型，
@@ -126,6 +127,10 @@ func adminModelViews(models []deepai.Model) []map[string]any {
 			"theosPerRequest": m.TheosPerRequest,
 			"theosPerSecond":  m.TheosPerSecond,
 			"free":            m.Free(),
+			// 有效上限（实测）：contextWindow 是上游标称值，与 /v1/models 的
+			// effective_context_window / context_body_bytes 同源。
+			"effectiveContextWindow": respstate.EffectiveContextWindow(m.ID, m.ContextWindow),
+			"contextBodyBytes":       respstate.ContextBodyBytes(),
 		})
 	}
 	return out

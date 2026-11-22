@@ -11,6 +11,7 @@ import (
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/gateway"
+	"deepaicode2api/internal/respstate"
 	"deepaicode2api/internal/store"
 )
 
@@ -107,4 +108,49 @@ func TestPassthroughNonJSONIsLogged(t *testing.T) {
 	if stats := s.Store.Stats(); stats.FailedRequests != 1 {
 		t.Fatalf("FailedRequests = %d，期望 1（Err 非空即计入失败）", stats.FailedRequests)
 	}
+}
+
+// TestReqLogRecordsOutboundBytes 锁定 issue #5 / #7 的排障字段：
+// 出站请求体字节数必须落进日志，接近上游静默截断阈值（~196 KB）时要打标记。
+func TestReqLogRecordsOutboundBytes(t *testing.T) {
+	limit := respstate.ContextBodyBytes()
+	if limit <= 0 {
+		t.Fatalf("默认字節閘門不應關閉（actual %d）", limit)
+	}
+
+	t.Run("接近上限", func(t *testing.T) {
+		s, _ := newTestServer(t, nil)
+		rl := s.newReqLog("sk-test", nil, "glm-5.3-flash", "chat", false, time.Now(), 12).
+			withOutboundBytes(limit)
+		rl.done(0, gateway.Usage{}, nil)
+
+		logs := s.Store.Logs(1)
+		if len(logs) != 1 {
+			t.Fatalf("日志条数 = %d，期望 1", len(logs))
+		}
+		if logs[0].BodyBytes != limit {
+			t.Fatalf("BodyBytes = %d，期望 %d", logs[0].BodyBytes, limit)
+		}
+		if !logs[0].BodyNearCap {
+			t.Fatal("达到上限时应标记 BodyNearCap")
+		}
+	})
+
+	t.Run("普通大小", func(t *testing.T) {
+		s, _ := newTestServer(t, nil)
+		rl := s.newReqLog("sk-test", nil, "glm-5.3-flash", "chat", false, time.Now(), 12).
+			withOutboundBytes(4096)
+		rl.done(0, gateway.Usage{}, nil)
+
+		logs := s.Store.Logs(1)
+		if len(logs) != 1 {
+			t.Fatalf("日志条数 = %d，期望 1", len(logs))
+		}
+		if logs[0].BodyBytes != 4096 {
+			t.Fatalf("BodyBytes = %d，期望 4096", logs[0].BodyBytes)
+		}
+		if logs[0].BodyNearCap {
+			t.Fatal("4 KB 不應標記 BodyNearCap")
+		}
+	})
 }

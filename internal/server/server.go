@@ -298,6 +298,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 				"api":               m.API,
 				"theos_per_request": m.TheosPerRequest,
 				"theos_per_second":  m.TheosPerSecond,
+				// context_window 是上游目录的标称值（320,000），**不是**实际可用
+				// 上限：issue #7 实测请求体约 196 KB 起上游就静默砍掉开头。
+				// 有效值单独下发，避免改标称值后与上游目录、控制台对不上。
+				"effective_context_window": respstate.EffectiveContextWindow(m.ID, m.ContextWindow),
+				"context_body_bytes":       respstate.ContextBodyBytes(),
 			},
 		})
 	}

@@ -523,3 +523,80 @@ func TestHistoryBrokenChainIsExplicit(t *testing.T) {
 		t.Fatalf("NotFound 時不應改寫 payload：%v", payload["input"])
 	}
 }
+
+// TestReplayBodyBytesCeiling 驗證 issue #7 的字節閘門：
+// 上游在請求體約 196 KB 處靜默砍掉開頭，純英文下 token 估算（1.6 B/token）
+// 要到 320k 才會觸發，攔不住；所以 replay 必須按字節提前拒絕 / 裁剪。
+func TestReplayBodyBytesCeiling(t *testing.T) {
+	newChain := func(t *testing.T) (*Store, string) {
+		t.Helper()
+		h := New(time.Hour, 10)
+		h.Remember(&Turn{Input: []any{msgItem("user", "開頭暗號 ZEBRA42")}}, "resp_0",
+			[]any{msgItem("assistant", "ok")})
+		return h, "resp_0"
+	}
+	// 250 KB ASCII：token 估算約 156k（遠低於 320k 標示值），字節已超 196,608。
+	big := strings.Repeat("a", 250000)
+
+	t.Run("默认拒绝并说明字节上限", func(t *testing.T) {
+		h, prev := newChain(t)
+		payload := map[string]any{"input": []any{msgItem("user", big)}}
+		outcome, msg := h.Replay(payload, prev, "glm-5.3-flash", 320000)
+		if outcome != TooLong {
+			t.Fatalf("250 KB 請求體應回 TooLong，實際 %v", outcome)
+		}
+		if !strings.Contains(msg, "位元組") || !strings.Contains(msg, "issue #7") {
+			t.Fatalf("錯誤訊息應說明字節閘門與 issue #7，實際：%s", msg)
+		}
+		if !strings.Contains(msg, "contextWindow") {
+			t.Fatalf("錯誤訊息仍應帶 contextWindow 供客戶端定位：%s", msg)
+		}
+	})
+
+	t.Run("truncation auto 会裁掉超长中段", func(t *testing.T) {
+		// 60 輪、每輪 5 KB：總請求體 ~300 KB，但歷史可分段丟棄，
+		// 與「單則訊息本身就超限」不同（後者只能回 TooLong）。
+		h := New(time.Hour, 100)
+		h.Remember(&Turn{Input: []any{msgItem("user", "開頭暗號 ZEBRA42")}}, "resp_0",
+			[]any{msgItem("assistant", "ok")})
+		prev := "resp_0"
+		chunk := strings.Repeat("b", 5000)
+		for i := range 60 {
+			id := "resp_" + itoaApprox(i+1)
+			h.Remember(&Turn{Parent: prev, Input: []any{msgItem("user", chunk)}}, id,
+				[]any{msgItem("assistant", "ok")})
+			prev = id
+		}
+		payload := map[string]any{
+			"input":      []any{msgItem("user", "最新提問")},
+			"truncation": "auto",
+		}
+		outcome, msg := h.Replay(payload, prev, "glm-5.3-flash", 320000)
+		if outcome != OK {
+			t.Fatalf("truncation:auto 應成功，實際 %v（%s）", outcome, msg)
+		}
+		items, _ := payload["input"].([]any)
+		if !hasItemText(items, "ZEBRA42") {
+			t.Fatalf("裁剪後仍應保留開頭：%v", items)
+		}
+		if !hasItemText(items, "自動省略") {
+			t.Fatalf("裁剪後應插入省略標記：%v", items)
+		}
+		raw, err := json.Marshal(payload["input"])
+		if err != nil {
+			t.Fatalf("序列化裁剪結果失敗: %v", err)
+		}
+		if limit := ContextBodyBytes(); limit > 0 && len(raw) > limit {
+			t.Fatalf("裁剪後 input 仍有 %d 位元組，超過上限 %d", len(raw), limit)
+		}
+	})
+
+	t.Run("环境变量可关闭字节闸门", func(t *testing.T) {
+		t.Setenv("DEEPAI2API_CONTEXT_BODY_BYTES", "0")
+		h, prev := newChain(t)
+		payload := map[string]any{"input": []any{msgItem("user", big)}}
+		if outcome, msg := h.Replay(payload, prev, "glm-5.3-flash", 320000); outcome != OK {
+			t.Fatalf("關閉字節閘門後應放行（token 未超限），實際 %v（%s）", outcome, msg)
+		}
+	})
+}

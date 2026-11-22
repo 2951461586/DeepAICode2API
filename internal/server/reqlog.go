@@ -6,6 +6,8 @@ import (
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/gateway"
+	"deepaicode2api/internal/logx"
+	"deepaicode2api/internal/respstate"
 	"deepaicode2api/internal/store"
 )
 
@@ -27,6 +29,11 @@ type reqLog struct {
 	// inMsgs / hasSys 是回喂历史的规模（消息数 / 是否带系统提示），不含正文。
 	inMsgs int
 	hasSys bool
+	// outBytes 是实际发往上游的请求体字节数（0 = 未统计）。
+	//
+	// 与 inMsgs 配合回答 issue #5 / #7 的三个问题：客户端没给历史、网关弄丢了
+	// 历史、请求体太长被上游静默砍头（实测 ~196 KB 起）。
+	outBytes int
 
 	// state 是「是否已记录」的共享标记。reqLog 是值类型（各 handler 按值传递），
 	// 所以标记必须放在指针后面：done 可能被不同分支各调一次，只有第一次生效
@@ -53,6 +60,14 @@ func (s *Server) newReqLog(key string, acct *deepai.Account, model, endpoint str
 // 不含任何正文：只用于在日志里区分「客户端没给历史」与「网关把历史弄丢了」。
 func (l reqLog) withHistory(payload map[string]any) reqLog {
 	l.inMsgs, l.hasSys = historyStats(payload)
+	return l
+}
+
+// withOutboundBytes 记录实际发往上游的请求体字节数。
+//
+// 在“已经序列化好 body” 的路径上传 len(body)；不要在日志里落正文。
+func (l reqLog) withOutboundBytes(n int) reqLog {
+	l.outBytes = n
 	return l
 }
 
@@ -95,6 +110,16 @@ func (l reqLog) doneStatus(status int, outLen int, usage gateway.Usage, err erro
 	}
 	if l.acct != nil {
 		e.Account = l.acct.ID
+	}
+	if l.outBytes > 0 {
+		e.BodyBytes = l.outBytes
+		// 90% 阈值：留一点余量给重试时补的 system 消息 / 报错前的重试。
+		if limit := respstate.ContextBodyBytes(); limit > 0 && l.outBytes >= limit*9/10 {
+			e.BodyNearCap = true
+			logx.Warn("上游请求体接近静默截断阈值（issue #7）",
+				"endpoint", l.endpoint, "model", l.model,
+				"bytes", l.outBytes, "limit", limit)
+		}
 	}
 	if err != nil {
 		e.Err = err.Error()

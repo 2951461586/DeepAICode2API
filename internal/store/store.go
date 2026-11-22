@@ -95,9 +95,18 @@ type LogEntry struct {
 	// 排障时第一眼要回答的问题就是「是客户端没给历史，还是网关把历史弄丢了」：
 	// Messages=1 通常说明调用方只发了本轮（典型是依赖 previous_response_id 续接
 	// 却走了无状态的 chat 合成路径），Sys=false 则说明连系统提示都没发。
-	Messages int    `json:"messages,omitempty"`
-	Sys      bool   `json:"system,omitempty"`
-	Err      string `json:"err,omitempty"`
+	Messages int  `json:"messages,omitempty"`
+	Sys      bool `json:"system,omitempty"`
+	// BodyBytes 是實際發往上游的請求體大小（位元組）。
+	//
+	// issue #5 的自查建議：messages / system 只能說明「有沒有帶歷史」，帶了很長
+	// 的歷史仍可能被上游靜默截斷（issue #7：請求體約 196 KB 起砍掉開頭）。
+	// 把出站字節數和 messages 放一起，才能區分「客戶端沒發歷史」「網關弄丟歷史」
+	// 與「上游截斷」。
+	BodyBytes int `json:"body_bytes,omitempty"`
+	// BodyNearCap 表示本次請求體已達安全上限的 90% 以上（僅提示，不阻斷）。
+	BodyNearCap bool   `json:"body_near_cap,omitempty"`
+	Err         string `json:"err,omitempty"`
 }
 
 // Stats 是累计统计。

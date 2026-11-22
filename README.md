@@ -10,6 +10,8 @@
 复用桌面端登录后写入的 API Key，无需另申请密钥；纯 Go 标准库实现，
 单文件约 10 MB，零外部依赖。
 
+**English: [README.en.md](README.en.md)**（完整英文版，结构与本文一致）
+
 [![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-616%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#三接口清单) [![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://img.shields.io/badge/Ask%20DeepWiki-blue.svg?labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAPoAAAD6AG1e1JrAAACIUlEQVRYw+2XP2gUQRTGv7d3JhYWQawkIBaCVWzETos0gmAnVoKNTSoLK0E7EQQrC20sBVFBtLPQRgTBtBaKjYgIQUSxiJq7fT+LvCGPJZdNLt4dQj5Y3u7sznzfzLw/s9IO/icANiniCujEfWdsQgBLxAbsbraPZcmBfcAt4DNwKQsZNfEUsAB8YRV12LfA6ZHuedg7AO7ed/c+UBcbQhbiu+6wXIM6EnZWkszMJe2Ke0n6I2la0v51hFeSMLN6OwIK6jJwEBdUYb2MAxRSz6sY4geiahFgLe1Hwq6YWe3us8AN4FQQU4QM64SPY69Xyr43fADgNjAPXHb3peSsD4FDQ0VLEjAHvIhBPS6AHvA1bBO9JPAXcHFbIRtJ5yzwIQZ9CZwAusDJENIkLqsG8DpNyIZJwSUk9wLHgakcesC1JCCjiHm1kYDNOEjptCxpSVK/8f73OFLxPLAYM3oCzEX7MXf/lJbc/8kWpA4HgQdpYI9IWAbeh83whi84cHXL+58EPBoQhnmm94EzwE3gZ2p/Dhzdbhg+TaRr01x7ftb4/jBwFzjXrCvDpmLW9crVLNeR9CaapoGemb2TdCERW1tNaBNQ8jktwmozqwtpqRNtdWAjARYk39IS12ZWRX7vmJmA71nQZgi36gN7gCvAj5xc3P0jcH7kx7Ik5IC73wsh14GZsZySow5002l4Jr0b6+m4eSyvpAn8lEzsx2QHo8RfUrlN+uPq4ksAAAAASUVORK5CYII=)](https://deepwiki.com/2951461586/DeepAICode2API)
@@ -230,6 +232,15 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
     - **`mimo-2.6-flash` → 140,000**（140k 完整，170k 起上游「靜默截斷」：
       `prompt_tokens` 掉到 5,296 ≈ 3%；上限落在 140k–170k，保守取 140k）。
     - 未知／付費模型 → `min(標示值, 320,000)`，不再一律硬壓 120k。
+    - **請求體字節閘門（2026-11-22，issue #7）**：上游真正的懸崖是**請求體約 196 KB**，
+      不是 token 數 —— 第三方網關交叉實測：195,809 B 完整讀入，196,811 B 起上游靜默丟掉開頭
+      （system / 最初幾輪），`usage.prompt_tokens` 釘在 ~40k。目錄標示 320k 在純英文下
+      （~4.2 B/token）要 ~512 KB 才會被本包的 token 估算觸發，攔不住，所以重放另加一道
+      `DEEPAI2API_CONTEXT_BODY_BYTES`（默認 `196608`，`0`／負數關閉）：超限時同樣走上面兩條
+      路徑（`truncation:auto` 裁剪或 400 明確報錯）。
+    - `/v1/models` 的 `deepai` 元信息因此新增 **`effective_context_window`**（按模型實測上限）與
+      **`context_body_bytes`**（字節閘門的值）；`context_window` 仍是上游標稱值，不篡改，
+      方便客戶端／腳本自行取用真實上限。
     - 網關重放時若超過各模型的有效窗口，先由網關裁剪並在 input 留下
       「中間歷史已省略」標記，也不讓上游偷偷砍歷史。
     - **環境變數覆寫**（排查／臨時調整用）：
@@ -264,9 +275,14 @@ OpenRouter 风格的 `provider`、`reasoning`、`reasoning_details`、`cost` 等
 `previous_response_id` 续接，不必每轮重发整段历史。非链式用法（每轮 `input` 直接带
 完整历史）行为不变，不会回歸。
 
-排障：请求日志（控制台日志页「消息」列 / `<数据文件>-logs.jsonl` 的 `messages`、
+排障：請求日志（控制台日志页「消息」列 / `<数据文件>-logs.jsonl` 的 `messages`、
 `system` 字段）记录每次请求回喂的消息条数与是否带系统提示，不含正文——
 链式续接时该条数会随轮次增长，说明历史确实被重放。
+
+2026-11-22 起同一行日志还带 **`body_bytes`**（实际发往上游的请求体字节数）与
+**`body_near_cap`**（达到 `DEEPAI2API_CONTEXT_BODY_BYTES` 的 90% 时置 `true`，
+只在日志里提示、不阻断）。`messages` 正常增长但模型仍失忆时，先看 `body_bytes`：
+超过约 196 KB 就是上游静默砍头（issue #7），而不是网关丢历史。
 
 Claude Code 只需：
 
@@ -432,6 +448,7 @@ print(client.chat.completions.create(
 | `DEEPAI2API_HISTORY_MAX_ENTRIES` | `/v1/responses` 伺服端歷史暫存最多輪次（默认 `500`） |
 | `DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW` | 重放有效上下文上限的全域覆寫（优先級最高；默认按模型查表，見上方上下文契約；`0`/負數關閉） |
 | `DEEPAI2API_CONTEXT_WINDOWS` | 按模型覆寫有效上下文上限，JSON 物件如 `{"mimo-2.6-flash":140000}`（值 `0`/負數 = 該模型不設上限；格式錯誤忽略） |
+| `DEEPAI2API_CONTEXT_BODY_BYTES` | 單次請求體安全上限（字節，默認 `196608` ≈ 192 KiB）：上游實測約 196 KB 起靜默截斷開頭（issue #7）；`0`/負數關閉 |
 | `T3CODE_HOME` / `DEEPAI_CODE_HOME` | 桌面端数据目录 |
 
 ### 诊断工具
@@ -798,6 +815,12 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   合成路径会在进程内暂存已完成响应，支持 `previous_response_id` 重放；缓存有 TTL、条目数
   与 64 MiB 总量上限，进程重启后清空。找不到历史、`conversation` / `item_reference`
   仍回明确 400；上下文超限时按「上下文契约」处理；
+- **目录标称 320k ≠ 实际可用 320k**：上游在请求体约 196 KB 处静默截断开头的 system /
+  最初几轮（issue #7 实测；纯英文约 40k tokens，西里尔文约 69k tokens 仍可读入，
+  说明判据是字节而非 token）。网关只对 `/v1/responses` 重放路径强制
+  `DEEPAI2API_CONTEXT_BODY_BYTES`（默认 196,608 B）；`/v1/chat/completions` 与
+  `/v1/messages` 保持透明代理，超限只在日志里打 `body_bytes` / `body_near_cap`——
+  客户端仍应对长会话自行压缩历史；
 - `X-DeepAI-Code-Theos` 发 `7`（0.3.41 起，2026-11-22 复核 0.3.44 / 0.3.45 未变）。上游门槛可能放宽：2026-11-19 实测 ≤7 全通过、
   8 及以上 426，此时旧车道「能用」并不代表车道是对的 —— 与上游当前车道的差异由
   `/theos` 的 `lane_version` 观测（`Server.UpstreamLane` / `LaneDrift`，控制台概览可见）；
@@ -830,6 +853,10 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   `DEEPAI2API_MASTER_KEY` 后整文件加密，请务必保证主密钥不随备份泄露；
 - 浏览器登录会换取上游 API Key 并写入状态文件；可开启整文件加密（见上）；
 - 代理 URL 含账号密码，必须只放在 `.env` / 本地台账（已 gitignore），不要提交；
+- **上游可达性**（issue #1）：网关不内置翻墙能力，`api.deepai.org` 必须能直连。
+  中国大陆用户可以把**上游请求**放进自己的代理：`PROXY_POOL` 或账号专属出口
+  （见 §6.3）；浏览器登录仍需本地能打开 DeepAI 登录页，否则用 Docker 的粘贴回调
+  完成（见 §九）。网关只复用你已有的网络，不提供也不绕过网络管制；
 - **单实例部署**：号池、限流桶、在途计数都在进程内存里，状态文件是单写者
   （`tmp + fsync + rename`）。不要把同一个 `DEEPAI2API_DATA_PATH` 挂给多个副本
   同时写，也不要期待多副本之间共享调度状态——横向扩展需要外置存储，当前不在范围内；
@@ -901,6 +928,7 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 | 文件 | 内容 | 状态 |
 | --- | --- | --- |
 | `README.md` | 总览、接口、参数、验收基线与已知坑（本文） | 维护中 |
+| `README.en.md` | 上面这份的完整英文翻译（新增 2026-11-22） | 维护中（与中文版同步） |
 | `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） | 维护中（最近复核 2026-11-22） |
 | `docs/changes.md` | 2026-11 的改造记录：根因、决策与验收（§71–§77 是最新一轮） | 维护中 |
 | `docs/lessons.md` | **工程经验沉淀**：十批压测 → 可复用规则 + 改动前检查清单 | 维护中 |

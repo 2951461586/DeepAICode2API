@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/respstate"
 )
 
 // fixtureModels 是一份覆盖各种形态的目录：免费 / 付费 / 按秒计费 / responses 端点。
@@ -67,6 +68,7 @@ func TestPublicModelsExposeDeepAIMeta(t *testing.T) {
 		for _, field := range []string{
 			"name", "reasoning", "input", "context_window", "max_tokens",
 			"premier", "free", "api", "theos_per_request", "theos_per_second",
+			"effective_context_window", "context_body_bytes",
 		} {
 			if _, ok := m.Deep[field]; !ok {
 				t.Errorf("%s: deepai 元信息缺少 %q", m.ID, field)
@@ -88,6 +90,18 @@ func TestPublicModelsExposeDeepAIMeta(t *testing.T) {
 	sec, ok := byID["paid-chat"]["theos_per_second"].(map[string]any)
 	if !ok || sec["standard"] != "0.5" {
 		t.Fatalf("theos_per_second 未透出: %#v", byID["paid-chat"]["theos_per_second"])
+	}
+
+	// context_window 保持上游标称值（320k/1M 原样），有效值另字段下发：
+	// issue #7 实测上游请求体约 196 KB 起静默截断，单靠标称值会误导客户端。
+	if got := byID["free-chat"]["context_window"]; got != float64(1048576) {
+		t.Fatalf("context_window 应保持上游标称值 1048576，实际 %v", got)
+	}
+	if got := byID["free-chat"]["effective_context_window"]; got != float64(320000) {
+		t.Fatalf("effective_context_window = %v，期望 320000（catalogContextCap）", got)
+	}
+	if got := byID["free-chat"]["context_body_bytes"]; got != float64(respstate.ContextBodyBytes()) {
+		t.Fatalf("context_body_bytes = %v，期望 %d", got, respstate.ContextBodyBytes())
 	}
 }
 

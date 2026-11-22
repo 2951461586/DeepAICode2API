@@ -267,28 +267,32 @@ func (s *Server) holdResponseBody(body io.ReadCloser, acctID string, stream bool
 }
 
 // callJSON 发起一次非流式上游请求并解析 JSON。
-func (s *Server) callJSON(ctx context.Context, path string, payload map[string]any, affinity, group, apiKey string) (map[string]any, *deepai.Account, error) {
+//
+// 第三个返回值是实际序列化后发往上游的 body 字节数：调用方要把它记进
+// 请求日志（issue #5 / #7 的排障需要，尤其区分长历史与上游静默截断）。
+func (s *Server) callJSON(ctx context.Context, path string, payload map[string]any, affinity, group, apiKey string) (map[string]any, *deepai.Account, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, nonStreamBudget)
 	defer cancel()
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, nil, fmt.Errorf("请求序列化失败: %w", err)
+		return nil, nil, 0, fmt.Errorf("请求序列化失败: %w", err)
 	}
+	outBytes := len(body)
 	resp, acct, err := s.openModel(ctx, path, body, affinity, group, apiKey, false)
 	if err != nil {
-		return nil, acct, err
+		return nil, acct, outBytes, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return nil, acct, fmt.Errorf("读取上游响应失败: %w", err)
+		return nil, acct, outBytes, fmt.Errorf("读取上游响应失败: %w", err)
 	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, acct, fmt.Errorf("上游响应解析失败: %w", err)
+		return nil, acct, outBytes, fmt.Errorf("上游响应解析失败: %w", err)
 	}
-	return out, acct, nil
+	return out, acct, outBytes, nil
 }
 
 // writeUpstreamErr 把上游错误原样（或包装后）返回给客户端。

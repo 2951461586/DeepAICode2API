@@ -5276,3 +5276,67 @@ control 通道要 `host-account`，拿到 `dch_` 前缀短期令牌（`expires_i
 - `data/` 按决定不动（`proxy_pool.txt.bak-20261122-{2,3,4}` 共 19 KB、`logs.jsonl.1` 8.1 MB）；
 - 其它项目（workbuddy2api / magpie / sub2api / grok2api 等）的镜像与缓存未动
   （`docker system df` 剩下的 5.5 GB reclaimable 不是本项目的）。
+
+---
+
+## 83. 2026-11-22 远端 issue 核对：#7 请求体字节闸门 + #5 日志补充 + 英文 README（未发版）
+
+**触发**：远端 3 个 open issue 逐条核对：
+
+| Issue | 状态 | 本轮处理 |
+| --- | --- | --- |
+| #7 目录标称 320k、实测有效 ~40k（196 KB 请求体） | 复现路径成立，代码闸门缺位 | 新增字节闸门 + 有效值字段 + 日志告警 |
+| #5 上下文/失忆 | 合成路径重放已修（v0.1.9 起）；补充建议「日志加出站字节数」未做 | 请求日志新增 `body_bytes` / `body_near_cap` |
+| #1 中国大陆访问 | 纯网络可达性问题，非代码缺陷 | README/英文版新增「上游可达性」说明（可用 PROXY_POOL 承载上游请求），不新增翻墙能力 |
+
+### 83.1 #7 的根因：token 闸门拦不住纯英文长请求
+
+`internal/respstate/history.go` 原有一道按 token 的 `EffectiveContextWindow`
+（9 个免费模型 320k）。这个估算按 1.6 B/token 计（随机 ASCII 实测值），而正常
+英文约 4.2 B/token：196 KB 请求体只估到 ~122k tokens，远低于 320k，于是
+**上游在 196 KB 处静默砍头时网关完全不知道**。issue #7 与
+lavabyte/deepai-gateway 的交叉实测都把悬崖落在**请求体字节**上，不是 token 数。
+
+**实现**：
+
+- `respstate.ItemApproxBytes`：按序列化后的字节数计量（与 `ItemApproxTokens` 互补）；
+- `respstate.ContextBodyBytes()`：默认 `196608`（≈192 KiB），
+  `DEEPAI2API_CONTEXT_BODY_BYTES` 可覆写，`0`/负数关闭；
+- `Replay` 的两道闸门共用一套裁剪逻辑（`truncateHistoryByCosts` 接收单位无关的
+  `costs` + `markerCost`），token 裁剪后再按字节复量一次，避免二次裁剪过度；
+- 超限错误信息同时给出 token 估算、请求体字节、`contextWindow` 标称值与
+  `issue #7` 的实测依据；`truncation:"auto"` 仍先裁最旧中段并留省略标记。
+
+### 83.2 `/v1/models` 不篡改标称值，另下发有效值
+
+按「保持上游目录原样」的既有原则，`context_window` 仍是 320,000；新增：
+
+- `deepai.effective_context_window`：按模型实测/覆写的 token 上限
+  （与 `EffectiveContextWindow` 同源）；
+- `deepai.context_body_bytes`：字节闸门的当前值。
+
+控制台 `/admin/api/models` 同步下发 `effectiveContextWindow` / `contextBodyBytes`。
+
+### 83.3 #5 补充：请求日志记录出站字节
+
+`store.LogEntry` 新增 `body_bytes`（实际发往上游的请求体字节）与
+`body_near_cap`（≥ 上限 90% 时为 true，仅提示不阻断），并打一条 WARN。
+`/v1/chat/completions`、`/v1/messages`、`/v1/responses`（透传与合成）全部覆盖；
+`callJSON` 因此多返回一个 body 长度（两个调用点同步更新）。
+
+排障口径：`messages` 正常增长但模型仍失忆 → 先看 `body_bytes` 是否接近/超过
+196 KB；是则属上游截断（#7），不是网关丢历史。
+
+### 83.4 回归
+
+- `TestReplayBodyBytesCeiling`（3 子用例）：默认拒绝并说明字节上限；
+  `truncation:auto` 可裁掉超长中段且保留开头暗号；`DEEPAI2API_CONTEXT_BODY_BYTES=0`
+  可退回旧行为；
+- `TestPublicModelsExposeDeepAIMeta`（扩展）：标称值与有效值并存；
+- `TestReqLogRecordsOutboundBytes`（2 子用例）：字节数落盘、90% 阈值标记。
+- `go test ./...` 全绿；`go vet ./...` 干净。
+
+### 83.5 英文 README
+
+新增 `README.en.md`：与 `README.md` 同结构的完整翻译，顶部互链；
+中文版文档索引同步登记，后续两版需一起改。

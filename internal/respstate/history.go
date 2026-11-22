@@ -309,6 +309,7 @@ func (h *Store) Replay(payload map[string]any, prevID, modelID string, contextWi
 	// 目錄標示（mimo-flash 140k、glyph 256k），其餘 9 個免費模型可吃滿 320k。
 	// 讓網關先裁剪並留下標記，也不要讓上游偷偷砍歷史。
 	limit := EffectiveContextWindow(modelID, contextWindow)
+	byteLimit := ContextBodyBytes()
 	instructions := jsonx.StrOf(payload["instructions"])
 	if instructions == "" {
 		instructions = inherited
@@ -317,8 +318,10 @@ func (h *Store) Replay(payload map[string]any, prevID, modelID string, contextWi
 	// 舊版只算 instructions，tools 大（幾十個 function schema）時會低估幾千
 	// token，讓「剛好超限」的請求穿過檢查、由上游靜默截斷歷史。
 	fixedTokens := ItemApproxTokens(instructions)
+	fixedBytes := ItemApproxBytes(instructions)
 	if tools, ok := payload["tools"]; ok {
 		fixedTokens += ItemApproxTokens(tools)
+		fixedBytes += ItemApproxBytes(tools)
 	}
 	// 輸出預算：客戶端要求的 max_output_tokens 也要在窗口內。不預留的話，
 	// 歷史貼著上限時上游只能二選一：截斷歷史（失憶）或超額。
@@ -326,31 +329,49 @@ func (h *Store) Replay(payload map[string]any, prevID, modelID string, contextWi
 	if n := jsonx.IntOf(payload["max_output_tokens"]); n > 0 {
 		reserve = n
 	}
-	if limit > 0 {
+	if limit > 0 || byteLimit > 0 {
 		costs := make([]int, len(merged))
-		total := fixedTokens
+		byteCosts := make([]int, len(merged))
+		total, totalBytes := fixedTokens, fixedBytes
 		for i, it := range merged {
 			costs[i] = ItemApproxTokens(it)
+			byteCosts[i] = ItemApproxBytes(it)
 			total += costs[i]
+			totalBytes += byteCosts[i]
 		}
-		if total+reserve > limit {
+		overTokens := limit > 0 && total+reserve > limit
+		overBytes := byteLimit > 0 && totalBytes > byteLimit
+		if overTokens || overBytes {
 			if jsonx.StrOf(payload["truncation"]) != "auto" {
-				return TooLong, "重放後的請求（對話歷史 + 工具定義）約 " + itoaApprox(total) +
-					" tokens" + reserveNote(reserve) +
-					"，超過模型有效上下文 contextWindow " + itoaApprox(limit) +
-					"（目錄標示 " + itoaApprox(contextWindow) +
-					"）；請由客戶端壓縮歷史，或於請求設定 \"truncation\":\"auto\" 由網關自動裁減最舊中段。"
+				return TooLong, tooLongMessage(limit, byteLimit, contextWindow, total, totalBytes, reserve)
 			}
-			merged = truncateHistoryWithCosts(merged, costs, limit-fixedTokens-reserve)
+			marker := historyTruncMarker()
+			if overTokens {
+				merged = truncateHistoryByCosts(merged, costs, limit-fixedTokens-reserve, ItemApproxTokens(marker))
+			}
+			if byteLimit > 0 {
+				// token 裁剪可能已經把請求體壓到字節上限下，重新量一次再決定。
+				byteCosts = make([]int, len(merged))
+				totalBytes = fixedBytes
+				for i, it := range merged {
+					byteCosts[i] = ItemApproxBytes(it)
+					totalBytes += byteCosts[i]
+				}
+				if totalBytes > byteLimit {
+					merged = truncateHistoryByCosts(merged, byteCosts, byteLimit-fixedBytes, ItemApproxBytes(marker))
+				}
+			}
 			// 重算裁剪後的實際規模（含插入的說明訊息）。
 			// 整数累加（不是字符串拼接）：ast-grep 的 string-concat-in-loop
 			// 按 `+=` 匹配，这里会误报；见 .pi-lens.json 的 ignorePaths。
-			remaining := fixedTokens
+			remaining, remainingBytes := fixedTokens, fixedBytes
 			for _, it := range merged {
 				remaining += ItemApproxTokens(it)
+				remainingBytes += ItemApproxBytes(it)
 			}
-			if remaining+reserve > limit {
-				return TooLong, "truncation:auto 無法將對話壓至模型有效上下文 contextWindow " + itoaApprox(limit) + " tokens" + reserveNote(reserve) + "；請先縮短單則訊息或工具輸出。"
+			if (limit > 0 && remaining+reserve > limit) || (byteLimit > 0 && remainingBytes > byteLimit) {
+				return TooLong, "truncation:auto 無法將對話壓至安全範圍：" +
+					tooLongMessage(limit, byteLimit, contextWindow, remaining, remainingBytes, reserve)
 			}
 		}
 	}
@@ -371,13 +392,21 @@ func reserveNote(reserve int) string {
 	return "（已為 max_output_tokens 預留 " + itoaApprox(reserve) + " tokens）"
 }
 
-// truncateHistoryWithCosts 裁掉最舊的中段輪次：保留開頭（系統訊息 + 第一則
-// 使用者訊息，通常是重要背景/暗號）與最近可容納的尾段；中間插入一則說明訊息。
+// truncateHistoryWithCosts 是 truncateHistoryByCosts 的 token 便捷封裝。
 //
 // budget 是「可分配給對話 item 的 token 預算」，呼叫方已扣除 instructions /
 // tools；說明訊息自身的 token 由本函式再扣。costs 由呼叫方一次算好，避免同一批
 // item 被反覆 JSON 序列化（replay 路徑下每輪都要估算整條歷史）。
 func truncateHistoryWithCosts(items []any, costs []int, budget int) []any {
+	return truncateHistoryByCosts(items, costs, budget, ItemApproxTokens(historyTruncMarker()))
+}
+
+// truncateHistoryByCosts 裁掉最舊的中段輪次：保留開頭（系統訊息 + 第一則
+// 使用者訊息，通常是重要背景/暗號）與最近可容納的尾段；中間插入一則說明訊息。
+//
+// costs 的單位由呼叫方決定（token 或字節）；markerCost 是同一單位的說明訊息成本。
+// 用同一份裁剪邏輯服務兩道閘門（token 估算 + 請求體字節），避免兩份實作走樣。
+func truncateHistoryByCosts(items []any, costs []int, budget, markerCost int) []any {
 	if budget <= 0 || len(items) <= 2 {
 		return items
 	}
@@ -390,7 +419,7 @@ func truncateHistoryWithCosts(items []any, costs []int, budget int) []any {
 	marker := historyTruncMarker()
 	// 說明訊息也佔 token：不先扣掉，裁剪結果會剛好超出預算，讓 replay
 	// 誤判「壓不下去」而回 400（issue #5 的續接在邊界上偶發失敗）。
-	avail := budget - ItemApproxTokens(marker)
+	avail := budget - markerCost
 	if avail < 1 {
 		avail = 1
 	}
@@ -518,6 +547,58 @@ var perModelContextWindow = map[string]int{
 // catalogContextCap 是目錄標示值的通用上限；目前所有模型標示值皆 ≤ 320k。
 const catalogContextCap = 320000
 
+// defaultContextBodyBytes 是上游請求體體積的保守上限（位元組）。
+//
+// 2026-11-22 issue #7 與第三方網關（lavabyte/deepai-gateway）交叉實測：
+// api.deepai.org/deepai_code/chat/completions 在請求體約 196 KB 處開始
+// 「靜默砍頭」——保留尾部、丟掉開頭的 system / 最初幾輪，usage.prompt_tokens
+// 釘在 ~40k；195,809 B 仍完整，196,811 B 已被丟棄。
+//
+// 為什麼不能只靠 token 估算：目錄標示 320k，但純英文 ~4.2 B/token，196 KB 只有
+// 約 40k tokens；本包的 ItemApproxTokens 對英文取 1.6 B/token（偏保守），
+// 320k token 上限要到 ~512 KB 才會觸發，根本攔不住。按字節判也解釋了為什麼
+// 同樣 40k tokens 的西里爾文（≈193 KB）仍能完整讀入。
+const defaultContextBodyBytes = 196608
+
+// ContextBodyBytes 返回單次請求允許發往上游的請求體上限（位元組）。
+//
+// DEEPAI2API_CONTEXT_BODY_BYTES 可覆寫；0 / 負數表示關閉這道閘門
+// （回到只看 token 估算的舊行為）。
+func ContextBodyBytes() int {
+	if raw := strings.TrimSpace(os.Getenv("DEEPAI2API_CONTEXT_BODY_BYTES")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			if n <= 0 {
+				return 0
+			}
+			return n
+		}
+	}
+	return defaultContextBodyBytes
+}
+
+// tooLongMessage 生成超限錯誤：同時交代 token 估算與請求體字節，
+// 讓調用方能判斷撞的是哪一道閘門。
+func tooLongMessage(limit, byteLimit, catalog, tokens, bytes, reserve int) string {
+	msg := "重放後的請求（對話歷史 + 工具定義）約 " + itoaApprox(tokens) + " tokens" + reserveNote(reserve)
+	if byteLimit > 0 {
+		msg += "、請求體約 " + itoaApprox(bytes) + " 位元組"
+	}
+	msg += "，超過"
+	switch {
+	case limit > 0 && byteLimit > 0:
+		msg += "模型有效上下文 contextWindow " + itoaApprox(limit) + "（目錄標示 " + itoaApprox(catalog) +
+			"）與請求體安全上限 " + itoaApprox(byteLimit) + " 位元組（上游實測約 " +
+			itoaApprox(defaultContextBodyBytes) + " 位元組起會靜默截斷開頭，見 issue #7）"
+	case limit > 0:
+		msg += "模型有效上下文 contextWindow " + itoaApprox(limit) + "（目錄標示 " + itoaApprox(catalog) + "）"
+	default:
+		msg += "請求體安全上限 " + itoaApprox(byteLimit) + " 位元組（上游實測約 " +
+			itoaApprox(defaultContextBodyBytes) + " 位元組起會靜默截斷開頭，見 issue #7）"
+	}
+	msg += "；請由客戶端壓縮歷史，或於請求設定 \"truncation\":\"auto\" 由網關自動裁減最舊中段。"
+	return msg
+}
+
 var (
 	ctxOverridesMu  sync.Mutex
 	ctxOverridesRaw string
@@ -612,6 +693,19 @@ func ItemApproxTokens(item any) int {
 	}
 	flush()
 	return tokens
+}
+
+// ItemApproxBytes 返回 item 序列化後的位元組數。
+//
+// 與 ItemApproxTokens 互補：上游的截斷懸崖實測是「請求體 ~196 KB」而不是
+// token 數（見 defaultContextBodyBytes），純英文下 token 估算會晚 2.5 倍才
+// 觸發，因此還需要一道按字節的閘門。
+func ItemApproxBytes(item any) int {
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return 0
+	}
+	return len(raw)
 }
 
 func itoaApprox(n int) string {
