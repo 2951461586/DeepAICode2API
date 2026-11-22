@@ -5340,3 +5340,18 @@ lavabyte/deepai-gateway 的交叉实测都把悬崖落在**请求体字节**上�
 
 新增 `README.en.md`：与 `README.md` 同结构的完整翻译，顶部互链；
 中文版文档索引同步登记，后续两版需一起改。
+
+### 83.6 上线（2026-11-23 00:29 CST，`sh scripts/deploy.sh`）
+
+- 服务器 `/root/DeepAICode2API` 原为 detached `c77fe8d`（`v0.1.22`），先切回 `main`
+  再 ff 到 `bfe30d9`；工作区无本地改动；
+- 构建并启动镜像
+  `deepaicode2api:local-20261123-v0.1.22-7-gbfe30d9-bfe30d9`；健康检查通过；
+- `/healthz` 200：`accounts=17 ready=17 lane=7 lane_drift=0 models=27
+  version=v0.1.22-7-gbfe30d9`；
+- **线上实测新字段已生效**：`GET /admin/api/models` 每条带
+  `contextBodyBytes:196608` 与 `effectiveContextWindow`（`glm-5.3-flash` 为 320000）；
+- 上一版镜像 `local-20261122-v0.1.22-4-gdaa4e0b-daa4e0b` 保留，回滚：
+  `DEEPAI2API_IMAGE=deepaicode2api:local-20261122-v0.1.22-4-gdaa4e0b-daa4e0b docker compose up -d --no-build`；
+- 宿主发布地址为 `127.0.0.1:10088`（`DEEPAI2API_ADDR`，nginx 终止 TLS），
+  容器内健康检查用 `127.0.0.1:10087`，排障时别混。
