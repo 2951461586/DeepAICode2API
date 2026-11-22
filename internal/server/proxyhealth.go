@@ -2,7 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -103,12 +107,18 @@ func (s *Server) proxyUsable(acct *deepai.Account) bool {
 	return fresh && e.ok
 }
 
-// probeProxy 在后台跑一次 CONNECT 探测并落缓存。
+// probeProxy 在后台跑一次出口预检并落缓存。
+//
+// 两步都不省：
+//  1. CONNECT 到上游 host:443 —— 证明 TCP/TLS/代理隧道通；
+//  2. 经出口真发一次 `GET /deepai_code/theos`（不带 Api-Key）—— 证明这个出口 IP
+//     没有被上游 WAF 拦。2026-11-22 踩过：6 条新出口 CONNECT 全通，其中 3 条
+//     一请求就 `403 <html>nginx/1.24.0`，只有发真请求才能分辨。
 func (s *Server) probeProxy(key string) {
 	target := s.upstreamTarget()
 	ctx, cancel := context.WithTimeout(context.Background(), proxyProbeTimeout)
 	defer cancel()
-	err := proxy.Probe(ctx, key, target)
+	err := s.probeExit(ctx, key)
 
 	s.probeMu.Lock()
 	if s.probes == nil {
@@ -123,6 +133,57 @@ func (s *Server) probeProxy(key string) {
 		return
 	}
 	logx.Info("出口代理可用，已启用专属出口", "proxy", proxy.ProxyLabel(key))
+}
+
+// probeExit 是出口预检的两步组合：CONNECT 隧道 + 一次真实 GET。
+func (s *Server) probeExit(ctx context.Context, raw string) error {
+	if err := proxy.Probe(ctx, raw, s.upstreamTarget()); err != nil {
+		return err
+	}
+	u, err := proxy.Parse(raw)
+	if err != nil {
+		return err
+	}
+	tr := &http.Transport{
+		Proxy:               http.ProxyURL(u),
+		TLSHandshakeTimeout: 8 * time.Second,
+		ForceAttemptHTTP2:   true,
+	}
+	client := &http.Client{Transport: tr, Timeout: proxyProbeTimeout}
+
+	origin := deepai.DefaultOrigin
+	if s.Up != nil && strings.TrimSpace(s.Up.Origin) != "" {
+		origin = s.Up.Origin
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(origin, "/")+"/deepai_code/theos", nil)
+	if err != nil {
+		return err
+	}
+	// 与桌面端/网关同形：不带 Api-Key（不消耗额度），只为了看出口能不能被上游接受。
+	req.Header.Set("accept", "*/*")
+	req.Header.Set("user-agent", "node")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return classifyProbeResponse(resp.StatusCode, body)
+}
+
+// classifyProbeResponse 把一次出口预检的结果分成「可用 / 被拦」。
+//
+// 判据只有一条：**HTML 错误页 = 出口被拦/WAF**；JSON 的 4xx/5xx 都是上游业务层的
+// 正常响应（426 车道不对、401 缺 Key、429 限流…），说明隧道与出口都是好的。
+func classifyProbeResponse(status int, body []byte) error {
+	if status == 0 {
+		return errors.New("出口预检无响应")
+	}
+	if looksLikeHTML(body) && status >= 400 {
+		return fmt.Errorf("出口被上游拦截（HTTP %d，HTML 错误页）", status)
+	}
+	return nil
 }
 
 // upstreamTarget 是探测用的 CONNECT 目标（上游 host:port）。

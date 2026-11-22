@@ -93,3 +93,31 @@ func TestWAF403CoolsExitWithoutBlankingAccount(t *testing.T) {
 		t.Fatalf("冷却出口数 = %d，期望 1", s.ProxyCoolingCount())
 	}
 }
+
+// TestClassifyProbeResponse 固化出口预检的判据：
+// 只有「HTML 错误页」才算被拦；JSON 的 4xx/5xx 是上游业务层响应（426 车道 /
+// 401 缺 Key / 429 限流），说明隧道和出口都是好的，不能误判成坏出口。
+func TestClassifyProbeResponse(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		ok     bool
+	}{
+		{"426 车道不对（JSON）", http.StatusUpgradeRequired, `{"error":{"code":"lane_version_unsupported"}}`, true},
+		{"401 缺 Key（JSON）", http.StatusUnauthorized, `{"error":{"code":"auth_required"}}`, true},
+		{"200 正常", http.StatusOK, `{"enabled":true}`, true},
+		{"403 HTML（WAF）", http.StatusForbidden, "<html><head><title>403 Forbidden</title></head></html>", false},
+		{"502 HTML（代理网关）", http.StatusBadGateway, "<html>nginx</html>", false},
+		{"403 但 JSON（业务拒绝）", http.StatusForbidden, `{"error":{"code":"check_in_refused"}}`, true},
+	}
+	for _, c := range cases {
+		err := classifyProbeResponse(c.status, []byte(c.body))
+		if c.ok && err != nil {
+			t.Fatalf("%s：期望可用，实际 %v", c.name, err)
+		}
+		if !c.ok && err == nil {
+			t.Fatalf("%s：期望判为被拦，实际放行", c.name)
+		}
+	}
+}
