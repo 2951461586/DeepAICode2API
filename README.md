@@ -783,6 +783,11 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   `sh scripts/release.sh v0.1.5 --publish` 交叉编译各平台二进制并创建 GitHub Release
   （脚本构建前会清掉 `dist/` 里上一版的 `deepaicode2api_*` 产物：`gh release upload`
   传的是 `dist/*`，残留的旧二进制会被一起传上去）。
+- **命名规则（硬约束）**：tag 与 Release 标题**一律 `vX.X.X`（三段数字）**，
+  **不接任何描述后缀**（不要「v0.1.23 — 修复……」，不要日期、不要中文）。
+  描述写进 release notes（`dist/release-notes-<ver>.md`）与 `docs/changes.md`。
+  `release.sh` 会校验格式（不合规直接退出），并在 Release 已存在时把标题改回版本号
+  本身；控制台的更新比对只看 `tag_name`，与标题无关。
 
 ## 十、限制与说明
 

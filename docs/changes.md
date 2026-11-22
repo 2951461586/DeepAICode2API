@@ -5078,3 +5078,29 @@ v0.1.22：预检预算 6s → **14s**（预检完全在后台，只多花一次�
 1. 追加代理到 `data/proxy_pool.txt`（注释行可带空格，会自动重载）；
 2. `assign-proxy`（不带 `reassign`，只补空值）或对新号单独 `reassign`；
 3. 看日志里 `出口代理可用` / `探测失败` 两类行确认预检结果。
+
+---
+
+## 80. 发布命名规范：tag / Release 标题一律 `vX.X.X`（2026-11-22）
+
+**问题**：v0.1.16–v0.1.22 这几轮是我手工 `gh release create --title "v0.1.17 — 修复……"`
+发布的，列表里标题长短不一、带中文后缀，既不好扫、也没法机器解析（虽然有
+`tag_name` 兜底，但标题与 tag 不一致本身就是噪音）。
+
+**规则（已固化进脚本与文档）**：
+
+- tag 与 Release **标题都必须是 `vX.X.X`**（三段数字，如 `v0.1.23`）；
+- **不接任何描述后缀**：不写 `— 修复xxx`、不加日期、不加中文；
+- 描述只写在两处：`dist/release-notes-<ver>.md`（Release body）与 `docs/changes.md`。
+
+**实现**：
+
+- `scripts/release.sh`：
+  - 版本号格式校验（`^v[0-9]+\.[0-9]+\.[0-9]+$`），不合规直接退出，**不构建**；
+  - 发布时 `--title "$VER"` 恒为版本号本身；
+  - Release 已存在时（重新上传资产）顺手 `gh release edit --title "$VER"` 把标题纠回版本号；
+  - 优先用 `dist/release-notes-<ver>.md` 作为 body，缺失才退回一句指向 `docs/changes.md`；
+- 存量 7 个带后缀的 Release（v0.1.16–v0.1.22）已 `gh release edit` 改成纯版本号；
+- 控制台的更新比对读的是 `tag_name`，与标题无关，改名不影响「有新版本」提示。
+
+**现状核对**：23 个 Release 的 `tagName` 与 `name` 全部匹配 `^v[0-9]+\.[0-9]+\.[0-9]+$`。

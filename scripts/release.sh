@@ -22,6 +22,15 @@ v*) ;;
 *) VER="v$VER" ;;
 esac
 
+# 版本号规范：一律 vX.X.X（三段数字），release **标题就是版本号本身**，
+# 不接任何描述后缀 —— 描述写进 release notes（dist/release-notes-<ver>.md）
+# 与 docs/changes.md。历史上出现过「v0.1.17 — 修复……分配代理」这种标题，
+# 列表里参差不齐，也无法机器解析。
+if ! printf '%s' "$VER" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+	echo "版本号必须是 vX.X.X（例：v0.1.23），实际：$VER" >&2
+	exit 1
+fi
+
 echo "版本：$VER"
 mkdir -p dist
 
@@ -59,9 +68,17 @@ if [ "$PUBLISH" -eq 1 ]; then
 		echo "未安装 gh，跳过发布（二进制已在 dist/）"
 		exit 1
 	fi
+	NOTES="dist/release-notes-$VER.md"
+	[ -f "$NOTES" ] || NOTES=""
 	if gh release view "$VER" >/dev/null 2>&1; then
-		echo "Release $VER 已存在，改为上传 / 覆盖资产"
+		echo "Release $VER 已存在：覆盖资产并统一标题"
 		gh release upload "$VER" dist/* --clobber
+		gh release edit "$VER" --title "$VER"
+		if [ -n "$NOTES" ]; then
+			gh release edit "$VER" --notes-file "$NOTES"
+		fi
+	elif [ -n "$NOTES" ]; then
+		gh release create "$VER" dist/* --title "$VER" --notes-file "$NOTES"
 	else
 		gh release create "$VER" dist/* \
 			--title "$VER" \
