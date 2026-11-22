@@ -347,7 +347,7 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 		return
 	}
 
-	pool, err := poolsvc.LoadProxyPool()
+	pool, err := s.assignProxyPool()
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "代理池配置错误: "+err.Error(), "invalid_request_error")
 		return
@@ -370,9 +370,6 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 		}
 		return false
 	})
-	if cached := s.Pool.EnrollProxyPool(); cached != nil && cached.Len() > 0 {
-		pool = cached
-	}
 	leastUsed := func() string {
 		best := ""
 		bestN := 1 << 30

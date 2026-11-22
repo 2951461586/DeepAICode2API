@@ -47,6 +47,10 @@ type Server struct {
 	probes        map[string]probeEntry
 	probeInflight map[string]bool
 
+	// assignPool 是「分配代理」用的池：游标跨调用保留，配置（env / 文件 mtime）
+	// 变化时自动重载 —— 否则运维往 PROXY_POOL_FILE 追加新出口后必须重启网关。
+	assignPool assignPoolCache
+
 	// laneMu / laneCheckedAt 是车道探测的节流：426 会成批出现，
 	// 没有冷却就会把一次车道升级变成一轮探测风暴。
 	laneMu        sync.Mutex
