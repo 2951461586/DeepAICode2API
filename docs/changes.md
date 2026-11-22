@@ -5254,3 +5254,14 @@ control 通道要 `host-account`，拿到 `dch_` 前缀短期令牌（`expires_i
 **未做**：`machine_bound` / `network_bound` / `device_revoked` 三个新拒答码不动分类——
 客户端自己也只把它们送进 Sentry tag（全库仅 1 处字面量），语义未验证；按普通 403
 走换号即可，等上游真实出现时再定。
+
+**上线**（2026-11-22 20:40 CST，`sh scripts/deploy.sh`，镜像
+`deepaicode2api:local-20261122-v0.1.22-4-gdaa4e0b-daa4e0b`）：
+
+- 服务器 `/root/DeepAICode2API` 从 `e997e54` fast-forward 到 `daa4e0b`（含上一轮 `7c06e1d`）；
+- 健康检查通过，`/healthz` 200：`accounts=17 ready=17 lane=7 lane_drift=0 models=27
+  version=v0.1.22-4-gdaa4e0b`；
+- **线上实测 PKCE 生效**：`POST /admin/api/login/start` → `GET /login/open` 的 Location 为
+  `…/desktop_auth/?code_challenge=<43 字符>&code_challenge_method=S256&port=…&state=<64 hex>`；
+- 上一版镜像 `local-20261122-v0.1.22-e997e54` 仍在（回滚：
+  `DEEPAI2API_IMAGE=deepaicode2api:local-20261122-v0.1.22-e997e54 docker compose up -d --no-build`）。
