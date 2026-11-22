@@ -41,6 +41,12 @@ type Server struct {
 	// 调度时用来「先换出口、再换号」。进程内状态，重启即清空。
 	proxyHealth *proxy.Health
 
+	// probeMu / probes / probeInflight 是出口可用性探测的缓存：
+	// 代理串解析成功后不能直接信它，先 CONNECT 到上游验一次。
+	probeMu       sync.Mutex
+	probes        map[string]probeEntry
+	probeInflight map[string]bool
+
 	// laneMu / laneCheckedAt 是车道探测的节流：426 会成批出现，
 	// 没有冷却就会把一次车道升级变成一轮探测风暴。
 	laneMu        sync.Mutex
@@ -92,6 +98,8 @@ func New(st *store.Store) *Server {
 		Store: st, Up: deepai.NewClient(), Login: newLoginSessions(),
 		proxyClients:  map[string]*deepai.Client{},
 		proxyHealth:   proxy.NewHealth(),
+		probes:        map[string]probeEntry{},
+		probeInflight: map[string]bool{},
 		admissionWait: admissionWait,
 		limiter:       guard.NewLimiter(),
 		adminGuard:    guard.NewAdminGuard(),

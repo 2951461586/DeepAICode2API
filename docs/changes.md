@@ -4788,3 +4788,30 @@ NSIS 解包目录（468 MB）、asar 解包与两版 `binCli`（1.4 GB + 30 MB�
   19MB + `alpine:3.20` 4MB），全删会让 CN 网络下的下次构建无法拉取基座；
   改为 `/etc/cron.d/docker-gc`（每周清 168h 以上的构建缓存 + 悬空镜像）；
 - **补丁欠账**：353 个待升级包，82 天未重启 —— 已列为单独窗口执行（见 §79.7）。
+
+### 79.7 发现并修复：按账号分出口静默失效（v0.1.15）
+
+体检时顺手验证「16 个账号各绑一个住宅代理」是否真的生效，结果**没有**：
+
+```
+账号里存的出口： 06gvj…fireside.bringyour.com:7161   ← 没有 scheme
+url.Parse 的结果：Scheme="06gvj…bringyour.com" Opaque="7161" Host=""
+旧代码的判据：    if u.Host != "" { transport.Proxy = http.ProxyURL(u) }   ← 不成立
+→ 专属出口从未被设置，全部静默退回环境变量里的全局代理（mihomo socks5）
+```
+
+- **后果**：16 个号共用同一个出口 IP，「按账号分出口 / 按出口共享每日额度」
+  的设计完全没生效；`/theos` 走的是共享的美国出口（p50 2s、p95 5s+）；
+- **根因**：`host:port` 里的主机名（含点号、数字）在 `url.Parse` 眼里是合法
+  scheme，解析成功但 `Host` 为空，代码只判断了 `u.Host != ""`，没判断「有没有真的
+  解析出 scheme」；
+- **修复**：
+  - `internal/proxy/probe.go`（新）：`Parse()` 缺 scheme 时补 `http://`，
+    非 http/https/socks5 或缺少 host:port 一律显式报错；
+  - `deepai.NewClientWithFingerprint` 改用 `proxy.Parse`，解析失败记到
+    `Client.ProxyInvalid`，不再静默降级；
+  - **启用前先验证**：修好解析后，一批从未真正用过的住宅代理会突然生效，线上
+    不能直接赌。`Server.proxyUsable()` 先用 `proxy.Probe()`（HTTP CONNECT 到
+    `api.deepai.org:443`，6s 预算，结论缓存 10 分钟）确认能穿透，**通过才启用
+    专属出口**；未知 / 失败沿用全局出口（与修复前行为一致）。探测失败会留一条
+    `出口代理探测失败（沿用全局出口）` 的 WARN，带脱敏后的出口标签。

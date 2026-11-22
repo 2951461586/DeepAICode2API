@@ -19,6 +19,7 @@ import (
 
 	"deepaicode2api/internal/configenv"
 	"deepaicode2api/internal/machine"
+	"deepaicode2api/internal/proxy"
 )
 
 // maxJSONBytes 限制上游 JSON 响应体大小（模型目录 / 配额 / 搜索）。
@@ -108,6 +109,12 @@ type Client struct {
 	UserAgent string
 	Proxy     string
 
+	// ProxyInvalid 非 nil 表示 Proxy 串解析失败（缺 scheme / 不是 http|https|socks5）。
+	//
+	// 此时 transport 不会挂专属出口，请求会退回环境变量里的全局代理；
+	// 调用方可以把这件事上报到控制台，而不是静默地「以为在用专属出口」。
+	ProxyInvalid error
+
 	// Runtime 非 nil 时，车道与签到预算改为**拉取式**：每次请求现取一次。
 	//
 	// 为什么要有它：这两项都能在控制台运行期调整，此前靠 Server 主动
@@ -187,16 +194,24 @@ func NewClientWithFingerprint(proxyRaw, userAgent string) *Client {
 		ForceAttemptHTTP2:     true,
 	}
 	proxyRaw = strings.TrimSpace(proxyRaw)
-	if proxyRaw != "" {
-		if u, err := url.Parse(proxyRaw); err == nil && u.Host != "" {
-			transport.Proxy = http.ProxyURL(u)
-		}
+	// 代理串规范化：线上账号里存的是 `host:port`（没有 scheme），而 url.Parse 会把
+	// 主机名当成 scheme（点号在 scheme 字符集里合法），于是 u.Host 为空、
+	// transport.Proxy 没被设置 —— **按账号分出口静默失效**，全部退回环境变量里的
+	// 全局代理（2026-11-22 线上发现）。这里统一补 http://，解析不了就不设置，
+	// 并记在 ProxyInvalid 上供调用方判断（不静默降级）。
+	proxyURL, proxyErr := proxy.Parse(proxyRaw)
+	if proxyRaw == "" {
+		proxyErr = nil
+	}
+	if proxyErr == nil && proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	return &Client{
 		Origin:             origin,
 		Machine:            machine.ID(),
 		UserAgent:          strings.TrimSpace(userAgent),
 		Proxy:              proxyRaw,
+		ProxyInvalid:       proxyErr,
 		Instance:           newInstanceID(),
 		BrowserFingerprint: true,
 		checkIns:           newCheckInStore(),

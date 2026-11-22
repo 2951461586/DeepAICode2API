@@ -178,8 +178,15 @@ func (s *Server) nextAccount(r *http.Request) *deepai.Account {
 }
 
 // clientFor 返回账号绑定的上游客户端（按代理缓存）。
+//
+// 专属出口要先过一道可用性探测（proxyUsable）：代理串解析成功不等于能穿透，
+// 2026-11-22 线上就存在 16 个「从未真正生效」的住宅代理（缺 scheme 导致
+// 静默退回全局出口）。探测未过或未知时沿用全局客户端，行为与修复前一致。
 func (s *Server) clientFor(acct *deepai.Account) *deepai.Client {
 	if acct == nil || strings.TrimSpace(acct.Proxy) == "" {
+		return s.Up
+	}
+	if !s.proxyUsable(acct) {
 		return s.Up
 	}
 	s.proxyMu.Lock()
