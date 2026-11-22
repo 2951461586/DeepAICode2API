@@ -6,6 +6,46 @@
 
 > 抓包时间：应用版本 **0.3.20**（车道 4，2026-11-07 发布）。
 >
+> **2026-11-22 二次复核到 0.3.45（2026-11-22T04:13Z 发布，DeepAI Connect 功能轮）：wire protocol 仍零变更，只跟心跳版本号。**
+> 官方 `latest.yml` 从 0.3.44 跳到 **0.3.45**（`releaseDate` 2026-11-22T04:13:59.470Z，
+> 距上一轮 0.3.44 只隔约 5.7 小时）；x64 `sha512` = `ASQA2PXh…`（490,374,704 B）、
+> arm64 `sha512` = `f9ZAhJxu…`（470,267,728 B），下载包 sha512 与 `latest.yml` 逐字节一致。
+> `app.asar` 的 `package.json` 为 0.3.45（`t3codeCommitHash: 30429cde7441`）；
+> 复核前本机是 0.3.44.0，复核后用官方 NSIS 安装包静默升级到 **0.3.45.0**。
+>
+> `server.asar` → `apps/server/dist/binCli-C6U4jU1g.mjs`（14,896,813 B，0.3.44 为
+> `binCli-B9W8M09_.mjs` 14,870,582 B），全量 diff **107 hunk / +769 / −152**；
+> 按 `//#region` 归属 **1756 个源模块（0.3.44 为 1751）→ 41 个变、4 个新增、其余字节级不变**。
+>
+> | 复核项 | 0.3.44 | 0.3.45 |
+> | --- | --- | --- |
+> | `DEEPAI_LANE_HEADERS["X-DeepAI-Code-Theos"]` | `"7"` | **`"7"`（未抬到 8）** |
+> | `X-*` 头字面量集合（binCli 内 14 个） | — | **集合零差异** |
+> | 推理路径 `/deepai_code/*` 端点 | 推理 / `/models` / `/theos` / 搜索 / `sessions/*` | **完全一致**（新增的 `/connect/*`、`/sponsored/authorize` 在协议面外） |
+> | 聊天请求体（`max_completion_tokens` / `store` / `reasoning_effort` 字面量计数） | — | **整组计数不变**（2 / 1 / 9） |
+> | `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** |
+> | beacon `v=` | `v=${version$2};up=…;pi=…;focus=…` | **同一逻辑**，`version$2`（`package-Cc0oX7hP.mjs` 的 `version`）现在报 0.3.45 |
+> | 机器指纹 `machineId.ts` | — | **未变**（不在 41 个变更模块里） |
+> | 凭据文件 `deepai-account.bin` | `{apiKey,username,isPro}` | **只增可选字段** `connect{token,expiresAt}` / `connectUnavailable`，`apiKey` 仍必填、仍明文 JSON |
+>
+> 这一轮是 **DeepAI Connect**（release notes：把 Linux 服务器链到账号，一条命令接入，
+> 断开后 agent 继续在服务器上跑）。4 个新增模块
+> `contracts/managedConnection.ts`、`shared/managed/{setup,leasedSession}.ts`、
+> `src/deepai/managedHostAccount.ts`；41 个变更模块里 `src/deepai/*` 只占 5 个：
+> `api.ts`（登录加 PKCE `code_challenge`/`code_verifier`、exchange 响应可选
+> `connect_token`（`dc_…`）、拒答码白名单多出 `email_unverified` / `machine_bound` /
+> `network_bound` / `theos_exhausted`，只进 Sentry tag）、`DeepAIAccount.ts`（`host`
+> 账号走 `credentialAccountId` = `host-account:<id>`；`/connect/*` 改用
+> `Authorization: Bearer` 而非 `Api-Key`，401/403 `device_revoked` 触发重新登录；
+> host 账号时 `/get_usage_summary` 跳过）、`localTransport.ts`（PKCE 生成）、
+> `DeepAIOptionalServices.ts`（赞助卡片 `/sponsored/authorize`，仅 `mode==="desktop"`）、
+> `DeepAIPiConnection.ts`（`models.json` 写入前做幂等比对 + `EPERM/EBUSY/EACCES` 重试、
+> `settings.json` 损坏时备份 + `catchTags` 修未捕获超时）。`managedHostAccount.ts` 的
+> `dch_` 短期令牌（≤900 s）**只在内存里**封装成 `apiKey`+`host{accountId,expiresAt}`，不落盘。
+>
+> → 结论：`deepai.AppVersion` 跟到 **0.3.45**，车道仍发 `7`，协议逻辑、请求头、
+> 请求体与指纹全部不改；网关的凭据导入用 `encoding/json` 解码，多出的可选字段自动忽略。
+>
 > **2026-11-22 复核到 0.3.44（2026-11-21T22:31Z 发布）：wire protocol 仍零变更，只跟心跳版本号。**
 > 官方 `latest.yml` 从 0.3.43 跳到 **0.3.44**（`releaseDate` 2026-11-21T22:31:45.367Z，
 > 比上一轮 0.3.43 复核晚约 28 小时）；x64 `sha512` = `haSxCvh0…`（490,345,232 B）、
@@ -216,7 +256,7 @@
 
 | 标记 | 含义 | 怎么复核 |
 | --- | --- | --- |
-| **【源码级】** | 白盒确认：读的是 0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`，打包进 `dist/binCli-*.mjs`） | 解包 asar 后对着代码看，可 100% 复现 |
+| **【源码级】** | 白盒确认：读的是 0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`，打包进 `dist/binCli-*.mjs`） | 解包 asar 后对着代码看，可 100% 复现 |
 | **【实测】** | 线上真打过，附日期与样本量 | 按文中命令复跑；样本量小的结论会写明 |
 | **【推断】** | 由前两类推广而来，**尚未验证** | 照着改代码前先补一次实测 |
 
@@ -226,7 +266,7 @@
 
 ---
 
-## 1. 进程与数据目录【源码级 0.3.44】
+## 1. 进程与数据目录【源码级 0.3.45】
 
 | 项 | 值 |
 | --- | --- |
@@ -238,7 +278,7 @@
 
 自动探测顺序见 `internal/deepai/helpers.go` 的 `DesktopSecretDirs`。
 
-## 2. 上游端点【源码级 0.3.44】
+## 2. 上游端点【源码级 0.3.45】
 
 基础地址 `https://api.deepai.org`（可用 `DEEPAI_API_ORIGIN` 覆盖）。
 
@@ -257,8 +297,8 @@
 | POST | `/deepai_code/sessions/save_records` | 历史增量快照（0.3.41 新增；元数据 + 追加记录，超出 20,000 条 / 32 MiB / 64 KiB 元数据时回落到 `sessions/save`） |
 | POST | `/deepai_code/session_turn` | 会话轮次上报（202/204 视为成功） |
 | POST | `/deepai_code/review_tool` | 桌面端 auto 模式的动作审查（0.3.35 新增；15s 超时、失败降级为人工确认。网关不实现也不影响推理） |
-| GET | `/deepai_code/desktop_auth/?state=…&port=…` | 浏览器登录起点 |
-| POST | `/deepai_code/desktop_auth/exchange/` | 用 code 换 Key |
+| GET | `/deepai_code/desktop_auth/?state=…&port=…[&code_challenge=…&code_challenge_method=S256]` | 浏览器登录起点（0.3.45 起带 PKCE，两参可选） |
+| POST | `/deepai_code/desktop_auth/exchange/` | 用 code 换 Key；`{"code":…}`（旧）或 `{"code":…,"code_verifier":…}`（0.3.45） |
 | GET | `/get_usage_summary` | 订阅与用量（根路径，不在 `/deepai_code` 下） |
 | POST | `/speech_to_text` | 语音转写（表单字段 `voiceRecording`） |
 | POST | `/chat_attachments/upload` | 附件上传（需车道头） |
@@ -351,7 +391,7 @@
 `id,name,reasoning,input,contextWindow,maxTokens,premier,theosPerRequest,api`，
 没有新增字段。
 
-### 2.3 上下文续接：桌面端从不使用 `previous_response_id`【源码级 0.3.44，2026-11-22 复核】
+### 2.3 上下文续接：桌面端从不使用 `previous_response_id`【源码级 0.3.45，2026-11-22 复核】
 
 issue #5（“模型失忆”）要回答的第一个问题是「上游/客户端到底支持不支持链式续接」。
 把 0.3.41 的 `apps/server/dist/binCli-DAkBc9bP.mjs`（14.8 MB，即 t3code server
@@ -385,12 +425,12 @@ issue #5 的「每轮发完整历史」契约仍成立。
 3. 因此网关的处理是：透传路径原样转发（由上游决定），合成路径（chat 模型）
    直接 400 `unsupported_parameter` —— 静默忽略等于把对话截成一问一答。
 
-## 3. 请求头【源码级 0.3.44】
+## 3. 请求头【源码级 0.3.45】
 
 | 头 | 值 | 作用 |
 | --- | --- | --- |
 | `Api-Key` | 账号 API Key | **鉴权走这个头，不是 `Authorization`** |
-| `X-DeepAI-Code-Theos` | `7` | 计费车道版本（0.3.41 起；2026-11-22 复核 0.3.44 未变）；门槛是服务端行为，2026-11-19 起 ≤7 全通过、8 及以上 426，见下方「车道版本门槛」 |
+| `X-DeepAI-Code-Theos` | `7` | 计费车道版本（0.3.41 起；2026-11-22 复核 0.3.44 / 0.3.45 未变）；门槛是服务端行为，2026-11-19 起 ≤7 全通过、8 及以上 426，见下方「车道版本门槛」 |
 | `X-DeepAI-Code-Instance` | 16 字节随机数的 hex（每进程一次） | 进程实例标识，随所有 JSON 请求发出 |
 | `X-DeepAI-Code-Machine` | `sha256(小写原始机器 UUID)` | 按天发放免费额度；计量模型缺失时 `machine_required` |
 | `X-Session-Affinity` | 任意会话 id | 会话粘性（body 的 `prompt_cache_key` 同效） |
@@ -449,11 +489,16 @@ issue #5 的「每轮发完整历史」契约仍成立。
 > `mountDeepAIApi` 的普通头与 `/theos` 分支均 **0 hunk**；只有 `v=`
 > 背后的 `version$2` 跟着打包版本变成 0.3.42。
 >
+> **2026-11-22 用 0.3.45 复核：同上，且这一轮 `api.ts` 的改动全在登录 / 上报侧**
+> （PKCE、`connect_token`、拒答码白名单），车道头、beacon、`checkInHeaders()` 与
+> `/theos` 分支 **0 hunk**；新增的 `/connect/*` 走 `Authorization: Bearer dc_…`，
+> 是账号/远程主机管理面，与推理鉴权（`Api-Key`）互不影响。
+>
 > **2026-11-22 用 0.3.44 复核：同上（0.3.43 当时的复核同样如此）。** `DEEPAI_LANE_HEADERS` 仍逐字未动，
 > `deepAIBeacon` 仍 `v=${version$2};up=…;pi=…;focus=…`；`src/deepai/api.ts` 唯一的
 > 新增是两段注释 + `deepAIFailureCode()`（错误码归因，不上行）。
 >
-> ⚠ **0.3.43 新增 ToS 声明注释（0.3.44 仍在）**（`src/deepai/api.ts`，就在
+> ⚠ **0.3.43 新增 ToS 声明注释（0.3.44 / 0.3.45 仍在）**（`src/deepai/api.ts`，就在
 > `DEEPAI_LANE_HEADERS` 上方）：援引 DeepAI ToS 第 4 条，明写这些头与签到是
 > 「DeepAI Code 应用自识别用」，不允许复制进其它客户端。这是**文本声明，不改行为**，
 > 但 README 的合规说明已引用它。
@@ -661,6 +706,23 @@ DeepAI 有两条社交登录实现，**都必须在浏览器里完成**——服
 控制台「浏览器登录」）。Google 号也可以先在桌面端登录，再 `action=import`
 导入凭据。
 
+**0.3.45 起登录加了 PKCE（2026-11-22 实测）**：桌面端 authorize URL 带
+`code_challenge=<base64url(sha256(verifier))>` + `code_challenge_method=S256`，
+exchange body 带 `code_verifier`（两者都是 43 字符 base64url，verifier 为 32 字节随机数）。
+上游当前是「可选但在校验」：
+
+| 请求 | 结果 |
+| --- | --- |
+| `?state=<64hex>&port=…`（无 challenge） | 200，响应体与带 challenge 的完全相同（md5 一致） |
+| `?state=…&code_challenge=<43字符>S256` | 200，逐字节相同 |
+| `?state=…&code_challenge=xx` | **400 `Invalid sign-in proof.`**（按格式校验） |
+| `?state=probe123&…`（state 过短） | 400 `Invalid desktop sign-in request.` |
+| `POST exchange/`：`{code}` / `{code,code_verifier}` / 仅 `{code_verifier}` | 三种都只回 `{"error":"invalid code"}`，**没有 verifier 缺失类错误** |
+
+所以非 PKCE 会话仍可用，但已进入「能跑通≠姿势对」（同车道门槛）的状态。
+本项目默认跟随桌面端发 PKCE（`internal/deepai/pkce.go` + `SignInURL`/`ExchangeCode`），
+`DEEPAI2API_LOGIN_PKCE=0` 可退回旧形态。
+
 ## 5. 已知坑【实测 2026-11-07 ~ 11-08】
 
 - **不要跟随上游 302**：无效 Key 会跳登录页，跟随会把鉴权失败伪装成 200。
@@ -676,7 +738,7 @@ DeepAI 有两条社交登录实现，**都必须在浏览器里完成**——服
   （客户端会主动过滤它）。
 - SSE 里同一事件可能有多行 `data:`，按规范用 `\n` 拼接后再解析。
 
-## 5.1 签到（check-in）【源码级 0.3.44 + 实测】
+## 5.1 签到（check-in）【源码级 0.3.45 + 实测】
 
 - `/theos` 是签到通道：成功（200）与拒绝（403）都会带
   `check_in:{nonce,seconds=600}`。
@@ -684,7 +746,7 @@ DeepAI 有两条社交登录实现，**都必须在浏览器里完成**——服
   与心跳 `X-DeepAI-Code-Beacon: v=<版本>;up=<秒>;pi=<0\|1>`（`focus` 可选，
   只在窗口焦点状态已知时才出现）。
 - 0.3.30 起 `pi` 也变成**可选**：`piActive === null`（本进程还没转发过
-  推理）时整段省略，所以 `v=0.3.44;up=12` 这种两段式心跳是合法的。
+  推理）时整段省略，所以 `v=0.3.45;up=12` 这种两段式心跳是合法的。
   网关恒发 `pi=<0|1>` 与桌面端“已转发过”的状态等价，上游不挑格式。
 - 重新签到的时机是 `seconds/2`（默认 300s）；推理前会先确保签到（失败不阻塞）。
 - 推理请求本身**不带** check-in / beacon，只带车道、实例、机器指纹与 `Api-Key`。
@@ -782,9 +844,9 @@ GET /deepai_code/theos lane=4 → 403
   `glm-5.3-flash` 逐个试 `low/high/xhigh/max`，全部 200。0.3.37 的
   `thinkingLevelMap` 只给前两个模型暴露 `max` / `xhigh`（桌面端下拉），不是服务端限制。
 
-## 5.3 指纹与工具调用：网关侧的硬约束【实测 + 源码级 0.3.44】
+## 5.3 指纹与工具调用：网关侧的硬约束【实测 + 源码级 0.3.45】
 
-- **Linux 机器指纹只认 systemd machine-id**：0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 的 `detect()` 在 Linux 上只读
+- **Linux 机器指纹只认 systemd machine-id**：0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 的 `detect()` 在 Linux 上只读
   `/etc/machine-id` → `/var/lib/dbus/machine-id`，要求 **32 位小写 hex 且非全 0**；
   `/sys/class/dmi/id/product_uuid` 已不在客户端逻辑里（无 root 读不到，固件占位值还会
   产生不稳定指纹）。网关早前先读 product_uuid，占位值会让指纹与桌面端分叉，已对齐。

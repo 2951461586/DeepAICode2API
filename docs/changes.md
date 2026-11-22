@@ -29,6 +29,7 @@
 | 未发版 | 77 | 客户端 0.3.43 同步复核：wire protocol **仍零变更**（车道仍 7），只跟心跳 `v=` + 上游新增 ToS 声明注释登记 |
 | 未发版 | 78 | 客户端 0.3.44 同步复核：wire protocol **仍零变更**（车道仍 7），只跟心跳 `v=` + 本机升级与旧装包清理 |
 | v0.1.13 | 78、79 | 客户端 0.3.44 同步 + 线上体检整改：签到预热、出口代理冷却、healthcheck / 机密出库 / deploy.sh |
+| 未发版 | 81、82 | 客户端 0.3.45 同步复核：DeepAI Connect 功能轮，wire protocol **仍零变更**（车道仍 7）+ 本机升级清理；浏览器登录跟进 PKCE（`DEEPAI2API_LOGIN_PKCE`，默认开） |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -5104,3 +5105,152 @@ v0.1.22：预检预算 6s → **14s**（预检完全在后台，只多花一次�
 - 控制台的更新比对读的是 `tag_name`，与标题无关，改名不影响「有新版本」提示。
 
 **现状核对**：23 个 Release 的 `tagName` 与 `name` 全部匹配 `^v[0-9]+\.[0-9]+\.[0-9]+$`。
+
+---
+
+## 81. 2026-11-22 客户端 0.3.45 同步复核：DeepAI Connect 功能轮，协议面仍零变更（未发版）
+
+**触发**：例行扫描。官方 `latest.yml` 从 **0.3.44** 跳到 **0.3.45**
+（`releaseDate` 2026-11-22T04:13:59.470Z，距 §78 那次 0.3.44 复核只隔约 5.7 小时，
+是 11 月里节奏最快的一轮）。release notes 报的是 **DeepAI Connect**：一条命令把
+Linux 服务器链到账号、断开后 agent 继续在服务器上跑，同时支持服务器上的
+Claude Code / Codex 安装与 DeepAI 模型并用。
+
+### 81.1 版本核实
+
+| 复核项 | 0.3.44 | 0.3.45 |
+| --- | --- | --- |
+| `latest.yml` `version` | 0.3.44 | **0.3.45** |
+| `releaseDate` | 2026-11-21T22:31Z | **2026-11-22T04:13:59Z** |
+| x64 `sha512` / `size` | `haSxCvh0…` / 490,345,232 B | `ASQA2PXh…` / **490,374,704 B** |
+| arm64 `sha512` / `size` | `ZGe5HxI2…` / 470,274,560 B | `f9ZAhJxu…` / **470,267,728 B** |
+| `app.asar` `package.json` | 0.3.44 | **0.3.45**（`t3codeCommitHash: 30429cde7441`） |
+| 本机 `ProductVersion` | 0.3.44.0 | 复核时 0.3.44.0；复核后已升级到 **0.3.45.0** |
+
+下载 `DeepAI-Code-0.3.45-x64.exe`（490,374,704 B）→ sha512 与 `latest.yml` 逐字节一致
+→ 7z 解 NSIS 的 `$PLUGINSDIR/app-64.7z` → `resources/{app,server}.asar`。
+
+### 81.2 结论：推理协议面仍然零变更，只跟心跳版本号
+
+`server.asar` → `apps/server/dist/binCli-C6U4jU1g.mjs`（14,896,813 B，0.3.44 是
+`binCli-B9W8M09_.mjs` 14,870,582 B），全量 diff **107 hunk / +769 / −152**；
+按 `//#region` 归属 **1756 个源模块（0.3.44 为 1751）→ 41 个变、4 个新增**，
+其余 1711 个字节级不变。
+
+| 复核项 | 0.3.44 | 0.3.45 | 判据 |
+| --- | --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` | `Theos: "7"` + `Instance: randomBytes(16).hex` | **逐字未动** | 字节级 |
+| `X-*` 头字面量 | 14 个（含 5 个 `X-DeepAI-Code-*`） | **集合零差异** | 字面量集合 diff |
+| 推理路径 `/deepai_code/*` 端点 | 推理 / `/models` / `/theos` / 搜索 / `sessions/*` | **完全一致** | 字面量集合 diff |
+| 聊天请求体 | `max_completion_tokens` / `"store"` / `reasoning_effort` | **字面量计数 2 / 1 / 9，`max_completion_tokens` 前后 1.5 KB 逐字一致** | 片段比对 |
+| `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** | 全库 grep |
+| beacon `v=` | `v=${version$2};up=…;pi=…;focus=…` | **同一逻辑**，`version$2`（`package-Cc0oX7hP.mjs` 的 `version`）报 0.3.45 | 源码级 |
+| 机器指纹 | `machineId.ts` | **不在变更列表**（算法与 Linux `parseLinuxMachineId` 校验未动） | region hash |
+| 内置 pi 运行时 | `pi-ai 1.3.0` | **1.3.0**，`dist/api/openai-completions.js` sha256 一致（`4b3875e5…`） | 解包 `node_modules` |
+| 凭据文件 | `{apiKey,username,isPro}` | **只增可选字段** `connect{token,expiresAt}` / `connectUnavailable` | Schema diff |
+
+### 81.3 这一轮真正改的：DeepAI Connect（协议面外）
+
+4 个新增模块：`packages/contracts/src/managedConnection.ts`、
+`packages/shared/src/managed/{setup,leasedSession}.ts`、`src/deepai/managedHostAccount.ts`。
+41 个变更模块里 `src/deepai/*` 只占 5 个，全在推理链路之外：
+
+- `api.ts`：登录加 **PKCE**（`deepAISignInUrl` 带 `code_challenge` +
+  `code_challenge_method=S256`，`exchangeDeepAICode` 带 `code_verifier`）；
+  `/desktop_auth/exchange/` 响应新增可选 `connect_token`（`^dc_[A-Za-z0-9_-]{43}$`）
+  与 `connect_unavailable: "session_limit"`；拒答码白名单加 `email_unverified` /
+  `machine_bound` / `network_bound` / `theos_exhausted`（`deepAIAccountRejectionCode()`，
+  **只进 Sentry tag，不上行**）；`credentialAccountId()` 让 host 账号用
+  `host-account:<id>` 而非 apiKey 哈希作账号标识。
+- `DeepAIAccount.ts`：凭据 Schema 加可选 `connect` / `connectUnavailable`；`/connect/*`
+  改走 `Authorization: Bearer dc_…`（不是 `Api-Key`），401 / 403 `device_revoked` 触发
+  「重新登录」；host 账号时 `/get_usage_summary` 直接跳过；`/theos` 上报加
+  `rejection` 标签。
+- `localTransport.ts`：PKCE verifier/challenge 生成（`randomBytes(32).toString("base64url")`
+  → sha256 → base64url）。
+- `DeepAIOptionalServices.ts`：赞助卡片新增 `authorizeBrowserCard()` → 上游
+  `/sponsored/authorize`，且所有入口加 `config.mode !== "desktop"` 门禁（离开桌面壳不跑）。
+- `DeepAIPiConnection.ts`：`models.json` 写入前做内容幂等比对、`rename` 对
+  `EPERM/EBUSY/EACCES` 重试 4 次并串行化；`settings.json` 解析失败从 `catchTag` 改
+  `catchTags`（修 `PiRpcTimeoutError` 未捕获）。
+
+`managedHostAccount.ts` 是新增的「托管主机账号」：向本机 `managed/state.sqlite` 的
+control 通道要 `host-account`，拿到 `dch_` 前缀短期令牌（`expires_in ≤ 900`）后
+**只在内存里**封装成 `{apiKey: dch_…, host:{accountId,expiresAt}}`，**不写凭据文件**。
+
+→ 结论：`deepai.AppVersion` 跟到 **0.3.45**，`LaneVersion` 保持 `"7"`，协议逻辑、
+请求头、请求体与指纹都不改。网关侧无需改动即可吃 0.3.45 桌面端写出的凭据：
+`credimport` 用 `encoding/json` 解码，多出的可选字段自动忽略，`apiKey` 仍必填。
+
+### 81.4 本轮改动
+
+- `internal/model/types.go`：`AppVersion` 0.3.44 → **0.3.45**，车道注释补 0.3.45 复核；
+- 注释版本号同步：`internal/deepai/client_test.go`、`internal/machine/machine.go`、
+  `internal/machine/machine_test.go`、`internal/gateway/chatbody.go`；
+- `README.md`：应用版本 / 版本链 / 车道复核日期 / 心跳 `v=` / ToS 注释标注；
+- `docs/recon.md`：顶部新增 2026-11-22 二次复核条目（0.3.45），§1 / §2 / §2.3 / §3 /
+  §5.1 / §5.3 的【源码级】标签升到 0.3.45，车道路由表与 `v=0.3.45` 心跳示例同步。
+
+### 81.5 本机升级与清理
+
+用同一个官方安装包静默升级（`DeepAI-Code-0.3.45-x64.exe /S`）：退出码 0，
+`DeepAI Code.exe` 的 `ProductVersion` 变为 **0.3.45.0**、`FileVersion` 0.3.45，
+`resources/{app,server}.asar` 与安装包内解包产物 sha256 逐字节一致（`app.asar`
+`12bd0b26…` / `server.asar` `d1944e04…`），`server.asar` 内为 `binCli-C6U4jU1g.mjs`，
+卸载注册项从 `DeepAI Code 0.3.44` 变为 `0.3.45`（单条，无重复项）。
+
+安装目录 1.4 GB，除 `resources/git/etc/{hosts,networks,protocols,services}`
+四个 git 自带文件外没有早于本次构建（2026-11-22 12:13）的残留时间戳。
+随后清理：安装包（490 MB）、NSIS 解包目录 `$PLUGINSDIR/app-64.7z` 与解开的应用树
+（0.46 + 1.29 GB）、0.3.44 的 `app.asar` / `server.asar` 副本与两版 `binCli`（0.24 + 0.03 GB）、
+`deepai-code-desktop-updater` 缓存里的 `installer.exe`（490 MB，就是本轮 0.3.45 包），
+合计约 **2.9 GB**；用户数据 `~/.deepai-code` 与 Electron 缓存保持不动。
+
+---
+
+## 82. 2026-11-22 浏览器登录跟进 0.3.45 的 PKCE（未发版）
+
+**触发**：§81 复核时发现 0.3.45 的登录链路从「state + port」改成了 PKCE
+（`deepAISignInUrl` 加 `code_challenge` + `code_challenge_method=S256`，
+`exchangeDeepAICode` 带 `code_verifier`）。本项目浏览器登录（`internal/server/login.go`
++ `deepai.SignInURL` / `ExchangeCode`）此前只发 `state`+`port`，属于**未跟进**。
+
+**先做的实测（2026-11-22，无凭据、可复现）**：
+
+| 请求 | 结果 |
+| --- | --- |
+| `GET /deepai_code/desktop_auth/?state=<64hex>&port=…`（无 challenge） | 200，正文与带 challenge 的响应 **md5 完全一致**（`be530d22…`） |
+| 同 URL + `code_challenge=<43 字符 base64url>&code_challenge_method=S256` | 200，逐字节相同 |
+| 同 URL + `code_challenge=xx` | **400 `Invalid sign-in proof.`** → 上游按格式校验 challenge |
+| 同 URL + `state=probe123`（过短） | 400 `Invalid desktop sign-in request.`（state 长度也在校验） |
+| `POST exchange/`：`{code}` / `{code,code_verifier}` / 仅 `{code_verifier}` / 带 challenge | 四种都只回 `{"error":"invalid code"}`，**没有 verifier 缺失类错误** |
+
+结论：非 PKCE 会话**当前仍可用**，但已是「能跑通≠姿势对」（与车道门槛同性质）。
+本项目选择跟随桌面端（默认开），同时留一个环境变量退路。
+
+**实现**：
+
+- `internal/deepai/pkce.go`（新增）：`PKCEParamChallenge` / `PKCEParamVerifier` /
+  `PKCEMethodParam` / `PKCEMethodS256` 常量、`PKCEChallenge()`（`base64url(sha256(verifier))`）、
+  `NewPKCE()`（32 字节随机 → 43 字符 base64url 的 verifier + challenge）、
+  `ValidPKCEVerifier()`（43 字符 base64url 格式校验）；
+- `internal/deepai/client.go`：`SignInURL(state, port, challenge)` 在 challenge 非空时带
+  S256 两参；`ExchangeCode(ctx, code, verifier)` 在 verifier 非空时把 `code_verifier`
+  放进 body（同时把响应体变量改名 `respBody`，避免与请求体混淆）；
+- `internal/server/login.go`：`loginSession` 增 `Verifier` / `Challenge`，`login/start`
+  时生成（取不到随机数就都不发，绝不发配对不上的参数），`/login/open` 跳转带 challenge，
+  本机回调与粘贴回调都回传 verifier；开关 `DEEPAI2API_LOGIN_PKCE`（`configenv.Bool`，默认 `true`）。
+
+**回归**（新增 4 条用例，全绿）：
+
+- `TestSignInURL`（扩展）：challenge 为空时不得带 PKCE 参数；
+- `TestSignInURLWithPKCE` / `TestValidPKCEVerifier`：两参成对出现、长度 43、
+  challenge = S256(verifier)、格式校验边界（过短 / 非 base64url / 43 字符合法）；
+- `TestExchangeCodeWithPKCE`：兑换 body 带 `code_verifier` 且与先前 challenge 配对；
+- `TestLoginPKCECarriedThrough`：会话生成 PKCE 对 → `/login/open` 的 Location 带
+  `code_challenge`+`S256` → 兑换请求带同一个 verifier；
+- `TestLoginPKCEDisabledByEnv`：`DEEPAI2API_LOGIN_PKCE=0` 时既不生成 verifier/challenge 也不带 challenge 参数。
+
+**未做**：`machine_bound` / `network_bound` / `device_revoked` 三个新拒答码不动分类——
+客户端自己也只把它们送进 Sentry tag（全库仅 1 处字面量），语义未验证；按普通 403
+走换号即可，等上游真实出现时再定。

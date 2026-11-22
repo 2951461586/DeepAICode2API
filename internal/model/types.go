@@ -67,8 +67,8 @@ const (
 	//      只能靠 `/theos` 的 lane_version，见 Client.LaneHook 与
 	//      internal/server 的 UpstreamLane / LaneDrift。
 	//
-	// 2026-11-20 复核 0.3.42、2026-11-21 复核 0.3.43、2026-11-22 复核 0.3.44：
-	// `DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
+	// 2026-11-20 复核 0.3.42、2026-11-21 复核 0.3.43、2026-11-22 复核 0.3.44 /
+	// 0.3.45：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
 	LaneVersion = "7"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
@@ -111,7 +111,22 @@ const (
 	// 上报（算法不变）、`api.ts` 把错误码归到 Sentry 的 `error_codes` 标签、
 	// `DeepAIAccount.ts` 把 `/models` 超时 5s → 30s（慢网提速）并给目录落盘失败
 	// 加上报与回滚。见 `docs/changes.md` §78。
-	AppVersion = "0.3.44"
+	//
+	// 0.3.44 → 0.3.45（2026-11-22T04:13Z 发布）是「DeepAI Connect」功能轮：车道仍
+	// `"7"`，14 个 `X-*` 头字面量、`/deepai_code/*` 端点集合、机器指纹、签到 /
+	// beacon 形态、聊天请求体（`max_completion_tokens` / `store` 等）与
+	// `previous_response_id`（0 处）全部逐字未变。`binCli` 全量 diff 107 hunk /
+	// +769 / −152，`//#region` 归属 1756 个模块里 41 个变 + 4 个新增，全在协议面外：
+	// 新增 `managedConnection` / `shared/managed/*` / `src/deepai/managedHostAccount.ts`
+	// （把 Linux 服务器接进账号后由服务端 `host-account` 下发 `dch_` 短期令牌，
+	// **只在内存里**封装成 `apiKey` + `host{accountId,expiresAt}`，不落盘）；登录链路
+	// 加 PKCE（`code_challenge` / `code_verifier`）与 `/desktop_auth/exchange/` 的
+	// 可选 `connect_token`（`dc_…`）；新增上游端点 `/connect/{sessions,account-client}/`
+	// 与 `/sponsored/authorize`（后者用 `X-DeepAI-Code-*` 之外的常规 api key，服务
+	// 赞助卡片，不进推理链路）。凭据文件 `deepai-account.bin` 只多了可选字段
+	// `connect{token,expiresAt}` / `connectUnavailable`，`apiKey` 仍是必填明文 JSON。
+	// 见 `docs/changes.md` §80。
+	AppVersion = "0.3.45"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。
