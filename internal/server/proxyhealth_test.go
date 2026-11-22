@@ -45,3 +45,20 @@ func TestProxyHealthTracksTransportFailures(t *testing.T) {
 		t.Fatal("nil 服务应返回 0")
 	}
 }
+
+// TestLooksLikeHTML 固化「HTML 错误页 = 出口侧拦截」的判据：
+// 只看首个非空白字节，避免把上游 JSON 错误误判成出口问题。
+func TestLooksLikeHTML(t *testing.T) {
+	cases := map[string]bool{
+		"<html><head><title>403 Forbidden</title>": true,
+		"\n  <!DOCTYPE html>":                      true,
+		`{"error":{"code":"rate_limit_exceeded"}}`: false,
+		"":        false,
+		"   \n\t": false,
+	}
+	for body, want := range cases {
+		if got := looksLikeHTML([]byte(body)); got != want {
+			t.Fatalf("looksLikeHTML(%q) = %v，期望 %v", body, got, want)
+		}
+	}
+}

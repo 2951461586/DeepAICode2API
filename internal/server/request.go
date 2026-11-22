@@ -186,7 +186,9 @@ func (s *Server) clientFor(acct *deepai.Account) *deepai.Client {
 	if acct == nil || strings.TrimSpace(acct.Proxy) == "" {
 		return s.Up
 	}
-	if !s.proxyUsable(acct) {
+	// 出口冷却中（连续传输失败 / 被 WAF 拦的 HTML 403）也退回全局出口：
+	// 这是「自动降级」而不是「弃号」——账号仍可继续服务，只是不再从这条出口出去。
+	if !s.proxyUsable(acct) || s.proxyCooling(acct) {
 		return s.Up
 	}
 	s.proxyMu.Lock()

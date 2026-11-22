@@ -143,3 +143,19 @@ func (s *Server) upstreamTarget() string {
 	}
 	return net.JoinHostPort(u.Hostname(), "443")
 }
+
+// looksLikeHTML 判断响应体是不是 HTML 错误页（WAF / 代理网关拦的，
+// 而不是上游的 JSON 错误）。只看首个非空白字节，避免整段扫描。
+func looksLikeHTML(body []byte) bool {
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '<':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}

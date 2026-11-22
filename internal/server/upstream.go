@@ -128,8 +128,11 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			continue
 		}
 		httpErr := &deepai.HTTPError{Op: "上游推理", Status: resp.StatusCode, Body: payload}
-		// 有响应就说明出口是通的（DNS/TCP/TLS/CONNECT 全过），
-		s.noteProxyResult(acct, true)
+		// 有响应说明出口是通的（DNS/TCP/TLS/CONNECT 全过）——但 HTML 错误页
+		// 是 WAF / 代理网关拦的（线上 403 `<title>403 Forbidden</title>`、
+		// `nginx/1.24.0 (Ubuntu)`），不是上游的 JSON 语义错误：这种要记出口失败，
+		// 让该账号的出口冷却并退回全局出口（clientFor 会检查 proxyCooling）。
+		s.noteProxyResult(acct, !looksLikeHTML(payload))
 
 		// 上游 0.3.19 对请求体做了形状校验（400 + "This request is not one
 		// DeepAI Code sends."）。用桌面端字段白名单 + 补 system 消息同号重试一次。
