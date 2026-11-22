@@ -5265,3 +5265,14 @@ control 通道要 `host-account`，拿到 `dch_` 前缀短期令牌（`expires_i
   `…/desktop_auth/?code_challenge=<43 字符>&code_challenge_method=S256&port=…&state=<64 hex>`；
 - 上一版镜像 `local-20261122-v0.1.22-e997e54` 仍在（回滚：
   `DEEPAI2API_IMAGE=deepaicode2api:local-20261122-v0.1.22-e997e54 docker compose up -d --no-build`）。
+
+**镜像清理**（2026-11-22 20:43 CST，按「只留当前版」执行）：
+
+- 删掉 11 个旧 `local-*` 镜像（`local-20261120-v0112-d4c9b2f` 起，到
+  `local-20261122-v0.1.22-e997e54`），`docker builder prune -f` 回收 153.6 MB 构建缓存；
+  镜像总占用 6.141 GB → 5.892 GB、构建缓存 2.457 GB → 2.303 GB；容器仍 `healthy`、`/healthz` 200；
+- **代价**：旧镜像已不存在，回滚只能重新构建（`git checkout <旧 sha> && sh scripts/deploy.sh`）。
+  下次发版若还想留回滚位，删镜像时至少留上一版标签；
+- `data/` 按决定不动（`proxy_pool.txt.bak-20261122-{2,3,4}` 共 19 KB、`logs.jsonl.1` 8.1 MB）；
+- 其它项目（workbuddy2api / magpie / sub2api / grok2api 等）的镜像与缓存未动
+  （`docker system df` 剩下的 5.5 GB reclaimable 不是本项目的）。
