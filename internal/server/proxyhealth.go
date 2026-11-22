@@ -74,8 +74,12 @@ func proxyKey(acct *deepai.Account) string {
 const (
 	// proxyProbeTTL 是探测结论的缓存时长：代理好坏是分钟级事实。
 	proxyProbeTTL = 10 * time.Minute
-	// proxyProbeTimeout 是单次 CONNECT 探测预算。
-	proxyProbeTimeout = 6 * time.Second
+	// proxyProbeTimeout 是单次出口预检预算（CONNECT + 一次真实 GET 共用）。
+	//
+	// 6s 太短：住宅代理冷启动实测 6–8s（bundle-5 首次全部超时、回探 1.1–4.4s；
+	// bundle-7 两条能用的 6.1s / 7.7s），会被误判成不可用。预检完全在后台，
+	// 宽松一点只多花一次等待，不影响任何请求。
+	proxyProbeTimeout = 14 * time.Second
 )
 
 type probeEntry struct {
