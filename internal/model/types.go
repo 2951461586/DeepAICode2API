@@ -67,7 +67,8 @@ const (
 	//      只能靠 `/theos` 的 lane_version，见 Client.LaneHook 与
 	//      internal/server 的 UpstreamLane / LaneDrift。
 	//
-	// 2026-11-20 复核 0.3.42：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
+	// 2026-11-20 复核 0.3.42、2026-11-21 复核 0.3.43、2026-11-22 复核 0.3.44：
+	// `DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
 	LaneVersion = "7"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
@@ -89,7 +90,28 @@ const (
 	// `openai-completions.js` 字节级一致。312 个 diff hunk 全落在客户端内部
 	// （agent 工具调用 / subagent、pi 进程退出码、日志目录、自更新能力、Git Bash
 	// 命令解析），不进 wire protocol。见 `docs/changes.md` §69。
-	AppVersion = "0.3.42"
+	//
+	// 0.3.42 → 0.3.43（2026-11-20T18:52Z 发布）同样**不动 wire protocol**：车道仍
+	// `"7"`，端点集合、5 个 `X-DeepAI-Code-*` 头、机器指纹、签到 / beacon 形态、
+	// 聊天请求体全部未变，pi 运行时仍 `pi-ai 1.3.0` 且 `openai-completions.js`
+	// 字节级一致。`src/deepai/*.ts` 真正动了的三处都在协议面之外：
+	// `api.ts` 新增 ToS 声明注释（禁止把请求头复制进其它客户端）+ 错误码助手；
+	// `DeepAIAccount.ts` 把模型目录缓存进 secret store、`/models` 前显式取机器号；
+	// `localTransport.ts` / `modelTransportPolicy.ts` 给本地回环错误体加 `code`。
+	// 其余 133 个变更模块是 orchestration / ACP provider / PR / source control /
+	// 终端与 Sentry 上报，对应 release notes「修复连接 DeepAI 云工作区与远程服务器」。
+	// 见 `docs/changes.md` §77。
+	//
+	// 0.3.43 → 0.3.44（2026-11-21T22:31Z 发布）依旧**只在协议面外动**：车道仍
+	// `"7"`，`/deepai_code/*` 端点集合、14 个 `X-*` 头字面量、机器指纹算法（含
+	// Linux 的 `parseLinuxMachineId`）、签到 / beacon 形态、聊天请求体全部逐字未变，
+	// 内置 pi 运行时仍 `pi-ai 1.3.0` 且 `openai-completions.js` sha256 一致。
+	// `binCli` 全量 diff 只有 13 hunk / +65 / −22，`//#region` 归属 1751 个模块里
+	// 9 个变，落在 `src/deepai/*` 的 3 个：`machineId.ts` 给 `execFile` 加启动失败
+	// 上报（算法不变）、`api.ts` 把错误码归到 Sentry 的 `error_codes` 标签、
+	// `DeepAIAccount.ts` 把 `/models` 超时 5s → 30s（慢网提速）并给目录落盘失败
+	// 加上报与回滚。见 `docs/changes.md` §78。
+	AppVersion = "0.3.44"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。

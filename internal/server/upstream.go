@@ -52,7 +52,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 	prefer := s.Pool.StickyAccount(affinity)
 	deadline := time.Now().Add(s.admissionWait)
 	for i := 0; i < maxTries; i++ {
-		acct, ok, candidates := s.Pool.Pick(group, prefer)
+		acct, ok, candidates := s.Pool.PickAvoiding(group, prefer, s.avoidCoolingProxy)
 		prefer = ""
 		if !candidates {
 			// 池里没有可调度账号（全被拦 / 分组为空）：交给 noAccountError 说明原因。
@@ -101,6 +101,9 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			s.Pool.Release(acct.ID)
 			lastErr = err
 			s.metrics.ObserveUpstreamError(path, "transport", 0)
+			// 拿不到响应：出口最可能是元凶（线上 2026-11-22 全是代理侧 504/EOF）。
+			// 记一次出口失败，后续调度会优先换出口；拿到响应就清零。
+			s.noteProxyResult(acct, false)
 			s.Pool.MarkFailure(acct.ID, err)
 			if ctx.Err() != nil {
 				break
@@ -109,6 +112,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		}
 
 		if resp.StatusCode/100 == 2 {
+			s.noteProxyResult(acct, true)
 			s.Pool.MarkResult(acct.ID, true, "")
 			s.Pool.BindSticky(affinity, acct.ID)
 			resp.Body = s.holdResponseBody(resp.Body, acct.ID, stream)
@@ -124,6 +128,8 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			continue
 		}
 		httpErr := &deepai.HTTPError{Op: "上游推理", Status: resp.StatusCode, Body: payload}
+		// 有响应就说明出口是通的（DNS/TCP/TLS/CONNECT 全过），
+		s.noteProxyResult(acct, true)
 
 		// 上游 0.3.19 对请求体做了形状校验（400 + "This request is not one
 		// DeepAI Code sends."）。用桌面端字段白名单 + 补 system 消息同号重试一次。

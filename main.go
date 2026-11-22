@@ -170,6 +170,7 @@ func main() {
 
 	go background(st, srv, stopBG)
 	go quotaGuard(srv, stopBG)
+	go checkInWarm(srv, stopBG)
 
 	go func() {
 		// 一行结构化摘要：加密状态、数据路径、号池规模这些排障第一眼看的东西

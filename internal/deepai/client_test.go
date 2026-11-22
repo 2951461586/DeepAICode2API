@@ -93,7 +93,7 @@ func TestClientSendsRequiredHeaders(t *testing.T) {
 		t.Fatalf("%s = %q，期望 %q", HeaderLane, v, LaneVersion)
 	}
 	if LaneVersion != "7" {
-		t.Fatalf("车道版本 = %q，0.3.41 / 0.3.42 客户端使用 7", LaneVersion)
+		t.Fatalf("车道版本 = %q，0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 客户端使用 7", LaneVersion)
 	}
 	if inst := got.Get(HeaderInstance); len(inst) != 32 || strings.Trim(inst, "0123456789abcdef") != "" {
 		t.Fatalf("%s = %q，期望 32 位小写 hex", HeaderInstance, inst)

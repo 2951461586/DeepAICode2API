@@ -15,6 +15,7 @@ import (
 	"deepaicode2api/internal/httpx"
 	"deepaicode2api/internal/observe"
 	"deepaicode2api/internal/poolsvc"
+	"deepaicode2api/internal/proxy"
 	"deepaicode2api/internal/registry"
 	"deepaicode2api/internal/respstate"
 	"deepaicode2api/internal/store"
@@ -35,6 +36,10 @@ type Server struct {
 	refreshMu    sync.Mutex
 	proxyMu      sync.Mutex
 	proxyClients map[string]*deepai.Client
+
+	// proxyHealth 是出口代理的健康台账（连续失败 → 冷却），
+	// 调度时用来「先换出口、再换号」。进程内状态，重启即清空。
+	proxyHealth *proxy.Health
 
 	// laneMu / laneCheckedAt 是车道探测的节流：426 会成批出现，
 	// 没有冷却就会把一次车道升级变成一轮探测风暴。
@@ -86,6 +91,7 @@ func New(st *store.Store) *Server {
 	s := &Server{
 		Store: st, Up: deepai.NewClient(), Login: newLoginSessions(),
 		proxyClients:  map[string]*deepai.Client{},
+		proxyHealth:   proxy.NewHealth(),
 		admissionWait: admissionWait,
 		limiter:       guard.NewLimiter(),
 		adminGuard:    guard.NewAdminGuard(),

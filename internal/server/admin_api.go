@@ -98,6 +98,9 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 		"checkin":             checkinStats,
 		"fallback_total":      snap.Fallback,
 		"upstream_errors":     snap.UpstreamErrs,
+		// 出口冷却数：连续传输失败的代理数（proxy.Health）。
+		// 不为 0 时说明有账号的出口正在避让，排障先看代理侧。
+		"proxy_cooling": s.ProxyCoolingCount(),
 	})
 }
 

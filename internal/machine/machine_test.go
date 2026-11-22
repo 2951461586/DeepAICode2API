@@ -63,7 +63,7 @@ func TestMachineUUIDIsStableThroughFingerprint(t *testing.T) {
 	}
 }
 
-// 与 0.3.41 / 0.3.42 桌面端 parseLinuxMachineId 对齐（0.3.37 起未变）：32 位小写 hex、非全 0。
+// 与 0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 桌面端 parseLinuxMachineId 对齐（0.3.37 起未变）：32 位小写 hex、非全 0。
 func TestParseLinuxMachineID(t *testing.T) {
 	cases := []struct {
 		raw, want string

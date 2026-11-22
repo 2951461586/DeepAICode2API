@@ -42,9 +42,9 @@
 
 ## 一、逆向结论
 
-DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.42**，车道 7；
-0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 的 wire protocol 逐项比对：
-**0.3.41 只抬了车道（6 → 7），0.3.42 在协议面上零变更（车道仍 7），其余请求头 / 指纹 / 签到 / 推理端点未变**；
+DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.44**，车道 7；
+0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 → 0.3.43 → 0.3.44 的 wire protocol 逐项比对：
+**0.3.41 只抬了车道（6 → 7），0.3.42 / 0.3.43 / 0.3.44 在协议面上零变更（车道仍 7），其余请求头 / 指纹 / 签到 / 推理端点未变**；
 新增的 `sessions/save_records` 只服务历史备份，不进推理链路）。
 真正干活的不是桌面壳，而是 `resources/server.asar` 里的 t3code server；
 它把上游能力封装成本地回环 HTTP 服务，再交给 Pi（编码 agent）调用。
@@ -65,7 +65,7 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.
 | 语音转写 | `POST https://api.deepai.org/speech_to_text`（字段 `voiceRecording`） |
 | 联网搜索 | `POST https://api.deepai.org/deepai_code/web_search` |
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
-| 协议头 | `X-DeepAI-Code-Theos: 7`（计费车道版本；0.3.41 起为 7，2026-11-20 复核 0.3.42 仍为 7）。**车道门槛是服务端行为**：2026-11-18（0.3.41 发布当天）只有 7 通过，2026-11-19 复测已放宽为 ≤7 全通过、8 及以上 426（`docs/recon.md` §3） |
+| 协议头 | `X-DeepAI-Code-Theos: 7`（计费车道版本；0.3.41 起为 7，2026-11-22 复核 0.3.44 仍为 7）。**车道门槛是服务端行为**：2026-11-18（0.3.41 发布当天）只有 7 通过，2026-11-19 复测已放宽为 ≤7 全通过、8 及以上 426（`docs/recon.md` §3） |
 | 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每个出口代理随机一次，随该代理的所有 JSON 请求发出；桌面端是每进程一次） |
 | 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1`（`focus` 只在焦点状态已知时才追加） |
 | **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
@@ -721,7 +721,20 @@ docker run -d --name deepaicode2api \
   deepaicode2api
 ```
 
-> `X-DeepAI-Code-Theos: 7` 是当前客户端（0.3.42）的车道。车道门槛由上游随时调整：
+**长期部署建议用 `scripts/deploy.sh`**（build → 不可变 tag → up → 等健康检查）：
+
+```bash
+sudo install -m 600 /dev/null /etc/deepaicode2api.env   # 机密（账号 / 口令 / 代理 / 机器指纹）
+sh scripts/deploy.sh v0.1.13                            # 部署；失败会打印日志并给出回滚命令
+DEEPAI2API_IMAGE=<旧 tag> sh scripts/deploy.sh           # 回滚到指定镜像
+```
+
+- 机密统一放 `DEEPAI2API_ENV_FILE`（默认 `/etc/deepaicode2api.env`，0600），
+  **不要**留在代码目录；`.env` 只放 `VERSION` / `DEEPAI2API_IMAGE` / `DEEPAI2API_ADDR` 这类部署参数；
+- 容器自带 `healthcheck`（镜像内 `wget /healthz`，30s 一次）与 `mem_limit: 512m`；
+  之前没有 healthcheck，进程假死时 `unless-stopped` 永远不会重启（2026-11-22 线上复盘）；
+
+> `X-DeepAI-Code-Theos: 7` 是当前客户端（0.3.44）的车道。车道门槛由上游随时调整：
 > 2026-11-18 是「只有 7」，2026-11-19 已放宽成「≤7 全通过、8 及以上 426
 > `lane_version_unsupported`」（见 `docs/recon.md` §3）。发旧车道**仍能跑通**，
 > 所以判断协议是否跟进要看 `/theos` 回的 `lane_version`（控制台概览的「上游车道」）。
@@ -777,10 +790,10 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   合成路径会在进程内暂存已完成响应，支持 `previous_response_id` 重放；缓存有 TTL、条目数
   与 64 MiB 总量上限，进程重启后清空。找不到历史、`conversation` / `item_reference`
   仍回明确 400；上下文超限时按「上下文契约」处理；
-- `X-DeepAI-Code-Theos` 发 `7`（0.3.41 起，2026-11-20 复核 0.3.42 未变）。上游门槛可能放宽：2026-11-19 实测 ≤7 全通过、
+- `X-DeepAI-Code-Theos` 发 `7`（0.3.41 起，2026-11-22 复核 0.3.44 未变）。上游门槛可能放宽：2026-11-19 实测 ≤7 全通过、
   8 及以上 426，此时旧车道「能用」并不代表车道是对的 —— 与上游当前车道的差异由
   `/theos` 的 `lane_version` 观测（`Server.UpstreamLane` / `LaneDrift`，控制台概览可见）；
-- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.42**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
+- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.44**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
 - 车道探测结果由**当前构建**验证过（`Settings.LaneBuild == deepai.LaneVersion`）时无条件信任，即使它比编译值旧；否则按 `max(存储值, 编译值)` 取较新值。探测序列从编译期车道开始，**不能先试旧车道**；
 - 请求体形状拒绝除匹配两版文案外，还兜底 `400 + code=invalid_request_error`；补形状重试仍失败时回传第二个错误；
 - Anthropic `budget_tokens` 按量级映射到 `low/medium/high/xhigh/max`（4k/16k/32k/64k 分界），`output_config.effort` 原样透传；2026-11-15 实测上游接受六档；
@@ -819,6 +832,14 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   2026-11-13 线上实测签到阻塞 292 次、均值 4.8s、53 次顶到 10s，是首包延迟的
   主要来源；下调到 2000 可显著改善延迟（代价：这次请求可能带着旧 nonce 发出，
   下一轮继续补，不会失败）；
+- **签到预热**（v0.1.13 起）：后台每 45s 扫一遍号池，把「到期」的 `/theos`
+  在请求路径之外消化掉（每轮最多 4 个号、2 并发，失败静默）。热路径仍然调
+  `EnsureCheckIn`（nonce 回传语义不变），但因为刚回传过，绝大多数会直接返回；
+  2026-11-22 线上体检发现 37 小时里 940 次请求被签到阻塞（最长吃满 10s 预算）；
+- **出口代理冷却**（v0.1.13 起）：传输失败（代理 504 / EOF / 超时）按代理串记账，
+  连续失败 30s→60s→120s…最多 10 分钟冷却；调度时优先换出口
+  （`poolsvc.PickAvoiding`），只有池里再没有别的号时才用冷却中的出口，
+  不会因此对外 429。冷却数见控制台概览的「出口冷却」；
 - **预置桌面端形状**（`preset_desktop_shape`，默认关）：对已确认需要桌面端形状的
   调用方（按 API Key 记忆 10 分钟），在首次发送前补 system 消息，省掉一次注定
   失败的 400。关闭时仍走「透传 → 400 → 补形状重试」的学习路径；
@@ -866,8 +887,8 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 | 文件 | 内容 | 状态 |
 | --- | --- | --- |
 | `README.md` | 总览、接口、参数、验收基线与已知坑（本文） | 维护中 |
-| `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） | 维护中（最近复核 2026-11-20） |
-| `docs/changes.md` | 2026-11 的改造记录：根因、决策与验收（§71–§76 是最新一轮） | 维护中 |
+| `docs/recon.md` | 逆向速查：上游端点、请求头、错误语义、复现命令（替代 HAR） | 维护中（最近复核 2026-11-22） |
+| `docs/changes.md` | 2026-11 的改造记录：根因、决策与验收（§71–§77 是最新一轮） | 维护中 |
 | `docs/lessons.md` | **工程经验沉淀**：十批压测 → 可复用规则 + 改动前检查清单 | 维护中 |
 | `docs/performance.md` | 压测数据与优化方案：单号 E2E、阶段分解、P0/P1/P2 收益测算 | 维护中（数据快照 2026-11-10） |
 | `docs/pi-lens.md` | 本仓的 pi-lens 配置说明：关了什么、为什么、怎么验证与恢复 | 维护中 |
@@ -881,6 +902,12 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 ## 十二、License
 
 MIT。本项目仅复刻本机已登录客户端的调用链路，请遵守 DeepAI 的服务条款。
+
+> **客户端自身的声明（0.3.43 新增，0.3.44 仍在）**：`server.asar` 的 `src/deepai/api.ts` 在
+> 车道头与签到旁边加了一段注释，援引 DeepAI ToS 第 4 条，明写这些请求头与签到是
+> 「DeepAI Code 应用自识别用」，**不允许复制进其它客户端**。本项目只是复用本机
+> 已登录客户端的既有链路、面向自己的账号，不做分发或代运营；如果你要把这套头
+> 用到别处，先自行确认许可。
 
 > **Logo 例外**：`docs/assets/logo.png` / `logo.ico` 取自 DeepAI Code 桌面端自身的应用图标
 > （`resources/app.asar` 内 `apps/desktop/prod-resources/icon.png`），版权归其所有者，

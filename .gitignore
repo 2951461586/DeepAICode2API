@@ -57,3 +57,6 @@ coverage.out
 *.p12
 id_rsa*
 credentials*.json
+
+# 部署时的本机 compose 覆盖（网络 / 端口 / 镜像 tag），不入库
+/docker-compose.override.yml

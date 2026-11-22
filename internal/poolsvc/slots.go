@@ -27,8 +27,29 @@ const MaxInFlightPerAccount = 2
 // 实现要点：选号在 store 里一次读完（只拷贝被选中的那个），忙号通过纯谓词
 // 排除；Acquire 只处理「检查到占用」的窄竞态，失败就排除后重试。
 func (p *Service) Pick(group, prefer string) (*deepai.Account, bool, bool) {
+	return p.pickWith(group, prefer, nil)
+}
+
+// PickAvoiding 先在没有被 avoid 排除的候选里选号；若这样会挖空整个池
+// （或者干脆没有候选），退回到「不考虑 avoid」的常规调度。
+//
+// 典型用途：某个出口代理正在冷却（见 proxy.Health），优先换到别的号；
+// 但号池只剩那一个可用号时仍然要用它 —— 宁可走一个已知慢的出口，
+// 也不要对外回 429（线上 2026-11-22：16 个号各绑一个住宅代理，
+// 经常同时有两三个出口在超时）。
+func (p *Service) PickAvoiding(group, prefer string, avoid func(*deepai.Account) bool) (*deepai.Account, bool, bool) {
+	if avoid != nil {
+		if a, ok, candidates := p.pickWith(group, prefer, avoid); ok || !candidates {
+			return a, ok, candidates
+		}
+	}
+	return p.pickWith(group, prefer, nil)
+}
+
+// pickWith 是 Pick 的实现体，avoid 非 nil 时额外排除一批账号。
+func (p *Service) pickWith(group, prefer string, avoid func(*deepai.Account) bool) (*deepai.Account, bool, bool) {
 	if prefer != "" {
-		if a := p.store.PreferredAccount(prefer, group); a != nil && p.Acquire(a.ID) {
+		if a := p.store.PreferredAccount(prefer, group); a != nil && (avoid == nil || !avoid(a)) && p.Acquire(a.ID) {
 			return a, true, true
 		}
 	}
@@ -40,6 +61,9 @@ func (p *Service) Pick(group, prefer string) (*deepai.Account, bool, bool) {
 			if id == a.ID {
 				return true
 			}
+		}
+		if avoid != nil && avoid(a) {
+			return true
 		}
 		return p.Busy(a.ID)
 	}

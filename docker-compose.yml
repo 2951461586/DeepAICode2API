@@ -1,25 +1,56 @@
----
+# 单机部署：上游没有预构建镜像，按本仓库源码构建。
+#
+# 配置分三层，别混：
+#   1) 机密（账号 / 口令 / 代理 / 机器指纹）放 `DEEPAI2API_ENV_FILE`，
+#      默认 `/etc/deepaicode2api.env`（0600，root），**不要**放进代码目录；
+#   2) 本文件里的 `environment`：服务自身的固定契约（监听地址、数据路径）；
+#   3) 命令行 / `.env`：`VERSION`、`DEEPAI2API_IMAGE`、`DEEPAI2API_ADDR` 这类
+#      部署参数（compose 的变量插值只认 `.env`，与上面 1) 的 env_file 是两件事）。
+#
+# 部署与回滚统一走 scripts/deploy.sh（build → 不可变 tag → up → 健康检查）。
 services:
   deepaicode2api:
+    # 部署脚本会覆盖成带 tag 的不可变名（deepaicode2api:local-<日期>-<tag>-<sha>）；
+    # 回滚 = 把 DEEPAI2API_IMAGE 指回旧 tag 再 `docker compose up -d --no-build`。
+    image: ${DEEPAI2API_IMAGE:-deepaicode2api:local}
     build:
       context: .
-      # 打 tag 部署时传下去，控制台才会显示真实版本并提示升级：
-      #   VERSION=$(git describe --tags) docker compose up -d --build
       args:
+        # 控制台的「检查更新」拿 VERSION 跟 GitHub release 比；
+        # 不传时是 "docker"，明确表示「不是按 tag 构建的」。
         VERSION: ${VERSION:-docker}
     container_name: deepaicode2api
     ports:
-      - "10087:10087"
+      # 默认发布到全部网卡；线上用 DEEPAI2API_ADDR=127.0.0.1:10088 只监听回环，
+      # 由宿主 nginx 终止 TLS（见 README §九）。
+      - "${DEEPAI2API_ADDR:-10087}:10087"
+    env_file:
+      # 允许缺失：新克隆没有该文件时 `docker compose config` 仍然可用。
+      - path: ${DEEPAI2API_ENV_FILE:-/etc/deepaicode2api.env}
+        required: false
+    extra_hosts:
+      # 自定义 bridge 网络不带 host.docker.internal；172.17.0.1 是默认 docker0。
+      - "host.docker.internal:172.17.0.1"
     environment:
       DEEPAI2API_HOST: 0.0.0.0
       DEEPAI2API_PORT: "10087"
       DEEPAI2API_DATA_PATH: /data/deepaicode2api-data.json
-      # 直接指定上游账号（也可在控制台导入 / 手工添加）
-      DEEPAI_API_KEY: ${DEEPAI_API_KEY:-}
-      # 复用宿主机每日免费额度：填桌面端所在机器的原始 UUID
-      DEEPAI_MACHINE_ID: ${DEEPAI_MACHINE_ID:-}
-      # 容器内必须设置管理密码，否则管理接口只允许回环访问
-      DEEPAI2API_ADMIN_PASSWORD: ${DEEPAI2API_ADMIN_PASSWORD:-}
     volumes:
       - ./data:/data
+    # 内存上限：线上同机还有 postgres / magpie 等容器；2026-11-22 实测本服务
+    # 常驻 211MB，512m 留两倍余量，跑飞时只杀自己而不是拖垮整机。
+    mem_limit: 512m
+    # 健康检查：/healthz 只读进程内状态，不打上游。
+    # 之前没有 healthcheck，进程假死时 `unless-stopped` 永远不会重启。
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:10087/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped

@@ -6,6 +6,79 @@
 
 > 抓包时间：应用版本 **0.3.20**（车道 4，2026-11-07 发布）。
 >
+> **2026-11-22 复核到 0.3.44（2026-11-21T22:31Z 发布）：wire protocol 仍零变更，只跟心跳版本号。**
+> 官方 `latest.yml` 从 0.3.43 跳到 **0.3.44**（`releaseDate` 2026-11-21T22:31:45.367Z，
+> 比上一轮 0.3.43 复核晚约 28 小时）；x64 `sha512` = `haSxCvh0…`（490,345,232 B）、
+> arm64 `sha512` = `ZGe5HxI2…`（470,274,560 B），下载包 sha512 与 `latest.yml` 逐字节一致。
+> `app.asar` 的 `package.json` 为 0.3.44（`t3codeCommitHash: e8800767e0c4`）；
+> 复核前本机是 0.3.43.0，复核后用官方 NSIS 安装包静默升级到 **0.3.44.0**。
+>
+> `server.asar` → `apps/server/dist/binCli-B9W8M09_.mjs`（14,870,582 B，0.3.43 为
+> `binCli-Cr9pebKe.mjs` 14,868,756 B），全量 diff 只有 **13 hunk / +65 / −22**；
+> 按 `//#region` 归属到 **1751 个源模块 → 9 个变、1742 个字节级不变**。
+>
+> | 复核项 | 0.3.43 | 0.3.44 |
+> | --- | --- | --- |
+> | `DEEPAI_LANE_HEADERS["X-DeepAI-Code-Theos"]` | `"7"` | **`"7"`（未抬到 8）** |
+> | `/deepai_code/*` 端点集合 | 推理 / 目录 / 配额 / 签到 / 搜索 / `sessions/*` | **完全一致** |
+> | `X-*` 头字面量集合（binCli 内 14 个） | — | **集合零差异** |
+> | 聊天请求体 / beacon 形态 | — | **未变**（`v=${version$2}`，`version$2` 现在报 0.3.44） |
+> | `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** |
+> | 机器指纹 `machineId.ts`（含 Linux `parseLinuxMachineId`） | — | **算法与校验逐字未变**（只给 `execFile` 加了启动失败上报） |
+> | 内置 pi 运行时 | `pi-ai 1.3.0` | **1.3.0，`dist/api/openai-completions.js` sha256 一致（`709e0a92…`）** |
+>
+> `src/deepai/*` 里只有 3 个模块动，全在协议面外：
+> `machineId.ts` 给 `run()` 包了 `try/catch`，`execFile` 抛同步错时首次上报
+> Sentry（`operation: deepai.machine_id`，带 `source` / `code` 标签）并回落空串，
+> `detect()` 分支与指纹算法未动；`api.ts` 把错误码归到 Sentry 的 `error_codes`
+> 标签（`diagnosticErrorCodes()`，只进 Sentry，不上行），并把 `createRequire` 改成
+> `NodeModule.createRequire`；`DeepAIAccount.ts` 把 `/models` 的 5 s 超时提到 **30 s**
+> （对应 release notes「on slow connections」），并给目录写 secret store 失败加上报
+> （`deepai.models_save`，`code` / `syscall` 标签）与 `savedCatalogText` 回滚。
+> 另 6 个变更区域在协议面之外：environment id 落盘在 `EISDIR/ENOTSUP` 时回落
+> `writeFileString(flag: "wx")`、`failureClasses()` 加环检测（`seen` 集合 ≤24）、
+> pi `managed-refresh` 错误标签加 `code`/`syscall`、`catchTag` → `catchTags` 修
+> `PiRpcTimeoutError` 未捕获、Sentry debugId 与依赖 chunk 重命名。
+> 【源码级 2026-11-22】
+>
+> → 结论：`deepai.AppVersion` 跟到 **0.3.44**，车道仍发 `7`，协议逻辑、请求头、
+> 请求体与指纹全部不改。
+>
+> **2026-11-21 复核到 0.3.43（2026-11-20T18:52Z 发布）：wire protocol 仍零变更，只跟心跳版本号。**
+> 官方 `latest.yml` 从 0.3.42 跳到 **0.3.43**（`releaseDate` 2026-11-20T18:52:38.351Z，
+> 比 11-20 上一轮复核晚约 19 小时，所以那次「没更新」的结论当时是对的）；
+> x64 `sha512` = `BTu5a5c3…`（490,140,336 B）、arm64 `sha512` = `Ss/jMa5S…`（470,082,840 B），
+> 下载包 sha512 与 `latest.yml` 逐字节一致。复核时本机仍是 0.3.42.0，白盒以此为基础；
+> 复核完成后已用官方 NSIS 安装包静默升级到 **0.3.43.0**（`/S`，安装目录文件全量替换，
+> 无 0.3.42 残留），随后清理了安装包、解包产物与旧版解包证据。
+>
+> `server.asar` → `apps/server/dist/binCli-Cr9pebKe.mjs`（14,868,756 B，0.3.42 为
+> `binCli-zM20e9Xy.mjs` 14,847,501 B），全量 diff **410 hunk / +6430 / −5896**；
+> 按 `//#region` 归属到 1752 个源模块 → **141 个变、1601 个字节级不变**。
+>
+> | 复核项 | 0.3.42 | 0.3.43 |
+> | --- | --- | --- |
+> | `DEEPAI_LANE_HEADERS["X-DeepAI-Code-Theos"]` | `"7"` | **`"7"`（未抬到 8）** |
+> | `/deepai_code/*` 端点集合 | 推理 / 目录 / 配额 / 签到 / 搜索 / `sessions/*` | **完全一致** |
+> | `X-*` 请求头全集 | 47 个 | **集合零差异** |
+> | 聊天请求体 / beacon 形态 | 未变 | **未变**（`v=${version$2}`，`version$2` 现在报 0.3.43） |
+> | `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** |
+> | 机器指纹 `machineId.ts` | — | **字节级相同** |
+> | 内置 pi 运行时 | `pi-ai 1.3.0` | **1.3.0，`dist/api/openai-completions.js` sha256 一致** |
+>
+> `src/deepai/*` 51 个模块里只有 8 个动：4 个是压缩器重命名（`layer$137→$136` 之类），
+> 有内容的 3 个加 1 个纯注释：`api.ts` 新增 ToS 声明注释（援引 ToS 第 4 条，明写
+> 不允许把车道头与签到复制进其它客户端）+ `deepAIFailureCode()`；`DeepAIAccount.ts`
+> 把模型目录缓存进 secret store（`deepai-model-catalog`，按 accountId 校验）、
+> `/models` 前显式 `await deepAIMachineId()`、目录与 `/theos` 失败首次上报 Sentry；
+> `localTransport.ts` / `modelTransportPolicy.ts` 给本地回环错误体加 `code`
+> （`watchdog_idle` / `watchdog_total`）。其余 133 个变更模块是 orchestration / ACP
+> provider / PR / source control / 终端 / Sentry 上报，对应 release notes
+> 「Fixed connecting to DeepAI cloud workspaces and remote servers」。
+> 【源码级 2026-11-21】
+>
+> → 结论：`deepai.AppVersion` 跟到 **0.3.43**，车道仍发 `7`，协议逻辑与请求体不改。
+>
 > **2026-11-20 二次复核：客户端没有更新（`latest.yml` 仍是 0.3.42）。**
 > 更新源 `https://downloads.deepai.org/deepai-code/releases/latest.yml`（取自本机
 > `resources/app-update.yml`，`provider: generic`）的 `version` = **0.3.42**、
@@ -143,7 +216,7 @@
 
 | 标记 | 含义 | 怎么复核 |
 | --- | --- | --- |
-| **【源码级】** | 白盒确认：读的是 0.3.41 / 0.3.42 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`，打包进 `dist/binCli-*.mjs`） | 解包 asar 后对着代码看，可 100% 复现 |
+| **【源码级】** | 白盒确认：读的是 0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`，打包进 `dist/binCli-*.mjs`） | 解包 asar 后对着代码看，可 100% 复现 |
 | **【实测】** | 线上真打过，附日期与样本量 | 按文中命令复跑；样本量小的结论会写明 |
 | **【推断】** | 由前两类推广而来，**尚未验证** | 照着改代码前先补一次实测 |
 
@@ -153,7 +226,7 @@
 
 ---
 
-## 1. 进程与数据目录【源码级 0.3.42】
+## 1. 进程与数据目录【源码级 0.3.44】
 
 | 项 | 值 |
 | --- | --- |
@@ -165,7 +238,7 @@
 
 自动探测顺序见 `internal/deepai/helpers.go` 的 `DesktopSecretDirs`。
 
-## 2. 上游端点【源码级 0.3.42】
+## 2. 上游端点【源码级 0.3.44】
 
 基础地址 `https://api.deepai.org`（可用 `DEEPAI_API_ORIGIN` 覆盖）。
 
@@ -278,7 +351,7 @@
 `id,name,reasoning,input,contextWindow,maxTokens,premier,theosPerRequest,api`，
 没有新增字段。
 
-### 2.3 上下文续接：桌面端从不使用 `previous_response_id`【源码级 0.3.42，2026-11-20 复核】
+### 2.3 上下文续接：桌面端从不使用 `previous_response_id`【源码级 0.3.44，2026-11-22 复核】
 
 issue #5（“模型失忆”）要回答的第一个问题是「上游/客户端到底支持不支持链式续接」。
 把 0.3.41 的 `apps/server/dist/binCli-DAkBc9bP.mjs`（14.8 MB，即 t3code server
@@ -296,7 +369,9 @@ issue #5（“模型失忆”）要回答的第一个问题是「上游/客户�
 **2026-11-20 用 0.3.42 复核：结论不变。** `binCli-zM20e9Xy.mjs`（14.85 MB）与
 0.3.41 一样是 **0 处 `previous_response_id` / 0 处 `item_reference`**，4 处
 `/chat/completions` 调用点未改动（`src/deepai/api.ts` 与 pi 运行时
-`openai-completions.js` 均字节级一致）。→ 客户端新版本没有引入链式续接，
+`openai-completions.js` 均字节级一致）。**2026-11-22 用 0.3.44 再复核：仍 0 / 0**
+（`binCli-Cr9pebKe.mjs`，14.87 MB；同两个文件字节级一致）。
+→ 客户端新版本没有引入链式续接，
 issue #5 的「每轮发完整历史」契约仍成立。
 
 结论：
@@ -310,12 +385,12 @@ issue #5 的「每轮发完整历史」契约仍成立。
 3. 因此网关的处理是：透传路径原样转发（由上游决定），合成路径（chat 模型）
    直接 400 `unsupported_parameter` —— 静默忽略等于把对话截成一问一答。
 
-## 3. 请求头【源码级 0.3.42】
+## 3. 请求头【源码级 0.3.44】
 
 | 头 | 值 | 作用 |
 | --- | --- | --- |
 | `Api-Key` | 账号 API Key | **鉴权走这个头，不是 `Authorization`** |
-| `X-DeepAI-Code-Theos` | `7` | 计费车道版本（0.3.41 起；2026-11-20 复核 0.3.42 未变）；门槛是服务端行为，2026-11-19 起 ≤7 全通过、8 及以上 426，见下方「车道版本门槛」 |
+| `X-DeepAI-Code-Theos` | `7` | 计费车道版本（0.3.41 起；2026-11-22 复核 0.3.44 未变）；门槛是服务端行为，2026-11-19 起 ≤7 全通过、8 及以上 426，见下方「车道版本门槛」 |
 | `X-DeepAI-Code-Instance` | 16 字节随机数的 hex（每进程一次） | 进程实例标识，随所有 JSON 请求发出 |
 | `X-DeepAI-Code-Machine` | `sha256(小写原始机器 UUID)` | 按天发放免费额度；计量模型缺失时 `machine_required` |
 | `X-Session-Affinity` | 任意会话 id | 会话粘性（body 的 `prompt_cache_key` 同效） |
@@ -373,6 +448,15 @@ issue #5 的「每轮发完整历史」契约仍成立。
 > （仍是 `Theos: "7"` / `Instance: randomBytes(16).hex`）、`deepAIBeacon`、
 > `mountDeepAIApi` 的普通头与 `/theos` 分支均 **0 hunk**；只有 `v=`
 > 背后的 `version$2` 跟着打包版本变成 0.3.42。
+>
+> **2026-11-22 用 0.3.44 复核：同上（0.3.43 当时的复核同样如此）。** `DEEPAI_LANE_HEADERS` 仍逐字未动，
+> `deepAIBeacon` 仍 `v=${version$2};up=…;pi=…;focus=…`；`src/deepai/api.ts` 唯一的
+> 新增是两段注释 + `deepAIFailureCode()`（错误码归因，不上行）。
+>
+> ⚠ **0.3.43 新增 ToS 声明注释（0.3.44 仍在）**（`src/deepai/api.ts`，就在
+> `DEEPAI_LANE_HEADERS` 上方）：援引 DeepAI ToS 第 4 条，明写这些头与签到是
+> 「DeepAI Code 应用自识别用」，不允许复制进其它客户端。这是**文本声明，不改行为**，
+> 但 README 的合规说明已引用它。
 
 要点：
 
@@ -592,7 +676,7 @@ DeepAI 有两条社交登录实现，**都必须在浏览器里完成**——服
   （客户端会主动过滤它）。
 - SSE 里同一事件可能有多行 `data:`，按规范用 `\n` 拼接后再解析。
 
-## 5.1 签到（check-in）【源码级 0.3.42 + 实测】
+## 5.1 签到（check-in）【源码级 0.3.44 + 实测】
 
 - `/theos` 是签到通道：成功（200）与拒绝（403）都会带
   `check_in:{nonce,seconds=600}`。
@@ -600,7 +684,7 @@ DeepAI 有两条社交登录实现，**都必须在浏览器里完成**——服
   与心跳 `X-DeepAI-Code-Beacon: v=<版本>;up=<秒>;pi=<0\|1>`（`focus` 可选，
   只在窗口焦点状态已知时才出现）。
 - 0.3.30 起 `pi` 也变成**可选**：`piActive === null`（本进程还没转发过
-  推理）时整段省略，所以 `v=0.3.42;up=12` 这种两段式心跳是合法的。
+  推理）时整段省略，所以 `v=0.3.44;up=12` 这种两段式心跳是合法的。
   网关恒发 `pi=<0|1>` 与桌面端“已转发过”的状态等价，上游不挑格式。
 - 重新签到的时机是 `seconds/2`（默认 300s）；推理前会先确保签到（失败不阻塞）。
 - 推理请求本身**不带** check-in / beacon，只带车道、实例、机器指纹与 `Api-Key`。
@@ -698,9 +782,9 @@ GET /deepai_code/theos lane=4 → 403
   `glm-5.3-flash` 逐个试 `low/high/xhigh/max`，全部 200。0.3.37 的
   `thinkingLevelMap` 只给前两个模型暴露 `max` / `xhigh`（桌面端下拉），不是服务端限制。
 
-## 5.3 指纹与工具调用：网关侧的硬约束【实测 + 源码级 0.3.42】
+## 5.3 指纹与工具调用：网关侧的硬约束【实测 + 源码级 0.3.44】
 
-- **Linux 机器指纹只认 systemd machine-id**：0.3.41 / 0.3.42 的 `detect()` 在 Linux 上只读
+- **Linux 机器指纹只认 systemd machine-id**：0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 的 `detect()` 在 Linux 上只读
   `/etc/machine-id` → `/var/lib/dbus/machine-id`，要求 **32 位小写 hex 且非全 0**；
   `/sys/class/dmi/id/product_uuid` 已不在客户端逻辑里（无 root 读不到，固件占位值还会
   产生不稳定指纹）。网关早前先读 product_uuid，占位值会让指纹与桌面端分叉，已对齐。

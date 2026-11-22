@@ -26,6 +26,9 @@
 | v0.1.10 | 69 | 客户端 0.3.42 同步复核：wire protocol **零变更**（车道仍 7），只跟心跳 `v=` + issue #5 白盒再确认 |
 | v0.1.11 | 70 | 模型目录复核（27 个零差异）+ 修内置兜底条目的过期 `contextWindow`（1,048,576 → 320,000） |
 | v0.1.12 | 71–76 | `/responses` 历史暂存（伺服端配对 / 预算 / 去重）、结构治理 PR-2~PR-4（`guard` / `observe` / `poolsvc`）、`/admin/api/state` 三层退役、客户端二次复核与 README 过期提示清理 |
+| 未发版 | 77 | 客户端 0.3.43 同步复核：wire protocol **仍零变更**（车道仍 7），只跟心跳 `v=` + 上游新增 ToS 声明注释登记 |
+| 未发版 | 78 | 客户端 0.3.44 同步复核：wire protocol **仍零变更**（车道仍 7），只跟心跳 `v=` + 本机升级与旧装包清理 |
+| v0.1.13 | 78、79 | 客户端 0.3.44 同步 + 线上体检整改：签到预热、出口代理冷却、healthcheck / 机密出库 / deploy.sh |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -66,6 +69,9 @@
 - 74 结构治理 PR-4：抽出 `internal/poolsvc`（号池运行时，`Server` 字段 36 → 23）
 - 75 `/admin/api/state` 三层退役：弃用指标 → `410 Gone` → 彻底删除（v0.1.12，**破坏性**）
 - 76 客户端二次复核（`latest.yml` 仍 0.3.42）+ README 移除过期 ℹ️ 提示、更新文档索引（v0.1.12）
+- 77 客户端 0.3.43 同步复核：协议面零变更、只跟心跳 `v=`、ToS 声明注释登记
+- 78 客户端 0.3.44 同步复核：协议面仍零变更（9 个 region 全在协议面外）、本机升级到 0.3.44.0 并清理 2.35 GB 旧包
+- 79 线上体检整改：签到预热（940 次阻塞 → 请求路径外消化）、出口代理冷却与换出口优先、healthcheck / mem_limit / 机密出库 / deploy.sh（v0.1.13）
 - 41 客户端 0.3.35 复核：协议仍未变，只跟版本号 + 模型目录漂移
 - 33 `internal/deepai` 覆盖率 56% → 92.8%（补测 + 一个 email 未 trim 的修复）
 - 32 控制台：登录链接可复制 + 主题按钮换 SVG 图标
@@ -4485,3 +4491,258 @@ go test -race -count=1 ./internal/poolsvc ./internal/server
 README §十一「文档索引」里 `docs/recon.md` 的维护状态写着「最近复核 2026-11-14」，
 实际已复核到 2026-11-20（0.3.42 两轮），本轮同步更新；同日把索引表与实际条目
 对齐（补 71–76 行与 bullet 列表里的 69–76）。
+
+---
+
+## 77. 2026-11-21 客户端 0.3.43 同步复核：协议面零变更（未发版）
+
+**触发**：例行扫描。官方 `latest.yml` 从 **0.3.42** 跳到 **0.3.43**
+（`releaseDate` 2026-11-20T18:52:38Z）—— 比 §76 那次「客户端没有更新」的复核
+晚约 19 小时，所以 §76 的结论当时是对的，只是窗口没覆盖到这次发布。
+
+### 77.1 版本核实
+
+| 复核项 | 0.3.42 | 0.3.43 |
+| --- | --- | --- |
+| `latest.yml` `version` | 0.3.42 | **0.3.43** |
+| `releaseDate` | 2026-11-19T07:44Z | **2026-11-20T18:52:38Z** |
+| x64 `sha512` / `size` | `C9vGjoOQ…` / 489,954,768 B | `BTu5a5c3…` / **490,140,336 B** |
+| arm64 `sha512` / `size` | `hry2CPlP…` / 469,900,760 B | `Ss/jMa5S…` / 470,082,840 B |
+| `app.asar` `package.json` | 0.3.42 | **0.3.43**（`t3codeCommitHash: 1dfeffe45dee`） |
+| 本机 `ProductVersion` | 0.3.42.0 | 复核时 0.3.42.0（作白盒基线）；复核后已升级到 **0.3.43.0** |
+
+下载 `DeepAI-Code-0.3.43-x64.exe`（490,140,336 B）→ sha512 与 `latest.yml` 逐字节一致
+→ 7z 解 NSIS 的 `$PLUGINSDIR/app-64.7z` → `resources/{app,server}.asar`。
+
+### 77.2 结论：协议面仍然零变更，只跟心跳版本号
+
+`server.asar` → `apps/server/dist/binCli-Cr9pebKe.mjs`（14,868,756 B，0.3.42 是
+`binCli-zM20e9Xy.mjs` 14,847,501 B），全量 diff **410 hunk / +6430 / −5896**；
+按 `//#region` 归属到 1752 个源模块 → **141 个变、1601 个字节级不变**。
+
+| 复核项 | 0.3.42 | 0.3.43 | 判据 |
+| --- | --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` | `Theos: "7"` + `Instance: randomBytes(16).hex` | **逐字未动** | 字节级 |
+| `/deepai_code/*` 端点集合 | 推理 / `/models` / `/theos` / 搜索 / `sessions/*` | **完全一致** | 字面量集合 diff |
+| `X-*` 请求头全集 | 47 个 | **集合零差异** | 字面量集合 diff |
+| 聊天请求体 | `model/messages/stream/store/max_completion_tokens/…` | **未变** | `api.ts` 仅新增注释 + 错误码助手 |
+| beacon `v=` | `v=${version$2};up=…;pi=…;focus=…` | **同一逻辑**，`version$2` 现在报 0.3.43 | 源码级 |
+| `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** | 全库 grep |
+| 机器指纹 `machineId.ts` | — | **字节级相同** | region hash |
+| 内置 pi 运行时 | `pi-ai 1.3.0` | **1.3.0**，`dist/api/openai-completions.js` sha256 一致 | 解包 `node_modules` |
+| `src/provider/model-manifest.json` | — | **字节级相同**（18,849 B） | region hash |
+
+`src/deepai/*` 51 个模块里只有 8 个动：
+
+- **纯压缩器重命名**（无语义）：`DeepAIApprovalReview.ts`（`layer$137→$136`）、
+  `DeepAIOptionalProvenance.ts`、`DeepAIPiConnection.ts`、`DeepAIPeerCollaboration.ts`；
+- `api.ts`：新增 **ToS 声明注释** + `deepAIFailureCode()`（错误码归因，只进 Sentry
+  tag，不上行）；
+- `DeepAIAccount.ts`：模型目录缓存进 secret store（`deepai-model-catalog`，按
+  `accountId` 校验后再用）、`refreshModels` 前显式 `await deepAIMachineId()`、
+  目录刷新与 `/theos` 失败首次上报 Sentry（各只报一次）；
+- `localTransport.ts` / `modelTransportPolicy.ts`：本地回环错误体新增 `code`
+  （`credentials_unreadable` / `request_unreadable` / `watchdog_idle` /
+  `watchdog_total` / `check_in_unavailable`）。
+
+其余 133 个变更模块在协议面之外：orchestration（`ProviderSessionManager`、
+`ProviderEventIngestor`、`RunExecutionService`）、ACP / opencode / cursor / pi
+provider、PR 与 source control、终端、`auth/http.ts` 的 500 上报，以及
+`src/cloud/*` —— 对应 release notes「Fixed connecting to DeepAI cloud workspaces
+and remote servers」。
+
+→ 代码只需要把 `deepai.AppVersion` 跟到 **0.3.43**（心跳自报），`LaneVersion`
+保持 `"7"`，协议逻辑、请求体、header 集合都不动。
+
+### 77.3 顺带登记：上游开始把 ToS 写进代码
+
+0.3.43 的 `src/deepai/api.ts` 在 `DEEPAI_LANE_HEADERS` 正上方加了注释，援引
+DeepAI ToS 第 4 条，明写「这些头与签到是 DeepAI Code 应用自识别用，不允许复制进
+其它客户端」。这是**文本声明、不改任何行为**，但要留档：
+
+- 它解释的正是本项目的存在前提（复用本机已登录客户端的链路，面向自己的账号）；
+- README §十二 License 已引用该声明，提醒再分发 / 代运营前先确认许可；
+- 若后续版本把这类声明升级成行为（例如动态头、更强的指纹或服务端校验），
+  应视为协议面变更重做复核，而不是当作文案变化略过。
+
+### 77.4 本轮改动
+
+- `internal/model/types.go`：`AppVersion` 0.3.42 → **0.3.43**，车道注释补 0.3.43 复核；
+- 注释版本号同步：`internal/deepai/client_test.go`、`internal/machine/machine.go`、
+  `internal/machine/machine_test.go`、`internal/gateway/chatbody.go`；
+- `README.md`：应用版本 / 车道复核日期 / 心跳 `v=` / 文档索引；
+- `docs/recon.md`：顶部新增 2026-11-21 复核条目，§1 / §2 / §3 / §5.1 / §5.3 的
+  【源码级】标签升到 0.3.43，§3 登记 ToS 声明；
+
+### 77.5 本机升级与清理
+
+复核完成后用同一个官方安装包静默升级本机客户端（`DeepAI-Code-0.3.43-x64.exe /S`）：
+退出码 0，`DeepAI Code.exe` 的 `ProductVersion` 变为 **0.3.43.0**、`FileVersion` 0.3.43，
+`resources/{app,server}.asar` 与安装包内解包产物 sha256 逐字节一致（`server.asar`
+`58c3e13a…` / `app.asar` `6271c2eb…`），`server.asar` 内仍是 `binCli-Cr9pebKe.mjs`，
+卸载注册项从 `DeepAI Code 0.3.42` 变为 `0.3.43`（单条，无重复项）。
+
+安装目录文件全部被替换（无 0.3.42 时间戳残留，总 1.4 GB），随后清理：
+安装包与解包产物（2.3 GB）、空的 updater 缓存目录、上一轮留在 `/f/tmp/asar` 的旧版
+`binCli.mjs`（15 MB），以及本轮测试产生的 `console-smoke-*` / `TestAssignMachine*` /
+`go-build*` 临时目录。用户数据 `~/.deepai-code`（65 MB）与 Electron 缓存保持不动。
+
+---
+
+## 78. 2026-11-22 客户端 0.3.44 同步复核：协议面零变更（未发版）
+
+**触发**：例行扫描。官方 `latest.yml` 从 **0.3.43** 跳到 **0.3.44**
+（`releaseDate` 2026-11-21T22:31:45.367Z），比 §77 那次 0.3.43 复核晚约 28 小时。
+
+### 78.1 版本核实
+
+| 复核项 | 0.3.43 | 0.3.44 |
+| --- | --- | --- |
+| `latest.yml` `version` | 0.3.43 | **0.3.44** |
+| `releaseDate` | 2026-11-20T18:52Z | **2026-11-21T22:31:45Z** |
+| x64 `sha512` / `size` | `BTu5a5c3…` / 490,140,336 B | `haSxCvh0…` / **490,345,232 B** |
+| arm64 `sha512` / `size` | `Ss/jMa5S…` / 470,082,840 B | `ZGe5HxI2…` / **470,274,560 B** |
+| `app.asar` `package.json` | 0.3.43 | **0.3.44**（`t3codeCommitHash: e8800767e0c4`） |
+| 本机 `ProductVersion` | 0.3.43.0 | 复核时 0.3.43.0；复核后已升级到 **0.3.44.0** |
+
+下载 `DeepAI-Code-0.3.44-x64.exe`（490,345,232 B）→ sha512 与 `latest.yml` 逐字节一致
+→ 7z 解 NSIS 的 `$PLUGINSDIR/app-64.7z` → `resources/{app,server}.asar`。
+
+release notes 报的是「Windows / Linux 启动可靠性、慢网下的模型目录刷新、拖拽代码
+选择外出崩溃、重复布局更新导致卡顿」四项，全部在客户端内部。
+
+### 78.2 结论：协议面仍然零变更，只跟心跳版本号
+
+`server.asar` → `apps/server/dist/binCli-B9W8M09_.mjs`（14,870,582 B，0.3.43 是
+`binCli-Cr9pebKe.mjs` 14,868,756 B），全量 diff 只有 **13 hunk / +65 / −22**；
+按 `//#region` 归属到 1751 个源模块 → **9 个变、1742 个字节级不变**。
+
+| 复核项 | 0.3.43 | 0.3.44 | 判据 |
+| --- | --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` | `Theos: "7"` + `Instance: randomBytes(16).hex` | **逐字未动** | 字节级 |
+| `/deepai_code/*` 端点集合 | 推理 / `/models` / `/theos` / 搜索 / `sessions/*` | **完全一致** | 字面量集合 diff |
+| `X-*` 头字面量 | 14 个（含 5 个 `X-DeepAI-Code-*`） | **集合零差异** | 字面量集合 diff |
+| 聊天请求体 | `model/messages/stream/store/max_completion_tokens/…` | **未变** | `api.ts` 只动错误码归因 |
+| beacon `v=` | `v=${version$2};up=…;pi=…;focus=…` | **同一逻辑**，`version$2` 现在报 0.3.44 | 源码级 |
+| `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** | 全库 grep |
+| 机器指纹 | — | **算法未变**（`machineId.ts` 只加了启动失败上报） | region hash |
+| 内置 pi 运行时 | `pi-ai 1.3.0` | **1.3.0**，`dist/api/openai-completions.js` sha256 一致（`709e0a92…`） | 解包 `node_modules` |
+
+### 78.3 9 个变更区域逐个过
+
+`src/deepai/*` 里 3 个，全在协议面外：
+
+- `machineId.ts`：`run()` 把 `execFile` 包进 `try/catch`，同步抛错时首次上报 Sentry
+  （`operation: deepai.machine_id`，`source` / `code` 标签都按正则白名单截断）并
+  `resolve("")`；`detect()` 的分支与 Linux `parseLinuxMachineId` 校验**一字未改**；
+- `api.ts`：`reportError` 增加 `diagnosticErrorCodes(failure)` 归到 `error_codes` 标签
+  （只进 Sentry tag，不上行）；`createRequire` 由具名导入改成 `NodeModule.createRequire`；
+- `DeepAIAccount.ts`：`/models` 超时 **5 s → 30 s**（对应「slow connections」）；
+  目录写 secret store 失败时上报 `deepai.models_save`（`code` / `syscall` 白名单标签）
+  并把 `savedCatalogText` 回滚，避免下次误判「已存过」而跳过重写。
+
+其余 6 个：environment id 落盘在 `EISDIR/ENOTSUP/EOPNOTSUPP` 时回落
+`writeFileString(flag:"wx")`（上报 `environment.id_no_hard_link`）；`failureClasses()`
+加环检测（`seen` 集合，上限 24 层）；pi `managed-refresh` 错误标签补 `code` / `syscall`；
+`catchTag("PiRpcTimeoutError")` → `catchTags({PiRpcTimeoutError})`（修长任务下
+`get_state` 超时未被捕获）；Sentry debugId 更新；依赖 chunk 重命名带来的导入顺序变化。
+
+→ 代码只需要把 `deepai.AppVersion` 跟到 **0.3.44**，`LaneVersion` 保持 `"7"`，
+协议逻辑、请求头、请求体与指纹都不动。
+
+### 78.4 本轮改动
+
+- `internal/model/types.go`：`AppVersion` 0.3.43 → **0.3.44**，车道注释补 0.3.44 复核；
+- 注释版本号同步：`internal/deepai/client_test.go`、`internal/machine/machine.go`、
+  `internal/machine/machine_test.go`、`internal/gateway/chatbody.go`；
+- `README.md`：应用版本 / 版本链 / 车道复核日期 / 心跳 `v=`；
+- `docs/recon.md`：顶部新增 2026-11-22 复核条目，§1 / §2 / §2.3 / §3 / §5.1 / §5.3 的
+  【源码级】标签升到 0.3.44，车道路由表与 `v=0.3.44` 心跳示例同步。
+
+### 78.5 本机升级与清理
+
+用同一个官方安装包静默升级（`DeepAI-Code-0.3.44-x64.exe /S`）：退出码 0，
+`DeepAI Code.exe` 的 `ProductVersion` 变为 **0.3.44.0**、`FileVersion` 0.3.44，
+`resources/{app,server}.asar` 与安装包内解包产物 sha256 逐字节一致（`app.asar`
+`596988b0…` / `server.asar` `b32eb1c2…`），`server.asar` 内为 `binCli-B9W8M09_.mjs`，
+卸载注册项从 `DeepAI Code 0.3.43` 变为 `0.3.44`（单条，无重复项）。
+
+安装目录总 1.29 GB，除 `resources/git/etc/{hosts,networks,protocols,services}`
+四个 git 自带文件外没有早于本次构建的残留时间戳。随后清理：安装包（490 MB）、
+NSIS 解包目录（468 MB）、asar 解包与两版 `binCli`（1.4 GB + 30 MB，含 diff 中间文件）、
+`deepai-code-desktop-updater` 缓存里的 `installer.exe`（468 MB，是 0.3.43 的旧包），
+合计约 **2.35 GB**；用户数据 `~/.deepai-code` 与 Electron 缓存保持不动。
+
+---
+
+## 79. 2026-11-22 线上体检整改：签到预热、出口冷却、部署形态（v0.1.13）
+
+**触发**：SSH 上机只读体检（`instance-pu8iopa3`，容器 Up 37h）。三条证据都指向同一类问题——
+**延迟与失败主要发生在「签到 + 出口代理」这条前置链路上，而不是协议或号池本身**：
+
+| 观测项 | 实测 | 解读 |
+| --- | --- | --- |
+| `checkin` | attempts 2407 / **blocked 940（39%）** / timeouts 306 / p50 2s / p95 30s | 每个推理请求前同步打 `/theos`，慢时吃满 10s 预算 |
+| `upstream_errors` | `transport` **1012**、429 ×127、403 ×92、ctx 超限 ×67 | 账号 last_err 全是 `Gateway Timeout` / `unexpected EOF`，属代理侧 |
+| 代理连通性 | 16 个账号代理 TCP **16/16 全通** | 不是死代理，是吞吐/超时；需要「换出口」而不是「弃号」 |
+| 累计 | 195 329 请求 / **12 586 失败（6.4%）**，`/v1/responses` p95 120s、p99 300s | — |
+
+### 79.1 签到预热：把「到期」在请求路径外消化
+
+- `internal/deepai/checkin.go`：抽出 `checkInDueAt()` 判据（refused 锁 / 半衰期
+  `seconds/2` / 最小间隔 30s 三条规则不变），`EnsureCheckIn` 与新增的
+  `Client.CheckInDue()` 共用同一判据 —— 预热**不改变签到节奏**，只是提前做；
+- `internal/server/warmcheckin.go`：`Server.WarmCheckIns(ctx, limit, workers)`
+  扫启用中的账号，对到期者补一次 `/theos`（默认每轮 4 个号 / 2 并发），失败静默、
+  不写账号错误标记；
+- `tasks.go`：`checkInWarm` 每 45s 触发一次（半衰期内通常只命中 1~2 个号）。
+  热路径仍然调 `EnsureCheckIn`（nonce 回传是上游判定真实客户端的依据，不能挪到推理之后），
+  但因为刚刚回传过，绝大多数会直接返回。
+
+### 79.2 出口代理冷却：先换出口，再换号
+
+- `internal/proxy/health.go`（新）：按**原始代理串**记账，连续失败 30s→60s→120s…
+  最多 10 分钟冷却，一次成功立刻清零（`Health.Report/Cooling/Fails/CoolingCount`）；
+- `internal/poolsvc/slots.go`：`Pick()` 重构出 `pickWith()`，新增
+  `PickAvoiding(group, prefer, avoid)` —— 先在没有冷却出口的候选里选，**挖空整个池时
+  退回常规调度**（宁可走一个已知慢的出口，也不要对外 429）；
+- `internal/server/proxyhealth.go`（新）+ `upstream.go` 接线：传输失败 → 记失败；
+  拿到任何上游响应（哪怕 4xx/5xx）→ 清零；`PickAvoiding` 用
+  `avoidCoolingProxy` 谓词，粘性号在出口冷却时也会让位；
+- `/admin/api/overview` 新增 `proxy_cooling`（当前冷却中的出口数）。
+
+### 79.3 部署形态：机密出库、healthcheck、不可变 tag
+
+- `docker-compose.yml`：
+  - `env_file: ${DEEPAI2API_ENV_FILE:-/etc/deepaicode2api.env}`（`required: false`）——
+    机密（账号 / 口令 / 代理 / 机器指纹）移出代码目录，权限 0600；
+  - 新增 `healthcheck`（镜像内 `wget /healthz`，30s/5s/3 次，`start_period 20s`）：
+    之前没有 healthcheck，进程假死时 `unless-stopped` 永远不会重启；
+  - 新增 `mem_limit: 512m`（实测常驻 211MB，留两倍余量）与 `logging` 上限 10m×3；
+  - `image: ${DEEPAI2API_IMAGE:-deepaicode2api:local}` + `ports: ${DEEPAI2API_ADDR:-10087}:10087`，
+    部署脚本注入不可变 tag，回滚就是换回旧 tag；
+- `scripts/deploy.sh`（新）：build → 打 `local-<日期>-<版本>-<sha>` tag → `up -d --no-build`
+  → 轮询 healthcheck → 打印 `/healthz` 摘要；失败时打印最近 40 行日志并给出回滚命令；
+- `.gitignore`：忽略本机 `docker-compose.override.yml`（线上用它挂 `sub2-shared`
+  网络与 10088 端口，不入库）。
+
+### 79.4 顺带：客户端 0.3.44 + 控制台 404 复查
+
+- `AppVersion` 0.3.43 → **0.3.44**（§78），线上镜像此前仍是 0.3.42 的心跳；
+- 控制台 404（`/admin/api/state|export|config|backup|import`）复查：仓库前端
+  `internal/server/web/js/*.js` 里**已无**这些调用，线上那批是容器启动瞬间旧标签页
+  打的（时间戳 2026-11-20 13:56–15:39），不需要改代码。
+
+### 79.5 本轮改动清单
+
+- 代码：`internal/deepai/checkin.go`、`internal/server/warmcheckin.go`(新)、
+  `internal/server/proxyhealth.go`(新)、`internal/server/server.go`、
+  `internal/server/upstream.go`、`internal/server/admin_api.go`、
+  `internal/poolsvc/slots.go`、`internal/proxy/health.go`(新)、`tasks.go`、`main.go`；
+- 测试：`internal/proxy/health_test.go`、`internal/poolsvc/slots_avoid_test.go`、
+  `internal/server/warmcheckin_test.go`、`internal/server/proxyhealth_test.go`
+  （覆盖：冷却退避与上限、成功清零、按代理串隔离、nil 安全、粘性让位、
+  全 cool 时回退常规调度、预热幂等与停用账号跳过）；
+- 部署：`docker-compose.yml`、`scripts/deploy.sh`、`.gitignore`、`README.md`
+
+验证：`gofmt` 干净、`go vet ./...` 通过、`go test ./...` 全绿（含新增用例）。
