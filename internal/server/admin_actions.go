@@ -357,6 +357,37 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 		return
 	}
 
+	// 选出口：优先用「当前账号数最少」的条目，同样多时按游标轮转。
+	//
+	// 历史行为是每次调用都新建一个池，Next() 永远从第 0 条开始，于是
+	// **每次「分配代理」都落到同一个出口**（2026-11-22 线上：新增 3 个账号全挤在
+	// 同一条住宅代理上，等于共享同一个出口 IP 的每日额度）。游标必须跨调用保留，
+	// 而且要避开已被占用的条目。
+	usage := map[string]int{}
+	s.Store.UpdateAccounts(func(a *deepai.Account) bool {
+		if k := proxyEgressKey(a.Proxy); k != "" {
+			usage[k]++
+		}
+		return false
+	})
+	if cached := s.Pool.EnrollProxyPool(); cached != nil && cached.Len() > 0 {
+		pool = cached
+	}
+	leastUsed := func() string {
+		best := ""
+		bestN := 1 << 30
+		for i := 0; i < pool.Len(); i++ {
+			p := pool.Next()
+			if p == "" {
+				continue
+			}
+			if n := usage[proxyEgressKey(p)]; n < bestN {
+				best, bestN = p, n
+			}
+		}
+		return best
+	}
+
 	dist := map[string]int{}
 	assigned := s.Store.UpdateAccounts(func(a *deepai.Account) bool {
 		if !match(a) {
@@ -365,20 +396,48 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 		if !body.Reassign && strings.TrimSpace(a.Proxy) != "" {
 			return false
 		}
-		p := pool.Next()
+		p := leastUsed()
 		if p == "" {
 			return false
 		}
+		old := proxyEgressKey(a.Proxy)
 		a.Proxy = p
+		if old != "" {
+			usage[old]--
+		}
+		usage[proxyEgressKey(p)]++
 		dist[proxy.ProxyLabel(p)]++
 		return true
 	})
 	if !s.persistOrFail(w) {
 		return
 	}
+	// distinct 让运维一眼看出「池子够不够」：17 个号 / 11 个出口必然有共享。
+	distinct := 0
+	for _, n := range usage {
+		if n > 0 {
+			distinct++
+		}
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "assigned": assigned, "pool_size": pool.Len(), "proxies": dist,
+		"ok": true, "assigned": assigned, "pool_size": pool.Len(),
+		"in_use": distinct, "proxies": dist,
 	})
+}
+
+// proxyEgressKey 把代理串归一成「出口标识」（host:port），用于统计账号数。
+//
+// 存储层的代理串可能带或不带 scheme（`https://host:port` / `host:port`），
+// 直接字符串比较会把同一个出口当成两个。
+func proxyEgressKey(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if u, err := proxy.Parse(raw); err == nil && u.Host != "" {
+		return strings.ToLower(u.Host)
+	}
+	return strings.ToLower(raw)
 }
 
 // adminMarkVerified 由后台验证链路回填 email_verified（入池时可能还是 false）。

@@ -13,6 +13,7 @@ type proxyAssignResult struct {
 	Assigned int            `json:"assigned"`
 	Cleared  int            `json:"cleared"`
 	PoolSize int            `json:"pool_size"`
+	InUse    int            `json:"in_use"`
 	Proxies  map[string]int `json:"proxies"`
 }
 
