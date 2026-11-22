@@ -45,21 +45,33 @@ func NewProxyPool(raw string) (*ProxyPool, error) {
 }
 
 // ParseProxyList 把多行 / 逗号分隔的代理串解析为列表（去空、去重、去注释）。
+//
+// 注释按**行**判定（行首 `#`），而不是先拆分隔符再过滤：早先把空格 / 逗号 /
+// 分号全当分隔符，于是 `#added-2026…（6 条，追加后无需重启）` 这类带空格或
+// 逗号的注释会被切成残片，残片不以 `#` 开头就被当成代理串 →
+// `代理格式非法：invalid`（2026-11-22 线上踩到）。注释就该是整行。
 func ParseProxyList(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
 	}
-	replacer := strings.NewReplacer("\r\n", "\n", "\r", "\n", ";", "\n", ",", "\n", " ", "\n", "\t", "\n")
+	replacer := strings.NewReplacer(";", "\n", ",", "\n", " ", "\n", "\t", "\n")
 	var out []string
 	seen := map[string]bool{}
-	for _, line := range strings.Split(replacer.Replace(raw), "\n") {
+	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || seen[line] {
+		// 整行注释：跳过（允许注释里有空格 / 逗号 / 中文括号）。
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		seen[line] = true
-		out = append(out, line)
+		for _, entry := range strings.Split(replacer.Replace(line), "\n") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" || strings.HasPrefix(entry, "#") || seen[entry] {
+				continue
+			}
+			seen[entry] = true
+			out = append(out, entry)
+		}
 	}
 	return out
 }

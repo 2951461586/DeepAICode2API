@@ -80,3 +80,37 @@ func TestReadProxyFile(t *testing.T) {
 		t.Fatalf("文件代理数 = %d, want 2", got)
 	}
 }
+
+// TestParseProxyListCommentsWithSpaces 固化 2026-11-22 线上踩到的坑：
+// 注释行里有空格 / 逗号 / 中文括号时，不能被拆成残片当成代理串。
+func TestParseProxyListCommentsWithSpaces(t *testing.T) {
+	raw := `#added-20261122-1218 bringyour bundle 5（6 条，追加后无需重启）
+https://a.example.com:7161
+#blocked-20261119-1900 deepai-403-exitip https://dead.example.com:7131
+https://b.example.com:7155
+	# 缩进的注释也要跳过
+https://a.example.com:7161
+`
+	got := ParseProxyList(raw)
+	want := []string{"https://a.example.com:7161", "https://b.example.com:7155"}
+	if len(got) != len(want) {
+		t.Fatalf("解析出 %d 条（%v），期望 %d 条", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("第 %d 条 = %q，期望 %q", i, got[i], want[i])
+		}
+	}
+	if _, err := NewProxyPool(raw); err != nil {
+		t.Fatalf("带空格注释的池不应报错: %v", err)
+	}
+}
+
+// TestParseProxyListInlineSeparators 固化「同一行用逗号 / 分号 / 空格分隔多个代理」
+// 仍然可用（这是 ParseProxyList 最初支持的形式，别被注释修复改坏）。
+func TestParseProxyListInlineSeparators(t *testing.T) {
+	got := ParseProxyList("http://a:1,http://b:2;http://c:3 http://d:4")
+	if len(got) != 4 {
+		t.Fatalf("解析出 %d 条（%v），期望 4 条", len(got), got)
+	}
+}

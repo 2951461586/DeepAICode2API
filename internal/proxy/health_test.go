@@ -15,22 +15,30 @@ func TestHealthCooldownBacksOff(t *testing.T) {
 	if h.Cooling("p1") {
 		t.Fatal("未失败过的出口不应处于冷却")
 	}
-	for want, step := range map[int]time.Duration{1: 30 * time.Second, 2: 60 * time.Second, 3: 120 * time.Second} {
+	steps := []struct {
+		want int
+		step time.Duration
+	}{
+		{1, 30 * time.Second},
+		{2, 60 * time.Second},
+		{3, 120 * time.Second},
+	}
+	for _, c := range steps {
 		h.Report("p1", false)
-		if got := h.Fails("p1"); got != want {
-			t.Fatalf("连续失败 = %d，期望 %d", got, want)
+		if got := h.Fails("p1"); got != c.want {
+			t.Fatalf("连续失败 = %d，期望 %d", got, c.want)
 		}
 		if !h.Cooling("p1") {
-			t.Fatalf("第 %d 次失败后应处于冷却", want)
+			t.Fatalf("第 %d 次失败后应处于冷却", c.want)
 		}
 		// 差一毫秒仍未到期，整段走完即到期。
-		now = now.Add(step - time.Millisecond)
+		now = now.Add(c.step - time.Millisecond)
 		if !h.Cooling("p1") {
-			t.Fatalf("第 %d 次失败：冷却提前结束（%v）", want, step)
+			t.Fatalf("第 %d 次失败：冷却提前结束（%v）", c.want, c.step)
 		}
 		now = now.Add(time.Millisecond)
 		if h.Cooling("p1") {
-			t.Fatalf("第 %d 次失败：冷却没有在 %v 后结束", want, step)
+			t.Fatalf("第 %d 次失败：冷却没有在 %v 后结束", c.want, c.step)
 		}
 	}
 
