@@ -18,6 +18,20 @@ set -eu
 cd "$(dirname "$0")/.."
 
 TAG=${1:-$(git describe --tags --always 2>/dev/null || echo dev)}
+
+# 版本一致性：传了 tag 就必须等于当前 HEAD。
+# 2026-11-22 踩过：服务器上 `git fetch --tags` 因 TLS 失败，tag 没拉到，
+# 脚本却照常构建，于是打出 `local-<日期>-v0.1.15-<上一版 sha>` 的错标镜像。
+if [ -n "${1:-}" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+	if ! git rev-parse -q --verify "refs/tags/$1" >/dev/null; then
+		echo "!! 本地没有 tag $1（先 git fetch --tags，或确认版本号）" >&2
+		exit 1
+	fi
+	if [ "$(git rev-parse "$1^{commit}")" != "$(git rev-parse HEAD)" ]; then
+		echo "!! HEAD ($(git rev-parse --short HEAD)) 与 $1 不一致，拒绝用错版本的代码打标签" >&2
+		exit 1
+	fi
+fi
 SHA=$(git rev-parse --short HEAD 2>/dev/null || echo nogit)
 STAMP=$(date +%Y%m%d)
 IMAGE=${DEEPAI2API_IMAGE:-deepaicode2api:local-${STAMP}-${TAG}-${SHA}}

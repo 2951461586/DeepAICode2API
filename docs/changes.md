@@ -4815,3 +4815,13 @@ url.Parse 的结果：Scheme="06gvj…bringyour.com" Opaque="7161" Host=""
     `api.deepai.org:443`，6s 预算，结论缓存 10 分钟）确认能穿透，**通过才启用
     专属出口**；未知 / 失败沿用全局出口（与修复前行为一致）。探测失败会留一条
     `出口代理探测失败（沿用全局出口）` 的 WARN，带脱敏后的出口标签。
+
+**部署脚本加了一道版本一致性闸门**（2026-11-22 踩到）：服务器上
+`git fetch --tags` 因 GitHub TLS 中断失败（服务器没有给 git 配代理），
+而 `deploy.sh v0.1.15` 照常构建，于是打出 `local-20261122-v0.1.15-95125db`
+这种「标签写着 v0.1.15、代码其实是 v0.1.14」的错标镜像。现在：
+
+- `deploy.sh` 传入 tag 时必须 `refs/tags/<tag>` 存在且 `git rev-parse <tag>^{commit}`
+  等于 `HEAD`，否则直接退出（错标镜像比部署失败更危险）；
+- 服务器仓库写入 `http.proxy/https.proxy = http://127.0.0.1:17920`（mihomo mixed），
+  之后 `git fetch --tags` 才能稳定拉取（直连 GitHub 会 TLS 中断）。
