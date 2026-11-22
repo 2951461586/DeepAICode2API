@@ -264,6 +264,16 @@ func (c *Client) CheckInDue(acct *Account) bool {
 // 内不再打扰上游；从未回传过（冷启动 / 新号）则立即补一次，并用
 // attemptAt 限制最小间隔。任何失败都不阻塞推理：签到是附带条件，不是准入。
 func (c *Client) EnsureCheckIn(ctx context.Context, acct *Account) CheckInOutcome {
+	return c.EnsureCheckInWithin(ctx, acct, c.checkInBudget())
+}
+
+// EnsureCheckInWithin 与 EnsureCheckIn 同义，但用显式预算。
+//
+// 两个调用方对预算的诉求相反：
+//   - 热路径（推理前）要短：超过预算就先带旧 nonce 放行推理（默认 10s，可调到 2.5s）；
+//   - 后台预热（WarmCheckIns）可以长：它不在任何请求的关键路径上，
+//     给足 10s 才容易真正把 nonce 回传成功（线上住宅代理 p95 约 5s）。
+func (c *Client) EnsureCheckInWithin(ctx context.Context, acct *Account, budget time.Duration) CheckInOutcome {
 	var out CheckInOutcome
 	if acct == nil {
 		return out
@@ -282,7 +292,7 @@ func (c *Client) EnsureCheckIn(ctx context.Context, acct *Account) CheckInOutcom
 
 	out.Attempted = true
 	start := time.Now()
-	cctx, cancel := context.WithTimeout(ctx, c.checkInBudget())
+	cctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	// 结果（包括 403）都不影响推理；挑战在 captureCheckIn 里已经吃到。
 	_, out.Err = c.Theos(cctx, acct)

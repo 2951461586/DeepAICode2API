@@ -4746,3 +4746,45 @@ NSIS 解包目录（468 MB）、asar 解包与两版 `binCli`（1.4 GB + 30 MB�
 - 部署：`docker-compose.yml`、`scripts/deploy.sh`、`.gitignore`、`README.md`
 
 验证：`gofmt` 干净、`go vet ./...` 通过、`go test ./...` 全绿（含新增用例）。
+
+### 79.6 上线与调优（v0.1.13 → v0.1.14）
+
+**上线**（2026-11-22 11:34 CST，`sh scripts/deploy.sh v0.1.13`）：
+
+| 项 | 结果 |
+| --- | --- |
+| 镜像 | `deepaicode2api:local-20261122-v0.1.13-3b1a5b4`（上一版 `local-20261120-v0112-d4c9b2f` 保留，可一键回滚） |
+| 健康检查 | `Up (healthy)`，`mem=536870912`（512MB 上限生效），`restarts=0` |
+| `/healthz` | `version=v0.1.13`、`accounts=16 ready=16`、`lane=7 lane_upstream=7`、`models=27` |
+| 二进制 AppVersion | **0.3.44**（心跳不再是 0.3.42） |
+| 新字段 | `/admin/api/overview` 出现 `proxy_cooling: 0` |
+| 机密出库 | `.env` 371B → `/etc/deepaicode2api.env`（0600）；仓库目录只剩 compose 插值参数，`api-key.txt` / `.bootstrap-api-key` 移到 `/root/private/`（0700） |
+| 本机覆盖 | `docker-compose.override.yml`（不入库）保留 `sub2-shared` 网络 |
+
+**首次上线后的实测把预热预算调错了**：预热沿用了热路径的 2500ms，
+而住宅代理 `/theos` 的 p95 约 5s —— 预热几乎全部 `timed_out`，
+却已经占掉了 30s 的最小间隔，等于把「到期」白白消耗掉。于是 v0.1.14 把预算分层：
+
+| 路径 | 预算 | 理由 |
+| --- | --- | --- |
+| 热路径（推理前 `EnsureCheckIn`） | 2500ms（设置项 `checkin_block_ms`） | 用户可感知；超时先带旧 nonce 放行 |
+| 后台预热（`WarmCheckIns`） | **10s**（`warmCheckInBudget`） | 不在任何请求路径上，给足时间才真能把 nonce 回传成功 |
+
+实现上是新增 `Client.EnsureCheckInWithin(ctx, acct, budget)`：`EnsureCheckIn` 变成
+「用客户端预算调用它」，预热用显式 10s；预热批上限 4 → 8、周期 45s → 30s
+（16 个号全部到期时最多 4 轮消化完）。
+
+**顺带修好的系统问题**：
+
+- **时钟未同步（差 1.8s）**：`systemd-timesyncd` 是 masked 状态，chrony 虽 running
+  但源用的是开机时的旧配置（`Reach 0`、`LastRx 55d`，参考时间停在 09-27），
+  且配置里的四台 `*.baidubce.com` **已无法解析**。改为可解析的国内源
+  （`ntp.aliyun.com` / `ntp1.aliyun.com` / `time1.cloud.tencent.com`）后：
+  `System clock synchronized: yes`，offset ~1.5ms，三源可达；
+- **磁盘**：`docker builder prune -f` 回收 **1.226 GB**（构建缓存 2.25GB→1.02GB），
+  根分区 27G/40G(70%) → **26G/40G(68%)**。没有执行 `docker image prune -a`：
+  实测 `docker system df` 的「可回收 5.35GB」把运行中容器的共享层也算进去了，
+  真正无主镜像只有 378MB（`golang:1.26-alpine` 构建基座 355MB + 上一版回滚镜像
+  19MB + `alpine:3.20` 4MB），全删会让 CN 网络下的下次构建无法拉取基座；
+  改为 `/etc/cron.d/docker-gc`（每周清 168h 以上的构建缓存 + 悬空镜像）；
+- **补丁欠账**：353 个待升级包，82 天未重启 —— 已列为单独窗口执行（见 §79.7）。

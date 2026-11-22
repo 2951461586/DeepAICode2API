@@ -3,10 +3,18 @@ package server
 import (
 	"context"
 	"sync"
+	"time"
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/logx"
 )
+
+// warmCheckInBudget 是后台预热的单次预算。
+//
+// 比热路径长得多（热路径线上设 2.5s）：预热不在任何请求的关键路径上，
+// 给足时间才能真正把 nonce 回传成功（住宅代理 p95 约 5s，实测 2.5s 预算下
+// 几乎全部超时，等于把「到期」白消耗掉并占满 30s 的最小间隔）。
+const warmCheckInBudget = 10 * time.Second
 
 // warmCheckInDefault 是每次预热最多处理的账号数。
 //
@@ -75,7 +83,7 @@ func (s *Server) WarmCheckIns(ctx context.Context, limit, workers int) int {
 				return
 			}
 			defer func() { <-sem }()
-			out := t.client.EnsureCheckIn(ctx, t.acct)
+			out := t.client.EnsureCheckInWithin(ctx, t.acct, warmCheckInBudget)
 			if !out.Attempted {
 				return
 			}

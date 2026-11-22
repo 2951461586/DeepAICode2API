@@ -104,18 +104,19 @@ func quotaGuard(srv *server.Server, stop <-chan struct{}) {
 // 最长吃满 10s 预算。预热之后热路径仍然调 EnsureCheckIn（语义不变），
 // 但绝大多数会因为「刚刚回传过」直接返回。
 //
-// 周期 45s：半衰期（seconds/2，默认 300s）内只会命中 1~2 个号，
-// 比周期设成 5s 更克制，也足够避免热路径撞上到期时刻。
+// 周期 30s：半衰期（seconds/2，默认 300s）内只会命中 1~2 个号；
+// 批上限 8、2 并发 —— 16 个号全部到期时最多 4 轮消化完，
+// 而每轮预算 10s（预热不使用热路径的 2.5s 短预算）。
 func checkInWarm(srv *server.Server, stop <-chan struct{}) {
-	tick := time.NewTicker(45 * time.Second)
+	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
 	for {
 		select {
 		case <-stop:
 			return
 		case <-tick.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			n := srv.WarmCheckIns(ctx, 4, 2)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			n := srv.WarmCheckIns(ctx, 8, 2)
 			cancel()
 			if n > 0 {
 				log.Printf("[checkin] 后台预热 %d 个账号的签到", n)
