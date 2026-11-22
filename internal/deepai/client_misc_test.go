@@ -37,7 +37,7 @@ func TestDoTransportError(t *testing.T) {
 	if _, err := c.Transcribe(context.Background(), nil, "", "", []byte("x")); err == nil {
 		t.Fatal("Transcribe 连接失败应返回错误")
 	}
-	if _, err := c.ExchangeCode(context.Background(), "code"); err == nil {
+	if _, err := c.ExchangeCode(context.Background(), "code", ""); err == nil {
 		t.Fatal("ExchangeCode 连接失败应返回错误")
 	}
 	if _, err := c.DetectLane(context.Background(), nil); err == nil {

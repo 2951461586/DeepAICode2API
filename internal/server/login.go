@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"deepaicode2api/internal/configenv"
 	"deepaicode2api/internal/credimport"
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/httpx"
@@ -27,6 +28,17 @@ import (
 //	  → {api_key, username, is_pro}
 const loginTTL = 10 * time.Minute
 
+// LoginPKCEEnv 控制浏览器登录是否带 PKCE（默认开）。
+//
+// 2026-11-22（客户端 0.3.45）桌面端登录改为 PKCE（S256）；上游对 challenge 是
+// 「可选但在校验」：不带仍 200，带格式非法的 challenge 则 400
+// `Invalid sign-in proof.`。默认跟随桌面端发送；若某一轮上游把 PKCE 语义改到
+// 与本实现不兼容（兑换变成 400/401），置 0 即可退回旧形态，不必改代码。
+const LoginPKCEEnv = "DEEPAI2API_LOGIN_PKCE"
+
+// loginPKCEEnabled 报告本次登录是否启用 PKCE。
+func loginPKCEEnabled() bool { return configenv.Bool(LoginPKCEEnv, true) }
+
 type loginResult struct {
 	Creds *deepai.Credentials
 	Err   string
@@ -38,6 +50,12 @@ type loginSession struct {
 	Port    int
 	Created time.Time
 	srv     *http.Server
+	// Verifier / Challenge 是本会话的 PKCE 对（关闭 PKCE 时两者为空）。
+	//
+	// Challenge 只发给上游（authorize URL），Verifier 只在兑换时回传：
+	// 两者必须同时存在或同时为空，不能只发其中一个。
+	Verifier  string
+	Challenge string
 
 	mu         sync.Mutex
 	result     *loginResult
@@ -157,6 +175,13 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	id := deepai.RandomHex(16)
 	state := deepai.RandomToken(32)
 	session := &loginSession{ID: id, State: state, Created: time.Now()}
+	if loginPKCEEnabled() {
+		// 桌面端 0.3.45 起登录走 PKCE（S256）；取不到随机数时宁可不发，
+		// 也不发一对配对不上的参数。
+		if verifier, challenge, err := deepai.NewPKCE(); err == nil {
+			session.Verifier, session.Challenge = verifier, challenge
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth-callback", func(cw http.ResponseWriter, cr *http.Request) {
@@ -174,7 +199,7 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-		creds, err := s.Up.ExchangeCode(ctx, code)
+		creds, err := s.Up.ExchangeCode(ctx, code, session.Verifier)
 		cancel()
 		if err != nil {
 			s.finishLogin(session, nil, err)
@@ -240,7 +265,7 @@ func (s *Server) handleLoginOpen(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusGone, "登录会话已过期", "invalid_request_error")
 		return
 	}
-	target := s.Up.SignInURL(session.State, session.Port)
+	target := s.Up.SignInURL(session.State, session.Port, session.Challenge)
 	if !isSafeLoginURL(target, s.Up.Origin) {
 		httpx.WriteErr(w, http.StatusInternalServerError, "登录地址校验失败", "server_error")
 		return
@@ -353,7 +378,7 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-	creds, xerr := s.Up.ExchangeCode(ctx, code)
+	creds, xerr := s.Up.ExchangeCode(ctx, code, session.Verifier)
 	cancel()
 	if xerr != nil {
 		s.finishLogin(session, nil, xerr)

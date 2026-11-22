@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"testing"
 	"time"
@@ -297,4 +298,113 @@ func TestLoginSessionsPrunesExpiredOnGet(t *testing.T) {
 	if !keptFresh {
 		t.Fatal("fresh 不应被回收")
 	}
+}
+
+// 桌面端 0.3.45 起登录走 PKCE：authorize URL 必须带 S256 challenge，
+// 兑换时必须回传与之配对的 code_verifier。
+func TestLoginPKCECarriedThrough(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/desktop_auth/exchange/"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"api_key":"pkce-key","username":"pkce-user","is_pro":false}`)
+		case strings.HasSuffix(r.URL.Path, "/theos"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"enabled":true,"balance":"200","granted":"200","lane_version":7}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	s, _ := newTestServer(t, u)
+
+	sid, state := startLogin(t, s)
+	sess := s.Login.get(sid)
+	if sess == nil {
+		t.Fatal("login/start 没有登记会话")
+	}
+	if sess.Verifier == "" || sess.Challenge == "" {
+		t.Fatalf("会话应带 PKCE 对，实际 verifier=%q challenge=%q", sess.Verifier, sess.Challenge)
+	}
+	if got := deepai.PKCEChallenge(sess.Verifier); got != sess.Challenge {
+		t.Fatalf("challenge 与 verifier 不配对：%q vs %q", got, sess.Challenge)
+	}
+
+	// /login/open 的跳转目标（Location）里必须带 challenge 与 S256。
+	rec := do(t, s, http.MethodGet, "/login/open?id="+sid, "", "")
+	if rec.Code != http.StatusFound {
+		t.Fatalf("login/open 应 302，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	loc, err := neturl.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("解析 Location: %v", err)
+	}
+	if got := loc.Query().Get(deepai.PKCEParamChallenge); got != sess.Challenge {
+		t.Fatalf("授权 URL 的 %s = %q，期望 %q", deepai.PKCEParamChallenge, got, sess.Challenge)
+	}
+	if got := loc.Query().Get(deepai.PKCEMethodParam); got != deepai.PKCEMethodS256 {
+		t.Fatalf("授权 URL 的 %s = %q，期望 S256", deepai.PKCEMethodParam, got)
+	}
+
+	cb := "http://127.0.0.1:34105/auth-callback?code=pkce-code&state=" + state
+	if rec := do(t, s, http.MethodPost, "/admin/api/login/callback", "",
+		`{"session_id":"`+sid+`","callback":"`+cb+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("login/callback 应 200，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotVerifier := exchangeVerifier(t, u); gotVerifier != sess.Verifier {
+		t.Fatalf("兑换请求里的 %s = %q，期望会话 verifier %q",
+			deepai.PKCEParamVerifier, gotVerifier, sess.Verifier)
+	}
+	s.Pool.Wait()
+}
+
+// exchangeVerifier 从假上游记下的请求里取出兑换请求携带的 code_verifier。
+func exchangeVerifier(t *testing.T, u *upstream) string {
+	t.Helper()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for i := len(u.requests) - 1; i >= 0; i-- {
+		req := u.requests[i]
+		if !strings.HasSuffix(req.Path, "/desktop_auth/exchange/") {
+			continue
+		}
+		got, _ := req.Payload[deepai.PKCEParamVerifier].(string)
+		return got
+	}
+	t.Fatal("上游未收到兑换请求")
+	return ""
+}
+
+// DEEPAI2API_LOGIN_PKCE=0 时不发 PKCE（上游把 PKCE 语义改到不兼容时的退路）。
+func TestLoginPKCEDisabledByEnv(t *testing.T) {
+	t.Setenv(LoginPKCEEnv, "0")
+	u := loginUpstream(t, "legacy-key", "legacy-user")
+	s, _ := newTestServer(t, u)
+
+	sid, state := startLogin(t, s)
+	sess := s.Login.get(sid)
+	if sess == nil {
+		t.Fatal("login/start 没有登记会话")
+	}
+	if sess.Verifier != "" || sess.Challenge != "" {
+		t.Fatalf("关闭 PKCE 后不应生成 verifier/challenge，实际 %q / %q", sess.Verifier, sess.Challenge)
+	}
+
+	rec := do(t, s, http.MethodGet, "/login/open?id="+sid, "", "")
+	if rec.Code != http.StatusFound {
+		t.Fatalf("login/open 应 302，实际 %d", rec.Code)
+	}
+	loc, err := neturl.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("解析 Location: %v", err)
+	}
+	if loc.Query().Has(deepai.PKCEParamChallenge) {
+		t.Fatalf("关闭 PKCE 后不应带 challenge: %s", loc.RawQuery)
+	}
+
+	cb := "http://127.0.0.1:34105/auth-callback?code=legacy-code&state=" + state
+	if rec := do(t, s, http.MethodPost, "/admin/api/login/callback", "",
+		`{"session_id":"`+sid+`","callback":"`+cb+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("login/callback 应 200，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	s.Pool.Wait()
 }

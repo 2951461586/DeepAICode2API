@@ -230,11 +230,23 @@ func (c *Client) ModelURL(path string) string { return c.Origin + ModelBasePath 
 func (c *Client) RootURL(path string) string { return c.Origin + path }
 
 // SignInURL 返回桌面端同款浏览器登录地址。
-func (c *Client) SignInURL(state string, port int) string {
+//
+// challenge 非空时按 0.3.45 桌面端的形态带上 PKCE 两参：
+// `code_challenge=<S256(verifier)>&code_challenge_method=S256`。
+//
+// 实测（2026-11-22，0.3.45 当天）：上游对该参数是**可选但在校验**的 ——
+// 不带 challenge 仍 200，带格式非法的 challenge 则 400 `Invalid sign-in proof.`。
+// 因此项目默认发送（与桌面端一致），需要退回旧形态时看
+// `DEEPAI2API_LOGIN_PKCE=0`。
+func (c *Client) SignInURL(state string, port int, challenge string) string {
 	u := c.ModelURL(PathSignIn)
 	q := url.Values{}
 	q.Set("state", state)
 	q.Set("port", fmt.Sprintf("%d", port))
+	if challenge != "" {
+		q.Set(PKCEParamChallenge, challenge)
+		q.Set(PKCEMethodParam, PKCEMethodS256)
+	}
 	return u + "?" + q.Encode()
 }
 
@@ -700,9 +712,16 @@ func (c *Client) Transcribe(ctx context.Context, acct *Account, filename, conten
 }
 
 // ExchangeCode 用桌面端登录回调里的 code 换取 API Key。
-func (c *Client) ExchangeCode(ctx context.Context, code string) (*Credentials, error) {
-	payload, _ := json.Marshal(map[string]string{"code": code})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ModelURL(PathExchange), bytes.NewReader(payload))
+//
+// verifier 非空时按 0.3.45 桌面端的形态在请求体里带上 `code_verifier`；
+// 它必须与 SignInURL 当时发出的 `code_challenge` 配对（同一会话）。
+func (c *Client) ExchangeCode(ctx context.Context, code, verifier string) (*Credentials, error) {
+	payload := map[string]string{"code": code}
+	if verifier != "" {
+		payload[PKCEParamVerifier] = verifier
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ModelURL(PathExchange), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -713,19 +732,19 @@ func (c *Client) ExchangeCode(ctx context.Context, code string) (*Credentials, e
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, &HTTPError{Op: "登录换取密钥", Status: resp.StatusCode, Body: body}
+		return nil, &HTTPError{Op: "登录换取密钥", Status: resp.StatusCode, Body: respBody}
 	}
 	var out struct {
 		APIKey   string `json:"api_key"`
 		Username string `json:"username"`
 		IsPro    bool   `json:"is_pro"`
 	}
-	if err := json.Unmarshal(body, &out); err != nil {
+	if err := json.Unmarshal(respBody, &out); err != nil {
 		return nil, fmt.Errorf("登录响应解析失败: %w", err)
 	}
 	if out.APIKey == "" || strings.ContainsAny(out.APIKey, "\r\n") {

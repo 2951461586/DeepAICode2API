@@ -2,6 +2,8 @@ package deepai
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -117,7 +119,7 @@ func TestSignInURL(t *testing.T) {
 	c := NewClientWithFingerprint("", "")
 	c.Origin = "https://gw.example.com"
 
-	raw := c.SignInURL("st ate&1", 10087)
+	raw := c.SignInURL("st ate&1", 10087, "")
 	u, err := url.Parse(raw)
 	if err != nil {
 		t.Fatalf("SignInURL 解析失败: %v", err)
@@ -134,6 +136,60 @@ func TestSignInURL(t *testing.T) {
 	}
 	if !strings.HasPrefix(raw, "https://gw.example.com"+ModelBasePath+PathSignIn+"?") {
 		t.Fatalf("绝对地址前缀错误: %q", raw)
+	}
+	if q.Has(PKCEParamChallenge) || q.Has(PKCEMethodParam) {
+		t.Fatalf("challenge 为空时不应带 PKCE 参数: %q", raw)
+	}
+}
+
+// TestSignInURLWithPKCE 对齐桌面端 0.3.45 的登录形态：S256 两参一起发。
+func TestSignInURLWithPKCE(t *testing.T) {
+	c := NewClientWithFingerprint("", "")
+	c.Origin = "https://gw.example.com"
+
+	verifier, challenge, err := NewPKCE()
+	if err != nil {
+		t.Fatalf("NewPKCE: %v", err)
+	}
+	if len(verifier) != 43 || len(challenge) != 43 {
+		t.Fatalf("verifier / challenge 长度 = %d / %d，期望 43 / 43", len(verifier), len(challenge))
+	}
+	if want := PKCEChallenge(verifier); challenge != want {
+		t.Fatalf("challenge = %q，期望 %q", challenge, want)
+	}
+	if !ValidPKCEVerifier(verifier) {
+		t.Fatalf("生成的 verifier 不合法: %q", verifier)
+	}
+
+	raw := c.SignInURL("state-hex", 10087, challenge)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("SignInURL 解析失败: %v", err)
+	}
+	q := u.Query()
+	if q.Get(PKCEParamChallenge) != challenge {
+		t.Fatalf("%s = %q，期望 %q", PKCEParamChallenge, q.Get(PKCEParamChallenge), challenge)
+	}
+	if q.Get(PKCEMethodParam) != PKCEMethodS256 {
+		t.Fatalf("%s = %q，期望 S256", PKCEMethodParam, q.Get(PKCEMethodParam))
+	}
+}
+
+// TestValidPKCEVerifier 覆盖格式校验（上游按 43 字符 base64url 校验 challenge）。
+func TestValidPKCEVerifier(t *testing.T) {
+	if ValidPKCEVerifier("xx") {
+		t.Fatal("过短的 verifier 应被判非法")
+	}
+	if ValidPKCEVerifier(strings.Repeat("!", 43)) {
+		t.Fatal("含非 base64url 字符的 43 字符串应被判非法")
+	}
+	// 43 个合法 base64url 字符解出来正好 32 字节，与真实 verifier 同形。
+	if !ValidPKCEVerifier(strings.Repeat("a", 43)) {
+		t.Fatal("43 个 base64url 字符应判合法")
+	}
+	ok := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	if !ValidPKCEVerifier(ok) {
+		t.Fatalf("32 字节零值的 base64url（43 字符）应判合法: %q", ok)
 	}
 }
 
@@ -342,7 +398,7 @@ func TestExchangeCode(t *testing.T) {
 		_, _ = io.WriteString(w, `{"api_key":"sk-new","username":"alice","is_pro":true}`)
 	})
 
-	cred, err := c.ExchangeCode(context.Background(), "auth-code-1")
+	cred, err := c.ExchangeCode(context.Background(), "auth-code-1", "")
 	if err != nil {
 		t.Fatalf("ExchangeCode: %v", err)
 	}
@@ -360,6 +416,36 @@ func TestExchangeCode(t *testing.T) {
 	}
 	if gotKey != "" {
 		t.Fatalf("换取密钥时不应带 Api-Key（还没有 Key），得到 %q", gotKey)
+	}
+}
+
+// TestExchangeCodeWithPKCE 对齐桌面端 0.3.45：兑换时带上与 challenge 配对的 code_verifier。
+func TestExchangeCodeWithPKCE(t *testing.T) {
+	var gotBody map[string]string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = nil
+		if err := json.Unmarshal(b, &gotBody); err != nil {
+			t.Errorf("请求体不是 JSON 对象: %s", b)
+		}
+		_, _ = io.WriteString(w, `{"api_key":"sk-new","username":"alice","is_pro":true}`)
+	})
+
+	verifier, challenge, err := NewPKCE()
+	if err != nil {
+		t.Fatalf("NewPKCE: %v", err)
+	}
+	if _, err := c.ExchangeCode(context.Background(), "auth-code-2", verifier); err != nil {
+		t.Fatalf("ExchangeCode: %v", err)
+	}
+	if gotBody["code"] != "auth-code-2" {
+		t.Fatalf("code = %q", gotBody["code"])
+	}
+	if gotBody[PKCEParamVerifier] != verifier {
+		t.Fatalf("%s = %q，期望 %q", PKCEParamVerifier, gotBody[PKCEParamVerifier], verifier)
+	}
+	if PKCEChallenge(gotBody[PKCEParamVerifier]) != challenge {
+		t.Fatal("回传的 verifier 与先前发出的 challenge 不配对")
 	}
 }
 
@@ -382,7 +468,7 @@ func TestExchangeCodeRejectsBadKey(t *testing.T) {
 	}
 	for _, cs := range cases {
 		body = cs.body
-		_, err := c.ExchangeCode(context.Background(), "code")
+		_, err := c.ExchangeCode(context.Background(), "code", "")
 		if err == nil || !strings.Contains(err.Error(), cs.want) {
 			t.Errorf("%s: err=%v，期望包含 %q", cs.name, err, cs.want)
 		}
@@ -390,7 +476,7 @@ func TestExchangeCodeRejectsBadKey(t *testing.T) {
 
 	status = http.StatusForbidden
 	body = `{"error":{"code":"auth_required","message":"bad code"}}`
-	_, err := c.ExchangeCode(context.Background(), "code")
+	_, err := c.ExchangeCode(context.Background(), "code", "")
 	var he *HTTPError
 	if !errors.As(err, &he) || he.Op != "登录换取密钥" || he.Status != http.StatusForbidden {
 		t.Fatalf("期望登录换取密钥的 HTTPError，得到 %v", err)
