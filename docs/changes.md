@@ -4825,3 +4825,48 @@ url.Parse 的结果：Scheme="06gvj…bringyour.com" Opaque="7161" Host=""
   等于 `HEAD`，否则直接退出（错标镜像比部署失败更危险）；
 - 服务器仓库写入 `http.proxy/https.proxy = http://127.0.0.1:17920`（mihomo mixed），
   之后 `git fetch --tags` 才能稳定拉取（直连 GitHub 会 TLS 中断）。
+
+### 79.8 上线结果（v0.1.15，2026-11-22 11:52 CST）
+
+| 项 | 结果 |
+| --- | --- |
+| 镜像 | `deepaicode2api:local-20261122-v0.1.15-170efcd`（v0.1.14 与错标镜像已清理） |
+| 容器 | `Up (healthy)`，healthcheck 30s，`mem_limit 512MB`，`restarts=0` |
+| `/healthz` | `version=v0.1.15`、`accounts=16`、`lane=7 / upstream 7`、`models=27` |
+| 专属出口探测 | **9 个出口探测通过并启用**，2 个失败（`i/o timeout` → 沿用全局出口），
+其余为缓存中/未到期；日志两类各带脱敏出口标签，可 grep `出口代理` |
+| 流量 | 部署后 5 分钟：访问 19 条、状态全 200；累计 `failed_requests` 未上升 |
+| 签到 | `checkin.attempts 2 / blocked 2`（流量低谷，样本不足；预热循环 30s 一轮、单次 10s 预算） |
+
+**服务器侧另外修好的三件事**：
+
+1. **git 无法直连 GitHub**：`git fetch` 报 `GnuTLS recv error (-110)`，
+   现在仓库级配置 `http.proxy/https.proxy = http://127.0.0.1:17920`（mihomo mixed，
+   socks 17912 对该路径是 403，见 `/root/scripts/backup-to-r2.sh` 的踩坑记录）；
+2. **错标镜像**：一次 `git fetch` 失败 + 旧脚本没有一致性检查，打出
+   `local-20261122-v0.1.15-95125db`（标签 v0.1.15 / 代码 v0.1.14）。已删除，
+   并在 `deploy.sh` 加闸门（tag 必须存在且等于 HEAD）；
+3. **时钟/磁盘**见 §79.6。
+
+### 79.9 待排期：系统补丁与重启窗口
+
+体检时 `apt` 待升级 **353 个包**，内核 `5.15.0-151`，主机已连续运行 **82 天**。
+没有 `reboot-required` 标记，但重启会带走全部 11 个容器，因此单独安排窗口：
+
+```bash
+# 窗口前：确认数据与状态可回滚
+docker compose -f /root/DeepAICode2API/docker-compose.yml ps
+sudo /root/scripts/backup-to-r2.sh          # 已有每日 3:00 的 cron，可手动再跑一次
+
+# 窗口内：只升安全补丁 + 全量升级二选一
+sudo apt-get update
+sudo apt-get -y --only-upgrade install $(apt-get -s -o Debug::NoLocking=1 upgrade | awk '/^Inst .*security/ {print $2}')   # 安全补丁
+sudo apt-get -y dist-upgrade
+sudo reboot      # 所有容器配置了 restart: unless-stopped，会随 docker 自动拉起
+
+# 窗口后
+docker ps --format '{{.Names}}\t{{.Status}}'
+curl -s localhost:10088/healthz
+```
+
+不改系统默认策略（`unattended-upgrades` 未启用），避免自动重启打断请求。
