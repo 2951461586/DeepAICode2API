@@ -44,11 +44,11 @@
 
 ## 一、逆向结论
 
-DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.45**，车道 7；
-0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 → 0.3.43 → 0.3.44 → 0.3.45 的 wire protocol 逐项比对：
-**0.3.41 只抬了车道（6 → 7），0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 在协议面上零变更（车道仍 7），其余请求头 / 指纹 / 签到 / 推理端点未变**；
-0.3.45 新增的 DeepAI Connect（`/connect/*`、`/sponsored/authorize`、PKCE 登录）都是账号与
-远程主机管理面，不进推理链路）。
+DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.47**，车道 7；
+0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 → 0.3.43 → 0.3.44 → 0.3.45 → 0.3.47 的 wire protocol 逐项比对：
+**0.3.41 只抬了车道（6 → 7），0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 / 0.3.47 在协议面上零变更（车道仍 7），其余请求头 / 指纹 / 签到 / 推理端点未变**；
+0.3.45 新增的 DeepAI Connect（`/connect/*`、`/sponsored/authorize`、PKCE 登录）与
+0.3.47 的登录指引 / 恢复提示 / 启动与存储错误文案都是账号与远程主机管理面，不进推理链路）。
 新增的 `sessions/save_records` 只服务历史备份，不进推理链路）。
 真正干活的不是桌面壳，而是 `resources/server.asar` 里的 t3code server；
 它把上游能力封装成本地回环 HTTP 服务，再交给 Pi（编码 agent）调用。
@@ -69,7 +69,7 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.
 | 语音转写 | `POST https://api.deepai.org/speech_to_text`（字段 `voiceRecording`） |
 | 联网搜索 | `POST https://api.deepai.org/deepai_code/web_search` |
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
-| 协议头 | `X-DeepAI-Code-Theos: 7`（计费车道版本；0.3.41 起为 7，2026-11-22 复核 0.3.44 / 0.3.45 仍为 7）。**车道门槛是服务端行为**：2026-11-18（0.3.41 发布当天）只有 7 通过，2026-11-19 复测已放宽为 ≤7 全通过、8 及以上 426（`docs/recon.md` §3） |
+| 协议头 | `X-DeepAI-Code-Theos: 7`（计费车道版本；0.3.41 起为 7，2026-11-23 复核 0.3.47 仍为 7）。**车道门槛是服务端行为**：2026-11-18（0.3.41 发布当天）只有 7 通过，2026-11-19 复测已放宽为 ≤7 全通过、8 及以上 426（`docs/recon.md` §3） |
 | 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每个出口代理随机一次，随该代理的所有 JSON 请求发出；桌面端是每进程一次） |
 | 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1`（`focus` 只在焦点状态已知时才追加） |
 | **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
@@ -443,7 +443,7 @@ print(client.chat.completions.create(
 | `PROXY_POOL` | 推理代理池（逗号或换行分隔完整 URL；入池时按账号轮询分配） |
 | `PROXY_POOL_FILE` | 代理池文件（每行一个） |
 | `DEEPAI2API_ENV_FILE` | 指定 `.env` 路径 |
-| `DEEPAI2API_LOGIN_PKCE` | 浏览器登录是否带 PKCE（默认 `true`，与桌面端 0.3.45 一致）；`0` 退回只发 `state`+`port` 的旧形态 |
+| `DEEPAI2API_LOGIN_PKCE` | 浏览器登录是否带 PKCE（默认 `true`，与桌面端 0.3.47 一致）；`0` 退回只发 `state`+`port` 的旧形态 |
 | `DEEPAI2API_HISTORY_TTL_HOURS` | `/v1/responses` 伺服端歷史暫存存活小時數（默认 `24`） |
 | `DEEPAI2API_HISTORY_MAX_ENTRIES` | `/v1/responses` 伺服端歷史暫存最多輪次（默认 `500`） |
 | `DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW` | 重放有效上下文上限的全域覆寫（优先級最高；默认按模型查表，見上方上下文契約；`0`/負數關閉） |
@@ -754,7 +754,7 @@ DEEPAI2API_IMAGE=<旧 tag> sh scripts/deploy.sh           # 回滚到指定镜�
 - 容器自带 `healthcheck`（镜像内 `wget /healthz`，30s 一次）与 `mem_limit: 512m`；
   之前没有 healthcheck，进程假死时 `unless-stopped` 永远不会重启（2026-11-22 线上复盘）；
 
-> `X-DeepAI-Code-Theos: 7` 是当前客户端（0.3.45）的车道。车道门槛由上游随时调整：
+> `X-DeepAI-Code-Theos: 7` 是当前客户端（0.3.47）的车道。车道门槛由上游随时调整：
 > 2026-11-18 是「只有 7」，2026-11-19 已放宽成「≤7 全通过、8 及以上 426
 > `lane_version_unsupported`」（见 `docs/recon.md` §3）。发旧车道**仍能跑通**，
 > 所以判断协议是否跟进要看 `/theos` 回的 `lane_version`（控制台概览的「上游车道」）。
@@ -821,10 +821,10 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   `DEEPAI2API_CONTEXT_BODY_BYTES`（默认 196,608 B）；`/v1/chat/completions` 与
   `/v1/messages` 保持透明代理，超限只在日志里打 `body_bytes` / `body_near_cap`——
   客户端仍应对长会话自行压缩历史；
-- `X-DeepAI-Code-Theos` 发 `7`（0.3.41 起，2026-11-22 复核 0.3.44 / 0.3.45 未变）。上游门槛可能放宽：2026-11-19 实测 ≤7 全通过、
+- `X-DeepAI-Code-Theos` 发 `7`（0.3.41 起，2026-11-23 复核 0.3.47 未变）。上游门槛可能放宽：2026-11-19 实测 ≤7 全通过、
   8 及以上 426，此时旧车道「能用」并不代表车道是对的 —— 与上游当前车道的差异由
   `/theos` 的 `lane_version` 观测（`Server.UpstreamLane` / `LaneDrift`，控制台概览可见）；
-- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.45**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
+- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.47**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
 - 车道探测结果由**当前构建**验证过（`Settings.LaneBuild == deepai.LaneVersion`）时无条件信任，即使它比编译值旧；否则按 `max(存储值, 编译值)` 取较新值。探测序列从编译期车道开始，**不能先试旧车道**；
 - 请求体形状拒绝除匹配两版文案外，还兜底 `400 + code=invalid_request_error`；补形状重试仍失败时回传第二个错误；
 - Anthropic `budget_tokens` 按量级映射到 `low/medium/high/xhigh/max`（4k/16k/32k/64k 分界），`output_config.effort` 原样透传；2026-11-15 实测上游接受六档；
@@ -945,7 +945,7 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 
 MIT。本项目仅复刻本机已登录客户端的调用链路，请遵守 DeepAI 的服务条款。
 
-> **客户端自身的声明（0.3.43 新增，0.3.44 / 0.3.45 仍在）**：`server.asar` 的 `src/deepai/api.ts` 在
+> **客户端自身的声明（0.3.43 新增，0.3.44 / 0.3.45 / 0.3.47 仍在）**：`server.asar` 的 `src/deepai/api.ts` 在
 > 车道头与签到旁边加了一段注释，援引 DeepAI ToS 第 4 条，明写这些请求头与签到是
 > 「DeepAI Code 应用自识别用」，**不允许复制进其它客户端**。本项目只是复用本机
 > 已登录客户端的既有链路、面向自己的账号，不做分发或代运营；如果你要把这套头

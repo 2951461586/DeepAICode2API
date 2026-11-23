@@ -45,14 +45,15 @@ dependencies.
 
 ## 1. Reverse-engineering findings
 
-DeepAI Code is an **Electron + local t3code server** architecture (app version **0.3.45**,
+DeepAI Code is an **Electron + local t3code server** architecture (app version **0.3.47**,
 lane 7). Comparing the wire protocol item by item across
-0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 → 0.3.43 → 0.3.44 → 0.3.45:
-**0.3.41 only bumped the lane (6 → 7); 0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 changed nothing on the
+0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 → 0.3.43 → 0.3.44 → 0.3.45 → 0.3.47:
+**0.3.41 only bumped the lane (6 → 7); 0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 / 0.3.47 changed nothing on the
 protocol surface (lane stays 7), and the request headers / fingerprints / check-in / inference
 endpoints are unchanged**.
-The DeepAI Connect features added in 0.3.45 (`/connect/*`, `/sponsored/authorize`, PKCE sign-in)
-are all account- and remote-host-management surfaces and do not enter the inference path;
+The DeepAI Connect features added in 0.3.45 (`/connect/*`, `/sponsored/authorize`, PKCE sign-in) and
+the 0.3.47 sign-in guidance / recovery hints / startup & storage error copy are all account- and
+remote-host-management surfaces and do not enter the inference path;
 the new `sessions/save_records` only serves history backup, also outside inference.
 The component doing the real work is not the Electron shell but the t3code server inside
 `resources/server.asar`; it wraps upstream capabilities as a local loopback HTTP service and
@@ -74,7 +75,7 @@ hands them to Pi (the coding agent).
 | Speech-to-text | `POST https://api.deepai.org/speech_to_text` (field `voiceRecording`) |
 | Web search | `POST https://api.deepai.org/deepai_code/web_search` |
 | **Auth** | Header `Api-Key: <apiKey>` (not `Authorization`) |
-| Protocol header | `X-DeepAI-Code-Theos: 7` (billing-lane version; 7 since 0.3.41, still 7 as of the 2026-11-22 recheck of 0.3.44 / 0.3.45). **The lane gate is server-side behavior**: on 2026-11-18 (the day 0.3.41 shipped) only 7 passed; a 2026-11-19 recheck showed ≤7 all pass and 8+ returns 426 (`docs/recon.md` §3) |
+| Protocol header | `X-DeepAI-Code-Theos: 7` (billing-lane version; 7 since 0.3.41, still 7 as of the 2026-11-23 recheck of 0.3.47). **The lane gate is server-side behavior**: on 2026-11-18 (the day 0.3.41 shipped) only 7 passed; a 2026-11-19 recheck showed ≤7 all pass and 8+ returns 426 (`docs/recon.md` §3) |
 | Process instance | `X-DeepAI-Code-Instance: <32-hex>` (randomized once per egress proxy and sent with every JSON request through that proxy; the desktop app does it once per process) |
 | Check-in | `/theos` responses carry `check_in:{nonce, seconds}`; the next `/theos` sends `X-DeepAI-Code-Check-In` plus `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1` (`focus` is appended only when the focus state is known) |
 | **Machine fingerprint** | `X-DeepAI-Code-Machine: sha256(raw machine UUID)`, used for daily free Theos; metered models return `machine_required` when absent |
@@ -479,7 +480,7 @@ Other environment variables:
 | `PROXY_POOL` | Inference proxy pool (comma- or newline-separated full URLs; assigned round-robin per account at pool entry) |
 | `PROXY_POOL_FILE` | Proxy-pool file (one per line) |
 | `DEEPAI2API_ENV_FILE` | Path to `.env` |
-| `DEEPAI2API_LOGIN_PKCE` | Whether browser sign-in uses PKCE (default `true`, matching desktop 0.3.45); `0` reverts to the old `state`+`port`-only shape |
+| `DEEPAI2API_LOGIN_PKCE` | Whether browser sign-in uses PKCE (default `true`, matching desktop 0.3.47); `0` reverts to the old `state`+`port`-only shape |
 | `DEEPAI2API_HISTORY_TTL_HOURS` | `/v1/responses` server-side history TTL in hours (default `24`) |
 | `DEEPAI2API_HISTORY_MAX_ENTRIES` | Maximum turns in the `/v1/responses` server-side history cache (default `500`) |
 | `DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW` | Global override for the replayed effective context ceiling (highest priority; default is the per-model table above; `0`/negative disables) |
@@ -809,7 +810,7 @@ DEEPAI2API_IMAGE=<old tag> sh scripts/deploy.sh         # roll back to a specifi
   `mem_limit: 512m`; without one, `unless-stopped` never restarts a wedged process
   (2026-11-22 production retrospective).
 
-> `X-DeepAI-Code-Theos: 7` is the current client's (0.3.45) lane. The lane gate is adjusted by
+> `X-DeepAI-Code-Theos: 7` is the current client's (0.3.47) lane. The lane gate is adjusted by
 > upstream at any time: on 2026-11-18 it was "only 7"; by 2026-11-19 it had relaxed to "≤7 all pass,
 > 8 and above return 426 `lane_version_unsupported`" (see `docs/recon.md` §3). Sending an old lane
 > **still works**, so whether the protocol is caught up is judged by the `/theos` `lane_version`
@@ -884,12 +885,12 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   `/v1/responses` replay path; `/v1/chat/completions` and `/v1/messages` stay transparent proxies and
   only log `body_bytes` / `body_near_cap` when over the line — clients should still compress history
   for long sessions;
-- `X-DeepAI-Code-Theos` sends `7` (since 0.3.41; the 2026-11-22 recheck of 0.3.44 / 0.3.45 found no
+- `X-DeepAI-Code-Theos` sends `7` (since 0.3.41; the 2026-11-23 recheck of 0.3.47 found no
   change). The upstream gate may relax: on 2026-11-19 ≤7 all passed and 8+ returned 426, so an old
   lane "working" does not mean it is the right lane — the difference from upstream's current lane is
   observed via `/theos`'s `lane_version` (`Server.UpstreamLane` / `LaneDrift`, visible in the console
   overview);
-- The heartbeat `X-DeepAI-Code-Beacon`'s `v=` must be the current client version (now **0.3.45**,
+- The heartbeat `X-DeepAI-Code-Beacon`'s `v=` must be the current client version (now **0.3.47**,
   see `deepai.AppVersion`); `pi=` has been optional since 0.3.30, but sending it is harmless;
 - Lane-probe results are trusted unconditionally when validated by **the current build**
   (`Settings.LaneBuild == deepai.LaneVersion`), even if older than the compiled value; otherwise
@@ -1039,7 +1040,7 @@ overturned by later rechecks (trust the latest entries in `docs/changes.md` and 
 MIT. This project only replicates the call path of an already-signed-in local client; please observe
 DeepAI's terms of service.
 
-> **The client's own declaration (added in 0.3.43, still present in 0.3.44 / 0.3.45)**: in
+> **The client's own declaration (added in 0.3.43, still present in 0.3.44 / 0.3.45 / 0.3.47)**: in
 > `server.asar`'s `src/deepai/api.ts`, next to the lane header and check-in, a comment cites DeepAI
 > ToS §4 and states explicitly that these headers and the check-in exist for "DeepAI Code app
 > self-identification" and **must not be copied into other clients**. This project only reuses the

@@ -68,7 +68,8 @@ const (
 	//      internal/server 的 UpstreamLane / LaneDrift。
 	//
 	// 2026-11-20 复核 0.3.42、2026-11-21 复核 0.3.43、2026-11-22 复核 0.3.44 /
-	// 0.3.45：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
+	// 0.3.45、2026-11-23 复核 0.3.47（跳过 0.3.46 安装包，0.3.45 → 0.3.47 一次性
+	// 比对）：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
 	LaneVersion = "7"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
@@ -126,7 +127,28 @@ const (
 	// 赞助卡片，不进推理链路）。凭据文件 `deepai-account.bin` 只多了可选字段
 	// `connect{token,expiresAt}` / `connectUnavailable`，`apiKey` 仍是必填明文 JSON。
 	// 见 `docs/changes.md` §80。
-	AppVersion = "0.3.45"
+	//
+	// 0.3.45 → 0.3.47（0.3.47 `releaseDate` 2026-11-23T04:38Z）同样**只在协议面外动**：
+	// 车道仍 `"7"`（`DEEPAI_LANE_HEADERS` 块 sha256 与 0.3.45 逐字节一致），14 个
+	// `X-*` 头字面量、`/deepai_code/*` 端点集合、`/chat/completions` 请求体
+	// （`max_completion_tokens` / `reasoning_effort` / `previous_response_id` 0 处）、
+	// 签到 / beacon 形态（`v=${version$2};up=…;pi=…;focus=…`）、机器指纹
+	// （`machineId.ts` 不在变更列表）全部未变；内置 pi 运行时仍 `pi-ai 1.3.0`，
+	// `dist/api/openai-completions.js` sha256 `4b3875e5…` 与 0.3.45 一致（真正的
+	// 请求体由它构造，字节级相同 = 请求体形状不可变）。
+	// `binCli` 全量 diff 42 hunk / +213 / −213，`//#region` 归属 1755 → 1757 个模块，
+	// 只有 15 个变 + 2 个新增（`packages/shared/src/startupFailure.ts`、
+	// `src/managed/userActivity.ts`），`/deepai_code/*` 里只有 `api.ts` /
+	// `DeepAIAccount.ts` 两个改动，且都在登录与上报侧：拒绝码白名单加
+	// `theos_insufficient` / `pro_required` / `rate_limit_exceeded`（只进 Sentry 的
+	// `error_codes` / `rejection` tag，**不上行**）、新增 `deepAIAccountRecovery()`
+	// 把拒绝码映射成 `sign_in` / `social_sign_in` / `verify_email` / `unavailable`
+	// 四种面向用户的恢复提示、`/theos` 被拒后置 `accountRecovery` 并据此**在客户端
+	// 侧跳过**额度刷新与推理请求（`ensureCheckedIn` 直接失败，不再打上游）。其余为
+	// 启动失败 / 存储错误的人话文案（`startupFailure.ts`、`persistence/Errors.ts`、
+	// `UserFacingErrors.ts`）、托管云工作区契约（`cloud-status/-create/-start`、
+	// `session_expires_at` 续期）与凭据写入串行化。见 `docs/changes.md` §84。
+	AppVersion = "0.3.47"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。

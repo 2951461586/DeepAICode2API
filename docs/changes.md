@@ -30,6 +30,7 @@
 | 未发版 | 78 | 客户端 0.3.44 同步复核：wire protocol **仍零变更**（车道仍 7），只跟心跳 `v=` + 本机升级与旧装包清理 |
 | v0.1.13 | 78、79 | 客户端 0.3.44 同步 + 线上体检整改：签到预热、出口代理冷却、healthcheck / 机密出库 / deploy.sh |
 | 未发版 | 81、82 | 客户端 0.3.45 同步复核：DeepAI Connect 功能轮，wire protocol **仍零变更**（车道仍 7）+ 本机升级清理；浏览器登录跟进 PKCE（`DEEPAI2API_LOGIN_PKCE`，默认开） |
+| 未发版 | 84 | 客户端 0.3.47 同步复核：登录指引 / 恢复提示 / 启动与存储文案轮，wire protocol **仍零变更**（车道仍 7、请求体构造文件 sha256 一致）+ 本机升级与旧装包清理 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -5355,3 +5356,107 @@ lavabyte/deepai-gateway 的交叉实测都把悬崖落在**请求体字节**上�
   `DEEPAI2API_IMAGE=deepaicode2api:local-20261122-v0.1.22-4-gdaa4e0b-daa4e0b docker compose up -d --no-build`；
 - 宿主发布地址为 `127.0.0.1:10088`（`DEEPAI2API_ADDR`，nginx 终止 TLS），
   容器内健康检查用 `127.0.0.1:10087`，排障时别混。
+
+---
+
+## 84. 2026-11-23 客户端 0.3.47 同步复核：登录指引 / 恢复提示轮，协议面仍零变更（未发版）
+
+**触发**：例行扫描。官方 `latest.yml` 从 **0.3.45** 跳到 **0.3.47**
+（`releaseDate` 2026-11-23T04:38:15.028Z）。`latest.yml` 只列 0.3.47 的位置，但它并非跳过号：
+`DeepAI-Code-0.3.46-x64.exe`（490,365,616 B）在同一个 releases 目录下仍可下载。本轮
+**没有单独下 0.3.46**，而是按 **0.3.45 → 0.3.47** 一次性比对——bundle 是累积的，
+0.3.47 的产物包含了 0.3.46 的全部变更，所以结论对两个版本同时成立。release notes 报的是「更清楚的登录指引 + 临时账号中断的
+自动恢复」「启动被另一实例或存储问题挡住时的可读提示」——两项都在协议面外。
+
+### 84.1 版本核实
+
+| 复核项 | 0.3.45 | 0.3.47 |
+| --- | --- | --- |
+| `latest.yml` `version` | 0.3.45 | **0.3.47** |
+| `releaseDate` | 2026-11-22T04:13Z | **2026-11-23T04:38:15Z** |
+| x64 `sha512` / `size` | `ASQA2PXh…` / 490,374,704 B | `P2KH/6vu…` / **490,430,232 B** |
+| arm64 `sha512` / `size` | `f9ZAhJxu…` / 470,267,728 B | `i9KC2Zf4…` / **470,326,912 B** |
+| `app.asar` `package.json` | 0.3.45（`t3codeCommitHash: 30429cde7441`） | **0.3.47**（`875c2277c21c`） |
+| `app.asar` / `server.asar` sha256 | — | **`8156f7da…` / `01d06130…`**（安装后与本机文件逐字节一致） |
+| 本机 `ProductVersion` | 0.3.45.0 | 复核时 0.3.45.0；复核后已升级到 **0.3.47.0** |
+
+下载 `DeepAI-Code-0.3.47-x64.exe`（490,430,232 B）→ sha512 与 `latest.yml` 逐字节一致
+→ 7z 解 NSIS 的 `$PLUGINSDIR/app-64.7z` → `resources/{app,server}.asar`。
+
+### 84.2 结论：推理协议面仍然零变更，只跟心跳版本号
+
+`server.asar` → `apps/server/dist/binCli-BfO7YMNb.mjs`（14,906,175 B，0.3.45 是
+`binCli-C6U4jU1g.mjs` 14,896,813 B），全量 diff **42 hunk / +213 / −213**；
+按 `//#region` 归属 **1755 → 1757 个源模块**，只有 **15 个变 + 2 个新增**，其余字节级不变。
+
+| 复核项 | 0.3.45 | 0.3.47 | 判据 |
+| --- | --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` 整个对象 | `Theos: "7"` + `Instance: randomBytes(16).hex` | **内容 sha256 相同** | 片段比对 |
+| `X-*` 头字面量 | 14 个（含 5 个 `X-DeepAI-Code-*`） | **集合零差异** | 字面量集合 diff |
+| `/deepai_code/*` 端点 | 推理 / `/models` / `/theos` / 搜索 / `sessions/*` / `connect/*` | **完全一致**（连 `/deepai_code_instructions` 等非推理串都在） | 字面量集合 md5 相同 |
+| 聊天请求体 | 由 `pi-ai` 的 `dist/api/openai-completions.js` 构造 | **该文件 sha256 `4b3875e5…` 与 0.3.45 完全一致**；`pi-ai` / `pi-coding-agent` 仍 **1.3.0** | 解包 `node_modules` |
+| `max_completion_tokens` / `reasoning_effort` | 2 / 9 处 | **2 / 9 处**，相关片段逐字一致 | 字面量计数 |
+| `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** | 全库 grep |
+| beacon `v=` | `v=${version$2};up=…;pi=…;focus=…` | **同一逻辑**，`version$2` 报 0.3.47 | 源码级 |
+| 机器指纹 | `machineId.ts` | **不在 15 个变更模块里**（算法与 Linux `parseLinuxMachineId` 未动） | region hash |
+| 凭据文件 schema | `{apiKey,username,isPro,connect?,connectUnavailable?}` | **未动**（`contracts/deepai.ts` 只改状态结构与 `retryAccount` 入参） | Schema diff |
+
+→ 结论：`deepai.AppVersion` 跟到 **0.3.47**，`LaneVersion` 保持 `"7"`，协议逻辑、
+请求头、请求体与指纹都不改。网关侧无需改动即可吃 0.3.47 桌面端写出的凭据。
+
+### 84.3 这一轮真正改的：错误人话化 + 账号恢复提示（协议面外）
+
+15 个变更模块 + 2 个新增（`packages/shared/src/startupFailure.ts`、`src/managed/userActivity.ts`）：
+
+- `src/deepai/api.ts`：拒答码白名单加 `theos_insufficient` / `pro_required` /
+  `rate_limit_exceeded`（**只进 Sentry 的 `error_codes` / `rejection` tag，不上行**）；
+  新增 `deepAIAccountRecovery()`（拒答码 → `sign_in` / `social_sign_in` /
+  `verify_email` / `unavailable` 四种面向用户的提示，注释明写「不暴露执法决定」）与
+  `deepAIAccountDiagnosticTags()`（统一 tag 结构）。**车道头、`deepAIBeacon`、
+  `checkInHeaders()`、`/theos` 分支 0 hunk。**
+- `src/deepai/DeepAIAccount.ts`：`/theos` 被拒时置 `allowanceStale` + `accountRecovery`
+  + `accountRefusal`，`ensureCheckedIn` 据此**在客户端侧直接失败**、不再打上游、
+  也不再刷新额度；`/theos` 失败补一次性 `reportError`；新增 `credentialLock`
+  把 `saveCredentials` / `logout` / `connect` 续期串行化；`connect` 会话按
+  `session_expires_at` 续期（只在内存与凭据文件里改 `expiresAt`）。
+- 启动 / 存储错误人话文案：`startupFailure.ts`（新增）、`persistence/Errors.ts`
+  （SQLite 13/`ENOSPC`/`EDQUOT` → 磁盘满、8/`EROFS` → 只读，且**不回显 SQL / 路径**）、
+  `orchestration-v2/UserFacingErrors.ts`、`observability/StartupErrorReporting.ts`。
+- 托管云工作区契约：`contracts/managedConnection.ts` 增 `cloud-status` / `cloud-create` /
+  `cloud-start` 三个 action、`workspace{id,desired,observed,revision,host_id,error}`、
+  `session_expires_at`、`errorCode` / `statusCode` / `retryAfterMs`。
+- 其余：`provider-pi` 的 `server_adapter.ts`（`now$62…$64` 变量重编号 + 传输错误文案）、
+  `auth/RpcAuthorization.ts`、`binCli.ts`、`config.ts`（`ServerDirectoryError`）、
+  `managed/hostAdapter.ts`、`shared/managed/{control,host}.ts`。
+
+**对网关的可观测含义**：0.3.47 客户端在 `/theos` 被拒后会**跳过推理请求**，
+所以同一账号在桌面端会「安静地不发请求」。网关不跟这条：本项目的策略仍是
+「拒绝码是账号终态 → 标记后跳过」（`SocialLoginRequired` / `MachineRequired`），
+语义等价，只是记录方式不同。
+
+### 84.4 本轮改动
+
+- `internal/model/types.go`：`AppVersion` 0.3.45 → **0.3.47**，车道注释补 0.3.47 复核，
+  AppVersion 注释补 0.3.45 → 0.3.47 的差异清单；
+- 注释版本号同步：`internal/deepai/client_test.go`、`internal/machine/machine.go`、
+  `internal/machine/machine_test.go`、`internal/gateway/chatbody.go`；
+- `README.md` / `README.en.md`：应用版本、版本链、车道复核日期、心跳 `v=`、PKCE 对齐版本、
+  ToS 注释标注一并升到 0.3.47；
+- `docs/recon.md`：顶部新增 2026-11-23 复核条目（0.3.47，含对照表），§1 / §2 /
+  §2.3 / §3 / §5.1 / §5.3 的【源码级】标签与车道路由表、`v=0.3.47` 心跳示例同步。
+
+### 84.5 本机升级与清理
+
+用同一个官方安装包静默升级（`DeepAI-Code-0.3.47-x64.exe /S`）：退出码 0，
+`DeepAI Code.exe` 的 `ProductVersion` 变为 **0.3.47.0**、`FileVersion` 0.3.47，
+`resources/{app,server}.asar` 与安装包内解包产物 sha256 逐字节一致
+（`app.asar` `8156f7da…` / `server.asar` `01d06130…`），`server.asar` 内为
+`binCli-BfO7YMNb.mjs`，卸载注册项从 `DeepAI Code 0.3.45` 变为 **`DeepAI Code 0.3.47`（单条，
+无重复项）**。安装目录 1.4 GB、9682 个文件，除 `resources/git/etc/{hosts,networks,protocols,services}`
+四个 git 自带文件外没有早于本次构建（2026-11-23 12:37）的残留时间戳——即 0.3.45 已被
+完全覆盖，没有旧版残留目录。
+
+随后清理：安装包（468 MB）、NSIS 解包目录 `$PLUGINSDIR/app-64.7z` 与解开的应用树
+（约 1.8 GB）、白盒比对用的两版 `binCli` / `pi` 运行时副本、
+`deepai-code-desktop-updater` 缓存里的 `installer.exe`（468 MB，就是本轮 0.3.47 包），
+合计约 **2.8 GB**；用户数据 `~/.deepai-code` 与 `AppData/Roaming/deepai-code-v2` 保持不动。
