@@ -30,7 +30,7 @@
 | 未发版 | 78 | 客户端 0.3.44 同步复核：wire protocol **仍零变更**（车道仍 7），只跟心跳 `v=` + 本机升级与旧装包清理 |
 | v0.1.13 | 78、79 | 客户端 0.3.44 同步 + 线上体检整改：签到预热、出口代理冷却、healthcheck / 机密出库 / deploy.sh |
 | 未发版 | 81、82 | 客户端 0.3.45 同步复核：DeepAI Connect 功能轮，wire protocol **仍零变更**（车道仍 7）+ 本机升级清理；浏览器登录跟进 PKCE（`DEEPAI2API_LOGIN_PKCE`，默认开） |
-| 未发版 | 84 | 客户端 0.3.47 同步复核：登录指引 / 恢复提示 / 启动与存储文案轮，wire protocol **仍零变更**（车道仍 7、请求体构造文件 sha256 一致）+ 本机升级与旧装包清理 |
+| v0.1.23 | 84 | 客户端 0.3.47 同步复核：登录指引 / 恢复提示 / 启动与存储文案轮，wire protocol **仍零变更**（车道仍 7、请求体构造文件 sha256 一致）+ 本机升级与旧装包清理 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -5460,3 +5460,23 @@ lavabyte/deepai-gateway 的交叉实测都把悬崖落在**请求体字节**上�
 （约 1.8 GB）、白盒比对用的两版 `binCli` / `pi` 运行时副本、
 `deepai-code-desktop-updater` 缓存里的 `installer.exe`（468 MB，就是本轮 0.3.47 包），
 合计约 **2.8 GB**；用户数据 `~/.deepai-code` 与 `AppData/Roaming/deepai-code-v2` 保持不动。
+
+### 84.6 发版与上线（2026-11-23 16:05 CST）
+
+**发版**：`gh release` 走 `sh scripts/release.sh v0.1.23 --publish`，交叉编译 5 个平台
+（linux/amd64、linux/arm64、windows/amd64、darwin/amd64、darwin/arm64）+ `checksums.txt`，
+`https://github.com/2951461586/DeepAICode2API/releases/tag/v0.1.23`，标题、tag、资产三处一致
+（`name` / `tagName` 均为 `v0.1.23`）。
+
+**上线**：服务器 `/root/DeepAICode2API` 从 `30f74ad` fast-forward 到 `e66c28c`
+（`git describe` = `v0.1.23`），工作区无本地改动；`sh scripts/deploy.sh v0.1.23` 构建并启动
+镜像 `deepaicode2api:local-20261123-v0.1.23-e66c28c`，健康检查一次通过。
+
+- `/healthz`（宿主 `127.0.0.1:10088`，nginx 终止 TLS）：`accounts=17 ready=17 lane=7
+  lane_compiled=7 lane_drift=0 models=27 version=v0.1.23`，`machine_ready=true`；
+- **心跳版本已跟到**：容器内二进制含 `0.3.47` 字面量（`deepai.AppVersion` 编译进去），
+  下次 `/theos` 签到上报的 `v=` 即为 0.3.47；
+- 上一版镜像 `local-20261123-v0.1.22-7-gbfe30d9-bfe30d9` 保留（27.4 MB），回滚：
+  `DEEPAI2API_IMAGE=deepaicode2api:local-20261123-v0.1.22-7-gbfe30d9-bfe30d9 docker compose up -d --no-build`；
+- 容器内健康检查仍用 `127.0.0.1:10087`，宿主走 `10088`，排障别混；
+- 服务器磁盘 `/` 27G/40G（72%），`local-*` 镜像共 3 个（各 27.4 MB），未做额外清理。
