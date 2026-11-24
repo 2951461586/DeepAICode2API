@@ -70,17 +70,25 @@ if [ "$PUBLISH" -eq 1 ]; then
 	fi
 	NOTES="dist/release-notes-$VER.md"
 	[ -f "$NOTES" ] || NOTES=""
+	# 只上传本版资产：dist/ 里还躺着历史版本的 release notes（已 gitignore、长期累积），
+	# 用 `dist/*` 会把它们一起挂到每个 Release 上（v0.1.26 之前每个 Release 都带了
+	# 十几份旧 notes）。只挑本版二进制 + checksums + 本版 notes。
+	ASSETS=""
+	for f in dist/deepaicode2api_${VER}_* dist/checksums.txt; do
+		[ -e "$f" ] && ASSETS="$ASSETS $f"
+	done
+	[ -n "$NOTES" ] && ASSETS="$ASSETS $NOTES"
 	if gh release view "$VER" >/dev/null 2>&1; then
 		echo "Release $VER 已存在：覆盖资产并统一标题"
-		gh release upload "$VER" dist/* --clobber
+		gh release upload "$VER" $ASSETS --clobber
 		gh release edit "$VER" --title "$VER"
 		if [ -n "$NOTES" ]; then
 			gh release edit "$VER" --notes-file "$NOTES"
 		fi
 	elif [ -n "$NOTES" ]; then
-		gh release create "$VER" dist/* --title "$VER" --notes-file "$NOTES"
+		gh release create "$VER" $ASSETS --title "$VER" --notes-file "$NOTES"
 	else
-		gh release create "$VER" dist/* \
+		gh release create "$VER" $ASSETS \
 			--title "$VER" \
 			--notes "DeepAICode2API $VER（详见 docs/changes.md）"
 	fi
