@@ -33,6 +33,7 @@
 | v0.1.23 | 84 | 客户端 0.3.47 同步复核：登录指引 / 恢复提示 / 启动与存储文案轮，wire protocol **仍零变更**（车道仍 7、请求体构造文件 sha256 一致）+ 本机升级与旧装包清理 |
 | v0.1.24 | 85 | 客户端 0.3.48 同步复核：启动配对令牌修复 / 目录权限文案轮，wire protocol **仍零变更**（车道仍 7、`binCli` 只有 1 行语义改动）+ 本机升级与旧包清理 |
 | v0.1.25 | 86 | 后台签到预热：补 `err` 日志、预算 10s → 20s、连续失败 2m → 20m 退避（治「每 30s 超时一次」的死循环） |
+| v0.1.26 | 87 | 客户端 0.3.50 同步复核：agent 运行时 pi → dsh，wire protocol **仍零变更**（车道仍 7、请求头 / 指纹 / 请求体不变）+ 模型目录 27 → 28（新增免费 `claude-haiku-5-5`）+ 安装形态改 machine-wide + 指纹实测 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -5690,3 +5691,149 @@ windows/amd64、darwin/amd64、darwin/arm64）+ `checksums.txt`，
 退避这一轮没被触发（没有失败可退），属于兜底而不是主路径。
 
 **回滚**：`DEEPAI2API_IMAGE=deepaicode2api:local-20261124-v0.1.24-589266d docker compose up -d --no-build`
+
+---
+
+## 87. 2026-11-25 客户端 0.3.50 同步复核：agent 运行时迁移（pi → dsh），协议面仍零变更；模型目录 27 → 28（v0.1.26）
+
+**触发**：例行扫描。官方 `latest.yml` 从 **0.3.48** 跳到 **0.3.50**
+（`releaseDate` 2026-11-24T05:37:49.435Z）。release notes 说明本轮「恢复 skills / 斜杠命令 /
+goal mode / 压缩 / 用量统计 / 托管模型设置」，看起来是功能轮；白盒比对后发现底层是
+**agent 运行时整体迁移**（`@earendil-works/pi-*` → `@deepseek-ai/dsh-*`），所以逐项复核了协议面。
+
+### 87.1 版本核实
+
+| 复核项 | 0.3.48 | 0.3.50 |
+| --- | --- | --- |
+| `latest.yml` `version` / `releaseDate` | 0.3.48 / 2026-11-23T07:36:17Z | **0.3.50 / 2026-11-24T05:37:49Z** |
+| x64 包 | 490,364,120 B | 509,379,384 B（sha512 `gFLL4LJN…`，与 `latest.yml` 逐字节一致） |
+| arm64 包 | 470,313,240 B | 488,534,408 B（sha512 `dUy0eEHY…`） |
+| `app.asar` | 51,026,910 B / 2320 条目 | 46,667,328 B / **2485 条目**（新增 vendored undici 8.11.2 等） |
+| `server.asar` | 202,966,040 B / 15,514 条目 | 279,410,481 B / **26,602 条目** |
+| `app.asar` `package.json` | 0.3.48（`t3codeCommitHash: aad4d707c8c2`） | **0.3.50（`331d230b9e9e`）** |
+| `binCli` | 14,906,342 B / 1757 个 `//#region` 模块 | 15,004,074 B / **1770 个** |
+| 本机 `ProductVersion` | 0.3.48.0 | 复核后静默升级到 **0.3.50.0** |
+
+### 87.2 协议面复核（逐项）
+
+| 复核项 | 0.3.48 | 0.3.50 | 判据 |
+| --- | --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` 整块 | `{Theos:"7", Instance:randomBytes(16).hex}` | **逐字节一致**（车道仍 7，未抬到 8） | 源码级 |
+| `X-DeepAI-Code-*` 头字面量 | 5 个（Theos / Instance / Machine / Check-In / Beacon） | **集合零差异** | 源码级 |
+| `/deepai_code/*`、`/get_usage_summary`、`/speech_to_text` 端点 | — | **字面量集合零差异**；只多一个本地回环归一化 `/v1/chat/completions` | 源码级 |
+| 心跳 `deepAIBeacon()` | `v=${version$2};up=…;pi=…;focus=…` | **逐字节一致**，只有 `version$2` 报 0.3.50 | 源码级 |
+| 机器指纹 | `machineId.ts` 逻辑 | **区域 sha256 完全相同**（`d8750df9…`） | 源码级 |
+| 聊天请求体 | 由 `pi-ai` 的 `openai-completions.js` 构造 | pi 仍 **1.3.0**；该文件 `4b3875e5…` → `f0dd1d00…`，差异**只有 5 行 `extra_content` 回填**（仅当上游下发过工具调用 `extra_content` 时才出现） | 字节级 |
+| `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** | 源码级 |
+| `/theos` 请求形态 | `checkInHeaders()` + 3 个头 | **未变**（只把时间源从 wall clock 换成 monotonic + wall 双计） | 源码级 |
+
+`binCli` 全量 diff **1012 hunk / +4335 / −2098**，151 个 `//#region` 有改动；但落在
+`DEEPAI_LANE_HEADERS`、`machineId.ts`、`deepAIBeacon`、`mountDeepAIApi` 的普通头与
+`/theos` 分支上的 hunk 是 **0**。改动集中在 `src/orchestration-v2/*`、`src/deepai/*`
+（新增 harness 路由）、`packages/contracts/src/*` 与 `packages/provider-*`。
+
+### 87.3 本轮真正的变化：运行时迁移 + 两个要登记的细节
+
+1. **运行时迁移**：`server.asar` 新增 `@deepseek-ai/dsh-*`（0.2.3-alpha.2）整套运行时与
+   `@deepseek-ai/dsh-llm-pi-ai`（内含 pin 住的 pi-ai 1.3.0），移除旧的顶层
+   `@earendil-works/pi-ai` 依赖；新增 `src/deepai/DeepSeekHarness.ts` /
+   `DeepSeekHarnessDriver.ts` / `HarnessRouter.ts` / `hostedHarness*.ts` /
+   `HostedOpenCodeDiscovery.ts` / `DeepAIOpenCodeDriver.ts`。
+   `HarnessRouter` 把 `minimax-m3` 固定到 OpenCode harness、把 `DEEPSEEK_HOSTED_MODELS`
+   固定到 DeepSeek（dsh）harness；`localTransport` 用 scoped capability 限制每个 harness
+   只能访问 `/chat/completions` 与其模型集合。全在本地编排面。
+2. **默认上游换成 `https://api2.deepai.org`**（`T3CODE_DEEPAI_API2=false` 退回）。
+   实测两个 origin 行为一致：车道 7 均 401 `auth_required`、8 均 426；
+   `/theos` 对同一账号的「temporarily unavailable」在两边也一致。网关默认仍用
+   `api.deepai.org`，需要时用 `DEEPAI_API_ORIGIN` 切换，本轮不改默认值。
+3. **`REASONING_REPLAY_MODELS`（10 个）打开 pi-ai 的
+   `requiresReasoningContentOnAssistantMessages`**：assistant 历史缺 `reasoning_content`
+   时补空串。这是客户端构造历史的行为，网关只透传，不改请求语义。
+
+### 87.4 模型目录 27 → 28
+
+线上 `/v1/models`（重启后刷新）为 **28 条：12 免费 / 16 付费**。与 11-18 快照逐字段比对，
+只多一个免费模型：
+
+| ID | 名称 | 上下文 | 最大输出 | Theos/次 | input |
+| --- | --- | ---: | ---: | ---: | --- |
+| `claude-haiku-5-5` | Claude Haiku 5.5 | 95,000 | 64,000 | **0** | text+image |
+
+其余 27 条 `id` / `name` / `contextWindow` / `maxTokens` / `theosPerRequest` / `input` / `api`
+全部未变，`default` 仍 `glm-5.3-flash`，无下线。README 两张模型表已补该行并改成 28。
+
+### 87.5 代码与文档落地
+
+- `internal/model/types.go`：`AppVersion` 0.3.48 → **0.3.50**；`LaneVersion` 保持 `"7"`，
+  注释补 2026-11-24 双版本复核；AppVersion 注释补 0.3.48 → 0.3.50 的差异清单；
+- 版本链同步：`internal/machine/machine.go` / `machine_test.go`、`deepai/client_test.go`、
+  `gateway/chatbody.go`（请求体构造者文件从「字节级一致」改为「只多 `extra_content` 回填」）；
+- `README.md` / `README.en.md`：应用版本、车道复核日期、`DEEPAI2API_LOGIN_PKCE`、
+  心跳 `v=`、模型表（28 个）与启动样例（`28 models`）；
+- `docs/recon.md`：顶部新增 0.3.50 复核条目与对照表，`【源码级】` 标签同步；
+- `scripts/release.sh`：原来 `gh release upload "$VER" dist/*` 会把 dist 里**历史版本的
+  release notes**（已 gitignore、长期累积）一起挂到每个 Release 上。改成只上传
+  「本版二进制 + checksums + 本版 notes」，并顺手删掉 v0.1.26 上 13 份旧 notes 资产。
+
+### 87.6 本机升级与清理（2026-11-24 22:36 CST）
+
+用官方 NSIS 安装包静默升级（`DeepAI-Code-0.3.50-x64.exe /S`）：退出码 0，
+`DeepAI Code.exe` 的 `ProductVersion` 变为 **0.3.50.0**（`FileVersion` 0.3.50）。
+
+**安装形态变了**：0.3.50 改成 **machine-wide** 安装 —— `C:\Program Files\DeepAI Code`
+（9,696 个文件 / 1,494,555,341 B），卸载项 `"DeepAI Code 0.3.50" /allusers`，注册表只有一条；
+旧的 per-user 安装 `%LOCALAPPDATA%\Programs\deepai-code-desktop` 已被安装器删除，
+没有残留目录。
+
+清理：updater 缓存里的 `installer.exe`（509,379,384 B，就是本轮安装包）+
+白盒比对用的临时解包目录（两个安装包、两个 NSIS `app-64.7z`、两套应用树与抽取的
+`binCli` / `openai-completions.js`，共 **2.5 GB**）。用户数据 `~/.deepai-code` 与
+`AppData\Roaming\deepai-code-v2` 保持不动。
+
+### 87.7 发版与上线（2026-11-24 22:45 CST）
+
+**发版**：`v0.1.26`（`635af25`），5 平台交叉编译 + `checksums.txt`，
+`https://github.com/2951461586/DeepAICode2API/releases/tag/v0.1.26`，标题 / tag / 资产一致
+（资产只有本版 6 个文件 + 本版 notes，已无历史 notes 噪声）。
+
+**上线**：服务器 `/root/DeepAICode2API` 从 `71c325b` fast-forward 到 `635af25`，
+`sh scripts/deploy.sh v0.1.26` 构建并启动镜像
+`deepaicode2api:local-20261124-v0.1.26-635af25`，健康检查一次通过：
+
+- `/healthz`：`accounts=17 ready=17 lane=7 lane_compiled=7 lane_drift=0 models=28
+  version=v0.1.26`、`machine_ready=true`；容器内 `strings` 只输出 `0.3.50`（无 0.3.48 残留）；
+- **`lane_upstream` 仍为 0**：不是本次部署的问题 —— 手工触发两批 `/admin/api/checkin`
+  （共 3 个号）全部返回 `查询 Theos: DeepAI models are temporarily unavailable. Try again later.`，
+  同一账号在 `api.deepai.org` 与 `api2.deepai.org` 上结果一致；同时 `/v1/models` 刷新与
+  `/v1/chat/completions` 推理都正常（启动后已拉到 28 个模型、指纹测试的聊天请求 200）。
+  账号缓存的 `theos.lane_version` 仍是 7，`/theos` 恢复后 `lane_upstream` 会自动回到 7；
+- 镜像只保留 2 个：当前 `local-20261124-v0.1.26-635af25` 与回滚用的
+  `local-20261124-v0.1.25-71c325b`（各 27.4 MB），无更早的旧镜像。
+- 回滚：`DEEPAI2API_IMAGE=deepaicode2api:local-20261124-v0.1.25-71c325b docker compose up -d --no-build`
+
+### 87.8 模型指纹实测（0.3.50 上线后）
+
+方法沿用 `docs/model-fingerprint-2026-11-10.md`：`npx lmfpd@latest`，`-a chatcompletion`、
+`-p 1`（顺序采样）、`--count 3`；`gpt-6-astra` 需 `-a responses`（本轮未测，50 Theos/次）。
+为不污染线上密钥表，临时建了一把 `fingerprint-check-20261124` 密钥，测完即删。
+
+| 模型 | 有效样本 | 概率状态 | 判定为 | 家族 | 结论 |
+| --- | ---: | --- | --- | --- | --- |
+| `claude-haiku-5-5`（新） | **3/3** | reference_calibrated，p=0.296 | claude-fable-5.2 | **claude** | ✅ 家族对齐（参考库里没有 haiku，只能到家族级） |
+| `qwen-3.8-flash`（对照） | **3/3** | reference_calibrated，p=0.598 | gpt-6-astra | gpt | ❌ 与目录名不符（与 11-10 的 qwen3.8-flash 0.912 也不同） |
+| `glm-5.3-flash`（对照） | 2/3 | unavailable | grok-4.6 / openpangu-2.0-flash（两次跑） | grok / openpangu | ⚠️ 无法判定：一次样本首字节超 180s |
+| `deepseek-v4.1-flash`（对照） | 2/3 | unavailable | gemini-4-carbon | gemini | ⚠️ 无法判定：一次样本空输出 |
+
+判读注意：
+
+- 检测器参考库本轮是 **76 个模型的 `shared-detector-v2`**（`reference_sha256 89f2a3ea…`），
+  与 11-10 那次不是同一个库，**跨轮绝对值不可直接比较**；能比较的是「同一轮里 3/3 样本
+  给出的家族是否与目录名一致」；
+- 空样本不是网关 bug：日志里对应请求多为 `499 context canceled`（lmfpd 的首字节超时）或
+  一次 `502 stream error: stream ID 31; INTERNAL_ERROR; received from peer`（上游 31 分钟后
+  断流）；非流式（`-ns`）在 90s 预算下全部超时（线上非流式 p95 本身就是 300s），说明
+  长提示下上游首字节/吞吐偶发不稳，属于上游侧抖动；
+- 结论：**新模型 `claude-haiku-5-5` 的家族指纹对齐**；但**整个目录“指纹对齐”不能宣称成立** ——
+  对照里 `qwen-3.8-flash` 3/3 被判成 GPT 家族，`glm-5.3-flash` / `deepseek-v4.1-flash`
+  样本不足。这与 11-10 的历史结论一致：部分目录名并不对应真实路由，检测器只能作为参考，
+  要固定参数、多轮重复再下结论。
