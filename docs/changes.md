@@ -5671,3 +5671,22 @@ windows/amd64、darwin/amd64、darwin/arm64）+ `checksums.txt`，
   这是「上下文已在被截断（失忆）」的真实信号，值得单独查是哪个 key / 会话在发超长上下文。
 - 进程内 `upstream_errors`：`/chat/completions code=transport ×5`（重启后 18 分钟），
   与账号的 `last_err: Gateway Timeout` 同源，属出口/上游瞬断。
+
+### 86.4 发版、上线与效果观察（2026-11-24 09:40 CST）
+
+**发版**：`v0.1.25`（`71c325b`），5 平台交叉编译 + `checksums.txt`，
+`https://github.com/2951461586/DeepAICode2API/releases/tag/v0.1.25`，标题 / tag / 资产一致。
+
+**上线**：服务器 `/root/DeepAICode2API` 从 `589266d` fast-forward 到 `71c325b`，
+`sh scripts/deploy.sh v0.1.25` 构建并启动镜像
+`deepaicode2api:local-20261124-v0.1.25-71c325b`，健康检查一次通过：
+`version=v0.1.25`、`accounts=17 ready=17 lane=7 lane_upstream=7`。
+
+**效果（上线后 5 分钟）**：5 轮预热共消化 **8 + 8 + 7 + 7 + 1 = 31 个到期账号**，
+`签到预热未完成` **0 次**（改前是每 30s 一条、16/16 全超时）；账号侧
+`quota_due` 全为 false，`/healthz` 的 `quota_fresh` 4（半衰期内的号本来就只 1~4 个）。
+
+→ 反证了 86 节的判断：冷连接确实卡在 10s 预算边缘，20s 之下全部一次成功；
+退避这一轮没被触发（没有失败可退），属于兜底而不是主路径。
+
+**回滚**：`DEEPAI2API_IMAGE=deepaicode2api:local-20261124-v0.1.24-589266d docker compose up -d --no-build`
