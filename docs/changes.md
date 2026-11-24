@@ -31,6 +31,7 @@
 | v0.1.13 | 78、79 | 客户端 0.3.44 同步 + 线上体检整改：签到预热、出口代理冷却、healthcheck / 机密出库 / deploy.sh |
 | 未发版 | 81、82 | 客户端 0.3.45 同步复核：DeepAI Connect 功能轮，wire protocol **仍零变更**（车道仍 7）+ 本机升级清理；浏览器登录跟进 PKCE（`DEEPAI2API_LOGIN_PKCE`，默认开） |
 | v0.1.23 | 84 | 客户端 0.3.47 同步复核：登录指引 / 恢复提示 / 启动与存储文案轮，wire protocol **仍零变更**（车道仍 7、请求体构造文件 sha256 一致）+ 本机升级与旧装包清理 |
+| v0.1.24 | 85 | 客户端 0.3.48 同步复核：启动配对令牌修复 / 目录权限文案轮，wire protocol **仍零变更**（车道仍 7、`binCli` 只有 1 行语义改动）+ 本机升级与旧包清理 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -5359,7 +5360,7 @@ lavabyte/deepai-gateway 的交叉实测都把悬崖落在**请求体字节**上�
 
 ---
 
-## 84. 2026-11-23 客户端 0.3.47 同步复核：登录指引 / 恢复提示轮，协议面仍零变更（未发版）
+## 84. 2026-11-23 客户端 0.3.47 同步复核：登录指引 / 恢复提示轮，协议面仍零变更（v0.1.23）
 
 **触发**：例行扫描。官方 `latest.yml` 从 **0.3.45** 跳到 **0.3.47**
 （`releaseDate` 2026-11-23T04:38:15.028Z）。`latest.yml` 只列 0.3.47 的位置，但它并非跳过号：
@@ -5480,3 +5481,112 @@ lavabyte/deepai-gateway 的交叉实测都把悬崖落在**请求体字节**上�
   `DEEPAI2API_IMAGE=deepaicode2api:local-20261123-v0.1.22-7-gbfe30d9-bfe30d9 docker compose up -d --no-build`；
 - 容器内健康检查仍用 `127.0.0.1:10087`，宿主走 `10088`，排障别混；
 - 服务器磁盘 `/` 27G/40G（72%），`local-*` 镜像共 3 个（各 27.4 MB），未做额外清理。
+
+---
+
+## 85. 2026-11-24 客户端 0.3.48 同步复核：启动配对令牌 + 目录权限文案轮，协议面仍零变更（v0.1.24）
+
+**触发**：例行扫描。官方 `latest.yml` 从 **0.3.47** 跳到 **0.3.48**
+（`releaseDate` 2026-11-23T07:36:17.026Z，距 0.3.47 的 04:38Z 不到 3 小时）。release notes 只有两条：
+「修启动时被误要求 pairing token」「电脑权限阻止启动时的恢复指引更清楚」——都在协议面外，
+但按惯例仍做全量白盒比对，而不是只看 release notes。
+
+### 85.1 版本核实
+
+| 复核项 | 0.3.47 | 0.3.48 |
+| --- | --- | --- |
+| `latest.yml` `version` / `releaseDate` | 0.3.47 / 2026-11-23T04:38:15.028Z | **0.3.48 / 2026-11-23T07:36:17.026Z** |
+| x64 包 | 490,430,232 B | 490,364,120 B（sha512 `tjgx1vgu…`，与 `latest.yml` 逐字节一致） |
+| arm64 包 | 470,326,912 B | 470,313,240 B（sha512 `WoR4oB1c…`） |
+| `app.asar` | 51,026,363 B | 51,026,910 B（+547） |
+| `server.asar` | 202,965,682 B | 202,966,040 B（+358） |
+| `app.asar` `package.json` | 0.3.47（`t3codeCommitHash: 875c2277c21c`） | **0.3.48（`aad4d707c8c2`）** |
+| `server.asar` `package.json` | 0.3.47 | 0.3.48（依赖清单逐项一致，只有 `version` 变） |
+| 本机 `ProductVersion` | 0.3.47.0 | 复核后静默升级到 **0.3.48.0**（`FileVersion` 0.3.48） |
+
+本轮机器上没有装 asar 工具链，用一个临时 Node 脚本直接按 asar 头结构读文件
+（先读 8 字节头拿 pickle 长度，再解出里面的 JSON 头，按 `offset` 定位数据），
+只抽需要的几个文件，不落盘 200 MB 全量解包。
+
+### 85.2 协议面复核（逐项）
+
+| 复核项 | 0.3.47 | 0.3.48 | 判据 |
+| --- | --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` 整块 | `{Theos:"7", Instance:randomBytes(16).hex}` | 逐字节一致（块 sha256 相同） | 源码级 |
+| `X-DeepAI-Code-*` 头字面量 | 5 个（Theos / Instance / Machine / Check-In / Beacon） | 集合零差异 | 源码级 |
+| `/deepai_code/*`、`/get_usage_summary`、`/speech_to_text` 端点 | — | 字面量与出现次数全部一致 | 源码级 |
+| 心跳 `deepAIBeacon()` | `v=${version$2};up=…;pi=…;focus=…` | **逐字节一致**，只有 `version$2` 报 0.3.48 | 源码级 |
+| 机器指纹 | `machineId.ts` 逻辑 | 未进变更行（`binCli` 只有 1 行语义改动） | diff 级 |
+| 聊天请求体 | 由 `pi-ai` 的 `openai-completions.js` 构造 | pi 仍 1.3.0，该文件 sha256 `4b3875e5…` **完全相同** | 字节级 |
+| `binCli` 全量 diff | — | **4 hunk / +5 / −4** | 字节级 |
+| `//#region` 源模块数 | 1757 | **1757**（零增删） | 源码级 |
+
+`binCli` 的 4 个 hunk 里 3 个是构建噪声（Sentry debugId、`import "./package-*.mjs"` 的 chunk 名、
+`sourceMappingURL`），唯一语义改动见 85.3。
+
+### 85.3 唯一的语义变更：`directory_permission`
+
+`server.asar` → `apps/server/dist/binCli-sW_tgWwL.mjs`（14,906,342 B，0.3.47 为
+`binCli-BfO7YMNb.mjs` 14,906,175 B），`classifyStartupFailure()` 开头新增一行：
+
+```js
+if (classes.some((item) => item.startsWith("ServerDirectoryError:")) &&
+    classes.some((item) => /:(?:EACCES|EPERM):mkdir$/.test(item))) return "directory_permission";
+```
+
+桌面端同步（`app.asar` 2320 个条目里只有 4 个变）：
+
+| 文件 | 0.3.47 | 0.3.48 | 改动 |
+| --- | --- | --- | --- |
+| `apps/desktop/dist-electron/main.cjs` | 5,726,524 B | 5,727,043 B | 6 hunk / +16 / −9 |
+| `apps/desktop/dist-electron/preload.cjs` | 32,111 B | 32,139 B | 1 行 |
+| `apps/desktop/dist-electron/snapShot-Ds58oKsV.cjs` | 同尺寸 | 同尺寸 | 仅 Sentry debugId |
+| `package.json` | 0.3.47 | 0.3.48 | 版本号 |
+
+`main.cjs` 的两处实质改动：
+
+1. `startupFailureMessages` 新增 `directory_permission` 的用户文案（对应 release notes 第 2 条）；
+2. 本地环境 bearer token 支持「被拒即失效重取」——原来的单次 memo `getBearerToken` 改成
+   `readBearerToken(rejectedToken)`：缓存命中且 `cached.value !== rejectedToken` 才复用，否则清缓存重取；
+   新增 `refreshBearerToken`，IPC payload 从 `Void` 改成 `UndefinedOr(String)`，`preload.cjs` 透传
+   `rejectedToken`（对应 release notes 第 1 条）。两处都在桌面端本地鉴权 / IPC 侧，不进推理链路。
+
+### 85.4 其余差异全是构建噪声
+
+- `server.asar` 15,514 个条目：同路径内容变化 8 个——`binCli`（换新文件名）、`bin.mjs` /
+  `claude-history-worker.mjs`（只换 `import` 的 chunk 名与 debugId）、`client/index.html` 与
+  `client/.vite/manifest.json`（只换 chunk 哈希）、`node_modules/.modules.yaml` 与
+  `.pnpm-workspace-state-v1.json`（构建元数据）、`package.json`（版本号）。
+- 另有 **1937 个 chunk 改名**：每个 chunk 都内嵌本次构建随机的 Sentry debugId，所以一次发版
+  会让几乎所有 chunk 的内容哈希连锁变名。按「同名去哈希」一一配对（1937 对，无一落单）后，
+  差异只剩 debugId / `sourceMappingURL` / 互相引用的哈希。
+- 归一化后仍有数十个文件不同，逐个看下来都是压缩器变量名置换（同一 chunk 里 `st` ↔ `ot`、
+  `D` ↔ `O` 之类），指令与字面量集合不变。
+- 结论：`deepai.AppVersion` 跟到 **0.3.48**，`LaneVersion` 保持 `"7"`，协议逻辑 / 请求头 /
+  请求体 / 指纹全不改，网关无需改动即可吃 0.3.48 桌面端写出的凭据。
+
+### 85.5 代码与文档落地
+
+- `internal/model/types.go`：`AppVersion` 0.3.47 → **0.3.48**；`LaneVersion` 注释补 2026-11-24 复核；
+  AppVersion 注释补 0.3.47 → 0.3.48 的差异清单（4 hunk、1757 模块、唯一语义改动）；
+- `internal/machine/machine.go` / `machine_test.go`、`internal/deepai/client_test.go`、
+  `internal/gateway/chatbody.go`：复核版本列表补 0.3.48；
+- `docs/recon.md`：顶部新增 2026-11-24 复核条目（0.3.48，含对照表），`【源码级 0.3.47】`
+  标签、`v=0.3.47` 心跳示例、机器指纹与 PKCE 的复核日期同步到 0.3.48；
+- `README.md` / `README.en.md`：应用版本、车道复核日期、`DEEPAI2API_LOGIN_PKCE` 对齐版本、
+  心跳 `v=` 现值全部跟到 0.3.48（顺手清掉 §一 里重复的一行 `sessions/save_records`）。
+
+### 85.6 本机升级与清理（2026-11-24 08:30 CST）
+
+用同一个官方安装包静默升级（`DeepAI-Code-0.3.48-x64.exe /S`）：退出码 0，耗时 185 s；
+`DeepAI Code.exe` 的 `ProductVersion` 变为 **0.3.48.0**（`FileVersion` 0.3.48），
+卸载注册项单条 `DeepAI Code 0.3.48`（无重复项），安装目录
+`%LOCALAPPDATA%\Programs\deepai-code-desktop` 9682 个文件 / 1,386,573,614 B；
+`app.asar` / `server.asar` 尺寸与包内一致（51,026,910 / 202,966,040）；除 `resources/git`
+自带的 hosts / networks / protocols / services 外，没有早于本次构建（2026-11-23 15:35:54）
+的残留时间戳——即 0.3.47 已被完全覆盖。
+
+随后清理：updater 缓存里的 `installer.exe`（490,364,120 B，就是本轮 0.3.48 包）、
+白盒比对用的临时解包目录（安装包 + NSIS `app-64.7z` + 解开的应用树 + 抽取的 `binCli` /
+`pi-ai` 副本，约 2.3 GB），合计约 **2.7 GB**；用户数据 `~/.deepai-code` 与
+`AppData/Roaming/deepai-code-v2` 保持不动。

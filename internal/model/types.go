@@ -69,7 +69,7 @@ const (
 	//
 	// 2026-11-20 复核 0.3.42、2026-11-21 复核 0.3.43、2026-11-22 复核 0.3.44 /
 	// 0.3.45、2026-11-23 复核 0.3.47（跳过 0.3.46 安装包，0.3.45 → 0.3.47 一次性
-	// 比对）：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
+	// 比对）、2026-11-24 复核 0.3.48：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
 	LaneVersion = "7"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
@@ -148,7 +148,23 @@ const (
 	// 启动失败 / 存储错误的人话文案（`startupFailure.ts`、`persistence/Errors.ts`、
 	// `UserFacingErrors.ts`）、托管云工作区契约（`cloud-status/-create/-start`、
 	// `session_expires_at` 续期）与凭据写入串行化。见 `docs/changes.md` §84。
-	AppVersion = "0.3.47"
+	//
+	// 0.3.47 → 0.3.48（`releaseDate` 2026-11-23T07:36Z）**只在协议面外动**：车道仍
+	// `"7"`（`DEEPAI_LANE_HEADERS` 块 sha256 与 0.3.47 逐字节一致），5 个
+	// `X-DeepAI-Code-*` 头、`/deepai_code/*` 端点集合、签到 / beacon 形态
+	// （`v=${version$2};up=…;pi=…;focus=…`）、机器指纹、`/chat/completions` 请求体
+	// 全部未变；内置 pi 运行时仍 `pi-ai 1.3.0`，`dist/api/openai-completions.js`
+	// sha256 `4b3875e5…` 与 0.3.47 一致（真正的请求体由它构造，字节级相同 =
+	// 请求体形状不可变）。`binCli` 全量 diff **只有 4 hunk / +5 / −4**，`//#region`
+	// 归属 1757 → 1757 个模块（零增删），其中 3 处是 Sentry debugId /
+	// `sourceMappingURL` / chunk 名，唯一的语义改动是 `classifyStartupFailure()`
+	// 新增 `directory_permission`（`ServerDirectoryError:` 与 `EACCES/EPERM:mkdir`
+	// 同时命中时归类）。桌面端 `main.cjs` 补该分类的用户文案，并把本地环境 bearer
+	// token 改成「被拒即失效重取」（新增 `refreshBearerToken`，IPC payload
+	// `Void` → `UndefinedOr(String)`，preload 透传 `rejectedToken`）——对应
+	// release notes 的「启动时误要 pairing token」与「权限阻止启动时更清楚的恢复
+	// 指引」，都在本地鉴权 / IPC 侧。见 `docs/changes.md` §85。
+	AppVersion = "0.3.48"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。
