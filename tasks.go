@@ -106,7 +106,8 @@ func quotaGuard(srv *server.Server, stop <-chan struct{}) {
 //
 // 周期 30s：半衰期（seconds/2，默认 300s）内只会命中 1~2 个号；
 // 批上限 8、2 并发 —— 16 个号全部到期时最多 4 轮消化完，
-// 而每轮预算 10s（预热不使用热路径的 2.5s 短预算）。
+// 而每轮预算 20s（预热不使用热路径的 2.5s 短预算，住宅代理冷启动就要 6–8s）。
+// 轮级 ctx 给到 120s：8 个号 / 2 并发 × 20s = 80s 的最坏情况装得下。
 func checkInWarm(srv *server.Server, stop <-chan struct{}) {
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
@@ -115,7 +116,7 @@ func checkInWarm(srv *server.Server, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-tick.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			n := srv.WarmCheckIns(ctx, 8, 2)
 			cancel()
 			if n > 0 {

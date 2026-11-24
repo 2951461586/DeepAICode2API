@@ -32,6 +32,7 @@
 | 未发版 | 81、82 | 客户端 0.3.45 同步复核：DeepAI Connect 功能轮，wire protocol **仍零变更**（车道仍 7）+ 本机升级清理；浏览器登录跟进 PKCE（`DEEPAI2API_LOGIN_PKCE`，默认开） |
 | v0.1.23 | 84 | 客户端 0.3.47 同步复核：登录指引 / 恢复提示 / 启动与存储文案轮，wire protocol **仍零变更**（车道仍 7、请求体构造文件 sha256 一致）+ 本机升级与旧装包清理 |
 | v0.1.24 | 85 | 客户端 0.3.48 同步复核：启动配对令牌修复 / 目录权限文案轮，wire protocol **仍零变更**（车道仍 7、`binCli` 只有 1 行语义改动）+ 本机升级与旧包清理 |
+| v0.1.25 | 86 | 后台签到预热：补 `err` 日志、预算 10s → 20s、连续失败 2m → 20m 退避（治「每 30s 超时一次」的死循环） |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -5613,3 +5614,60 @@ windows/amd64、darwin/amd64、darwin/arm64）+ `checksums.txt`，
   `DEEPAI2API_IMAGE=deepaicode2api:local-20261123-v0.1.23-e66c28c docker compose up -d --no-build`；
 - 容器内健康检查仍用 `127.0.0.1:10087`，宿主走 `10088`，排障别混；
 - 服务器磁盘 `/` 25G/40G（65%），`local-*` 镜像 2 个（各 27.4 MB），未做额外清理。
+
+---
+
+## 86. 2026-11-24 后台签到预热：补错误日志、预算 10s → 20s、连续失败退避（v0.1.25）
+
+**触发**：v0.1.24 上线后的运行巡检。`签到预热未完成（不影响推理）` 每 30s 一条，
+18 分钟里 16 次，且**每次都恰好 `ms≈10002 / timed_out=true`**。
+
+**定位过程（结论：既不是账号限流，也不是出口坏）**：
+
+- 账号侧：无 403/429、没有 `Requests are temporarily limited`；`balance=178`、
+  `lane_version=7`；`POST /admin/api/checkin` 手动探测 **1.06s 成功**，`failures` 归零，
+  `quota_due` 变 false。进程内 `checkin.blocked=1` 那个限流命中是**另一个号**
+  （`lizi45***`，`last_err` 是推理限流），与预热无关。
+- 出口侧：`proxy_cooling=0`；同一条出口 + 同一个号手动 `/theos` 1.06s；
+  启动期那 6 条 `出口代理探测失败` 全在别的出口（`fireside:71xx`）。
+- 症状会**漂移**：18 分钟里 `ming49798 ×10`、`migueladorno236 ×5`、`zhuhaoyi181 ×1`，
+  每轮换「下一个到期账号」继续超时 —— 与「某个号被封 / 被限流」不符。
+- 时长恒等于预算 → 是 ctx deadline，不是上游拒绝（拒绝会秒回 403/429 并上
+  `CheckInRefusedLock` 静默锁，之后就不再重试）。
+- 同客户端对比：热路径指标 `checkin attempts=7 / p50=500ms / p95=1s / timeouts=1`，
+  而预热 **16/16 全超时**。
+
+**根因**：预热挑的都是「到期但闲置」的号，连接是**冷的**；住宅代理冷启动实测 6–8s
+（`internal/server/proxyhealth.go` 里 `proxyProbeTimeout` 的注释本来就记着这个数），
+加 TLS 与上游 RTT，10s 预算正好卡在临界值 → 每轮必超时；失败后只有
+`attemptAt` 的 30s 最小间隔，于是变成「每 30s 白打一次 `/theos` + 刷一条日志」的
+死循环。热路径与手动探测走的是热连接，所以从来没暴露。
+
+### 86.1 改动（`internal/server/warmcheckin.go`、`tasks.go`）
+
+1. **补错误日志**：`签到预热未完成` 原来只有 `ms` / `timed_out`，分不清「我方预算」
+   还是「CONNECT 被重置 / 上游 5xx」。现在带 `err` 与 `fails`。
+2. **预算 10s → 20s**：`warmCheckInBudget = 20s`；轮级 ctx 60s → 120s
+   （8 个号 / 2 并发 × 20s = 80s 最坏情况装得下）。
+3. **连续失败退避**：新增 `warmCooldown`（按账号 ID，零值可用，4096 条上限并顺带
+   清理过期项），连续失败 1/2/3/4/5+ 次 → 2m / 4m / 8m / 16m / 20m 不再预热，
+   成功一次立即清零。**只影响预热**：热路径 `EnsureCheckIn` 的语义与预算不变。
+
+### 86.2 测试
+
+- `TestWarmCooldownBackoffCurve`：退避曲线 2/4/8/16/20/20 分钟、窗口内外放行判据、
+  成功清零；
+- `TestWarmCooldownZeroValue`：零值可用；
+- `TestWarmCheckInsHonoursCooldown`：退避中的账号这一轮上游请求数必须为 0
+  （这条直接锁住「不再每 30s 白打一次」）；
+- 既有 `TestWarmCheckInsConsumesDueOnce` / `TestWarmCheckInsSkipsDisabled` 保持通过；
+- `gofmt` / `go build` / `go vet` / `go test ./...` 全绿。
+
+### 86.3 巡检时顺带发现（未在本轮处理）
+
+- **请求体闸门 WARN 34 次 / 18 分钟**（v0.1.24 新增的字节闸门）：
+  `bytes=490,787` 与 `1,146,714`，而 `limit=196,608`（192 KiB）—— 这些请求**已经超过
+  上游静默截断阈值**（issue #7），模型 `deepseek-v4.1-flash`，端点 `messages` / `responses`。
+  这是「上下文已在被截断（失忆）」的真实信号，值得单独查是哪个 key / 会话在发超长上下文。
+- 进程内 `upstream_errors`：`/chat/completions code=transport ×5`（重启后 18 分钟），
+  与账号的 `last_err: Gateway Timeout` 同源，属出口/上游瞬断。

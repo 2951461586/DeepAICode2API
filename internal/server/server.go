@@ -41,6 +41,11 @@ type Server struct {
 	// 调度时用来「先换出口、再换号」。进程内状态，重启即清空。
 	proxyHealth *proxy.Health
 
+	// warm 是后台签到预热的退避表（连续失败 → 2m…20m 不再预烘）。
+	// 只影响预热：热路径（推理前的 EnsureCheckIn）不受它约束。
+	// 进程内状态，重启即清空。
+	warm warmCooldown
+
 	// probeMu / probes / probeInflight 是出口可用性探测的缓存：
 	// 代理串解析成功后不能直接信它，先 CONNECT 到上游验一次。
 	probeMu       sync.Mutex
