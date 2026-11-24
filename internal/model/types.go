@@ -69,7 +69,8 @@ const (
 	//
 	// 2026-11-20 复核 0.3.42、2026-11-21 复核 0.3.43、2026-11-22 复核 0.3.44 /
 	// 0.3.45、2026-11-23 复核 0.3.47（跳过 0.3.46 安装包，0.3.45 → 0.3.47 一次性
-	// 比对）、2026-11-24 复核 0.3.48：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，没有抬到 8。
+	// 比对）、2026-11-24 复核 0.3.48 / 0.3.50：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，
+	// 没有抬到 8（两个 origin 实测一致：车道 7 均 401、8 均 426）。
 	LaneVersion = "7"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
@@ -164,7 +165,26 @@ const (
 	// `Void` → `UndefinedOr(String)`，preload 透传 `rejectedToken`）——对应
 	// release notes 的「启动时误要 pairing token」与「权限阻止启动时更清楚的恢复
 	// 指引」，都在本地鉴权 / IPC 侧。见 `docs/changes.md` §85。
-	AppVersion = "0.3.48"
+	//
+	// 0.3.48 → 0.3.50（`releaseDate` 2026-11-24T05:37Z）是 **agent 运行时迁移轮**：
+	// 客户端把内置 agent 从 `@earendil-works/pi-*` 迁到 `@deepseek-ai/dsh-*`
+	// （`dsh-llm-pi-ai` 里仍内置 pi-ai 1.3.0），`server.asar` 条目 15,514 → 26,602、
+	// `//#region` 模块 1757 → 1770。协议面复核结论：车道仍 `"7"`
+	// （`DEEPAI_LANE_HEADERS` 块逐字节一致）、5 个 `X-DeepAI-Code-*` 头、
+	// `/deepai_code/*` 端点集合（只多一个本地回环 `/v1/chat/completions` 归一化）、
+	// 签到 / beacon 形态、机器指纹（`machineId.ts` 区域 sha256 完全相同）、
+	// `/chat/completions` 请求体字段全部未变。两处需要登记的细节：
+	//   1. `pi-ai` 仍是 1.3.0，但 `openai-completions.js` 多了 5 行：把工具调用的
+	//      `extra_content` 原样回填（仅当上游下发过；正常请求不出现），请求体形状不变；
+	//   2. 客户端默认上游从 `https://api.deepai.org` 切到 `https://api2.deepai.org`
+	//      （`T3CODE_DEEPAI_API2=false` 可退回）。实测两者行为一致（车道 7 均 401、
+	//      8 均 426）；网关默认仍用 api.deepai.org，需要时用 `DEEPAI_API_ORIGIN` 切换。
+	// 另外新增 `REASONING_REPLAY_MODELS`（10 个模型）打开 pi-ai 的
+	// `requiresReasoningContentOnAssistantMessages`：assistant 历史缺 `reasoning_content`
+	// 时补空串。这是客户端构造历史的行为，网关只透传，不改请求语义。
+	// 模型目录 27 → 28（新增免费 `claude-haiku-5-5`，95k 上下文 / 64k 输出），
+	// 其余条目逐字段未变，默认模型仍 `glm-5.3-flash`。见 `docs/changes.md` §87。
+	AppVersion = "0.3.50"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。

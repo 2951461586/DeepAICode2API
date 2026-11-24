@@ -45,16 +45,17 @@ dependencies.
 
 ## 1. Reverse-engineering findings
 
-DeepAI Code is an **Electron + local t3code server** architecture (app version **0.3.48**,
+DeepAI Code is an **Electron + local t3code server** architecture (app version **0.3.50**,
 lane 7). Comparing the wire protocol item by item across
-0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 → 0.3.43 → 0.3.44 → 0.3.45 → 0.3.47 → 0.3.48:
+0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 → 0.3.43 → 0.3.44 → 0.3.45 → 0.3.47 → 0.3.48 → 0.3.50:
 **0.3.41 only bumped the lane (6 → 7); 0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 / 0.3.47 / 0.3.48 changed nothing on the
-protocol surface (lane stays 7), and the request headers / fingerprints / check-in / inference
-endpoints are unchanged**.
+protocol surface (lane stays 7), and the 0.3.50 agent-runtime migration (pi → dsh) likewise touches
+none of the request headers / fingerprints / check-in / inference endpoints / request-body fields**.
 The DeepAI Connect features added in 0.3.45 (`/connect/*`, `/sponsored/authorize`, PKCE sign-in),
-the 0.3.47 sign-in guidance / recovery hints / startup & storage error copy, and the 0.3.48 startup
-pairing-token fix plus directory-permission recovery copy are all account- and
-remote-host-management surfaces and do not enter the inference path;
+the 0.3.47 sign-in guidance / recovery hints / startup & storage error copy, the 0.3.48 startup
+pairing-token fix plus directory-permission recovery copy, and the 0.3.50 hosted DeepSeek / OpenCode
+harness routing are all account-, remote-host- and local-orchestration surfaces and do not enter the
+inference path;
 the new `sessions/save_records` only serves history backup, also outside inference.
 The component doing the real work is not the Electron shell but the t3code server inside
 `resources/server.asar`; it wraps upstream capabilities as a local loopback HTTP service and
@@ -76,7 +77,7 @@ hands them to Pi (the coding agent).
 | Speech-to-text | `POST https://api.deepai.org/speech_to_text` (field `voiceRecording`) |
 | Web search | `POST https://api.deepai.org/deepai_code/web_search` |
 | **Auth** | Header `Api-Key: <apiKey>` (not `Authorization`) |
-| Protocol header | `X-DeepAI-Code-Theos: 7` (billing-lane version; 7 since 0.3.41, still 7 as of the 2026-11-24 recheck of 0.3.48). **The lane gate is server-side behavior**: on 2026-11-18 (the day 0.3.41 shipped) only 7 passed; a 2026-11-19 recheck showed ≤7 all pass and 8+ returns 426 (`docs/recon.md` §3) |
+| Protocol header | `X-DeepAI-Code-Theos: 7` (billing-lane version; 7 since 0.3.41, still 7 as of the 2026-11-24 recheck of 0.3.48 / 0.3.50). **The lane gate is server-side behavior**: on 2026-11-18 (the day 0.3.41 shipped) only 7 passed; a 2026-11-19 recheck showed ≤7 all pass and 8+ returns 426 (`docs/recon.md` §3) |
 | Process instance | `X-DeepAI-Code-Instance: <32-hex>` (randomized once per egress proxy and sent with every JSON request through that proxy; the desktop app does it once per process) |
 | Check-in | `/theos` responses carry `check_in:{nonce, seconds}`; the next `/theos` sends `X-DeepAI-Code-Check-In` plus `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1` (`focus` is appended only when the focus state is known) |
 | **Machine fingerprint** | `X-DeepAI-Code-Machine: sha256(raw machine UUID)`, used for daily free Theos; metered models return `machine_required` when absent |
@@ -123,12 +124,14 @@ This gateway mirrors the same logic. Containers / environments without SMBIOS ca
 
 The catalog is **entirely upstream-driven**: the gateway only caches and aliases it, so upstream
 additions and removals need no code change. The table below is the **live catalog** exported
-from `/v1/models` on 2026-11-18 (27 models: 11 free / 16 paid).
-**2026-11-20 recheck: zero field-level diff vs. the 11-18 snapshot** (IDs / names / context /
-max output / prices / `default: glm-5.3-flash` all identical; still 27, none added or removed).
+from `/v1/models` on 2026-11-18 (28 models: 12 free / 16 paid).
+**2026-11-24 recheck: vs. the 11-18 snapshot only one free model was added, `claude-haiku-5-5`**
+(95,000 / 64,000 / 0); the other 27 are field-for-field identical (IDs / names / context /
+max output / prices / `default: glm-5.3-flash`), with no removals or price changes.
 `Theos/request` comes from upstream `theosPerRequest` (a string); `0` means free. The console's
 "Model catalog" page reads the same data.
-(Compared with the 2026-11-14 snapshot, the **model set, names, and prices were unchanged**; only
+(The 2026-11-20 recheck was zero-diff vs. the 11-18 snapshot. Compared with the 2026-11-14 snapshot,
+the **model set, names, and prices were unchanged**; only
 `glyph-cluster`'s `contextWindow` moved from 320,000 to 256,000. The older `crouton-alpha` is
 offline; `gpt-oss-120b` is filtered out by the client and is not shown by the gateway. The
 2026-11-14 round added 6 vs. 11-13 with no removals: `muse-ember` (free), `kimi-k3.1-pro`,
@@ -136,6 +139,7 @@ offline; `gpt-oss-120b` is filtered out by the client and is not shown by the ga
 
 | ID | Name | Context | Max output | Theos/request | Notes |
 | --- | --- | ---: | ---: | ---: | --- |
+| `claude-haiku-5-5` | Claude Haiku 5.5 | 95,000 | 64,000 | **0** | Free (added 2026-11-24), the only non-320k entry with a premium-tier name |
 | `deepai-cyber` | DeepAI Cyber | 320,000 | 131,072 | **0** | Free, text only |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash 1017 | 320,000 | 131,072 | **0** | Free (upstream dropdown says `DeepSeek V4.1 Flash 1017`; the desktop app rewrites the old name to this) |
 | `glm-5.3-flash` | GLM 5.3 Flash | 320,000 | 131,072 | **0** | Free, default model; measured 320k intact (see "Effective context ceiling" below) |
@@ -170,7 +174,7 @@ Notes:
   (`input: [text]`); the rest accept image input (`input: [text, image]`). All support reasoning;
 - **The lane-7 catalog converged `contextWindow` to 320,000 for all models except `glyph-cluster`
   at 256,000** (the live catalog since 0.3.41). **2026-11-19 recheck: lanes 5 / 6 / 7 return an
-  identical catalog** (27 models, zero diff); the per-lane differences of the 0.3.37 era are gone.
+  identical catalog** (27 models at the time, zero diff); the per-lane differences of the 0.3.37 era are gone.
   The gateway passes upstream values through unchanged;
 - **Since 2026-11-14 upstream `/deepai_code/models` requires `Api-Key`**: without one it always
   returns 401 `auth_required` (the earlier "same catalog with or without credentials" finding no
@@ -422,7 +426,7 @@ Sample startup log:
 state file: …/deepaicode2api-data.json
 machine fingerprint: a1b2c3d4e5f6… (used by upstream for the daily free Theos)
 imported account desktop-… (~/.deepai-code/userdata/secrets/deepai-account.bin)
-model catalog updated: 27 models, default glm-5.3-flash
+model catalog updated: 28 models, default glm-5.3-flash
 DeepAICode2API dev started: http://127.0.0.1:10087/
 ```
 
@@ -481,7 +485,7 @@ Other environment variables:
 | `PROXY_POOL` | Inference proxy pool (comma- or newline-separated full URLs; assigned round-robin per account at pool entry) |
 | `PROXY_POOL_FILE` | Proxy-pool file (one per line) |
 | `DEEPAI2API_ENV_FILE` | Path to `.env` |
-| `DEEPAI2API_LOGIN_PKCE` | Whether browser sign-in uses PKCE (default `true`, matching desktop 0.3.48); `0` reverts to the old `state`+`port`-only shape |
+| `DEEPAI2API_LOGIN_PKCE` | Whether browser sign-in uses PKCE (default `true`, matching desktop 0.3.50); `0` reverts to the old `state`+`port`-only shape |
 | `DEEPAI2API_HISTORY_TTL_HOURS` | `/v1/responses` server-side history TTL in hours (default `24`) |
 | `DEEPAI2API_HISTORY_MAX_ENTRIES` | Maximum turns in the `/v1/responses` server-side history cache (default `500`) |
 | `DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW` | Global override for the replayed effective context ceiling (highest priority; default is the per-model table above; `0`/negative disables) |
@@ -811,7 +815,7 @@ DEEPAI2API_IMAGE=<old tag> sh scripts/deploy.sh         # roll back to a specifi
   `mem_limit: 512m`; without one, `unless-stopped` never restarts a wedged process
   (2026-11-22 production retrospective).
 
-> `X-DeepAI-Code-Theos: 7` is the current client's (0.3.48) lane. The lane gate is adjusted by
+> `X-DeepAI-Code-Theos: 7` is the current client's (0.3.50) lane. The lane gate is adjusted by
 > upstream at any time: on 2026-11-18 it was "only 7"; by 2026-11-19 it had relaxed to "≤7 all pass,
 > 8 and above return 426 `lane_version_unsupported`" (see `docs/recon.md` §3). Sending an old lane
 > **still works**, so whether the protocol is caught up is judged by the `/theos` `lane_version`
@@ -886,12 +890,12 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   `/v1/responses` replay path; `/v1/chat/completions` and `/v1/messages` stay transparent proxies and
   only log `body_bytes` / `body_near_cap` when over the line — clients should still compress history
   for long sessions;
-- `X-DeepAI-Code-Theos` sends `7` (since 0.3.41; the 2026-11-24 recheck of 0.3.48 found no
+- `X-DeepAI-Code-Theos` sends `7` (since 0.3.41; the 2026-11-24 recheck of 0.3.48 / 0.3.50 found no
   change). The upstream gate may relax: on 2026-11-19 ≤7 all passed and 8+ returned 426, so an old
   lane "working" does not mean it is the right lane — the difference from upstream's current lane is
   observed via `/theos`'s `lane_version` (`Server.UpstreamLane` / `LaneDrift`, visible in the console
   overview);
-- The heartbeat `X-DeepAI-Code-Beacon`'s `v=` must be the current client version (now **0.3.48**,
+- The heartbeat `X-DeepAI-Code-Beacon`'s `v=` must be the current client version (now **0.3.50**,
   see `deepai.AppVersion`); `pi=` has been optional since 0.3.30, but sending it is harmless;
 - Lane-probe results are trusted unconditionally when validated by **the current build**
   (`Settings.LaneBuild == deepai.LaneVersion`), even if older than the compiled value; otherwise
@@ -1029,7 +1033,7 @@ overturned by later rechecks (trust the latest entries in `docs/changes.md` and 
 | `docs/lessons.md` | **Engineering lessons**: ten stress rounds → reusable rules + pre-change checklist | Maintained |
 | `docs/performance.md` | Stress data and optimization plan: single-account E2E, phase breakdown, P0/P1/P2 payoff estimates | Maintained (data snapshot 2026-11-10) |
 | `docs/pi-lens.md` | This repo's pi-lens configuration: what is off, why, how to verify and restore | Maintained |
-| `docs/model-fingerprint-2026-11-10.md` | Fingerprint measurements for 22 pooled models (criteria and reproduction commands) | Historical snapshot: the catalog is now 27 models; criteria still apply |
+| `docs/model-fingerprint-2026-11-10.md` | Fingerprint measurements for 22 pooled models (criteria and reproduction commands) | Historical snapshot: the catalog is now 28 models; criteria still apply |
 | `docs/optimization-plan.md` | The first scan's full optimization plan | Historical: fully implemented |
 | `docs/optimization-plan-r2.md` | Second scan (write amplification / console / re-probe) plan and payoff estimates | Historical: implemented |
 | `docs/assets/` | Project icons: `logo.png` (512, used by README) / `logo.ico` (16–256 multi-size, Windows); the console's `/favicon.ico` is the same file (see `docs/changes.md` §58) |
@@ -1041,7 +1045,7 @@ overturned by later rechecks (trust the latest entries in `docs/changes.md` and 
 MIT. This project only replicates the call path of an already-signed-in local client; please observe
 DeepAI's terms of service.
 
-> **The client's own declaration (added in 0.3.43, still present in 0.3.44 / 0.3.45 / 0.3.47 / 0.3.48)**: in
+> **The client's own declaration (added in 0.3.43, still present in 0.3.44 / 0.3.45 / 0.3.47 / 0.3.48 / 0.3.50)**: in
 > `server.asar`'s `src/deepai/api.ts`, next to the lane header and check-in, a comment cites DeepAI
 > ToS §4 and states explicitly that these headers and the check-in exist for "DeepAI Code app
 > self-identification" and **must not be copied into other clients**. This project only reuses the
