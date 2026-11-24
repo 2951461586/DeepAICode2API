@@ -5590,3 +5590,26 @@ if (classes.some((item) => item.startsWith("ServerDirectoryError:")) &&
 白盒比对用的临时解包目录（安装包 + NSIS `app-64.7z` + 解开的应用树 + 抽取的 `binCli` /
 `pi-ai` 副本，约 2.3 GB），合计约 **2.7 GB**；用户数据 `~/.deepai-code` 与
 `AppData/Roaming/deepai-code-v2` 保持不动。
+
+### 85.7 发版与上线（2026-11-24 08:48 CST）
+
+**发版**：`sh scripts/release.sh v0.1.24 --publish`，交叉编译 5 个平台（linux/amd64、linux/arm64、
+windows/amd64、darwin/amd64、darwin/arm64）+ `checksums.txt`，
+`https://github.com/2951461586/DeepAICode2API/releases/tag/v0.1.24`，标题 / tag / 资产三处一致
+（`name` / `tagName` 均为 `v0.1.24`）。**踩坑**：先打了本地 tag 没推就给 `--publish`，
+`gh release create` 会直接报「tag exists locally but has not been pushed」；
+本轮的顺序是 `git push origin main` → `git push origin v0.1.24` → 再跑发布脚本。
+
+**上线**：服务器 `/root/DeepAICode2API` 从 `e66c28c` fast-forward 到 `589266d`
+（`git describe` = `v0.1.24`），工作区无本地改动；`sh scripts/deploy.sh v0.1.24` 构建并启动
+镜像 `deepaicode2api:local-20261124-v0.1.24-589266d`，健康检查一次通过。
+
+- `/healthz`（宿主 `127.0.0.1:10088`，nginx 终止 TLS）：`accounts=17 ready=17 lane=7
+  lane_compiled=7 lane_drift=0 models=27 version=v0.1.24`，`machine_ready=true`；
+  刚重启时 `lane_upstream=0`（`/theos` 探测尚未完成），几分钟后回到 7；
+- **心跳版本已跟到**：容器内 `/usr/local/bin/deepaicode2api` 的 `strings | grep -o '0\.3\.[0-9]*'`
+  只输出 `0.3.48`（无 0.3.47），即下次 `/theos` 签到的 `v=` 就是 0.3.48；
+- 上一版镜像 `local-20261123-v0.1.23-e66c28c` 保留（27.4 MB），回滚：
+  `DEEPAI2API_IMAGE=deepaicode2api:local-20261123-v0.1.23-e66c28c docker compose up -d --no-build`；
+- 容器内健康检查仍用 `127.0.0.1:10087`，宿主走 `10088`，排障别混；
+- 服务器磁盘 `/` 25G/40G（65%），`local-*` 镜像 2 个（各 27.4 MB），未做额外清理。
