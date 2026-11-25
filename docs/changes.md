@@ -35,6 +35,8 @@
 | v0.1.25 | 86 | 后台签到预热：补 `err` 日志、预算 10s → 20s、连续失败 2m → 20m 退避（治「每 30s 超时一次」的死循环） |
 | v0.1.26 | 87 | 客户端 0.3.50 同步复核：agent 运行时 pi → dsh，wire protocol **仍零变更**（车道仍 7、请求头 / 指纹 / 请求体不变）+ 模型目录 27 → 28（新增免费 `claude-haiku-5-5`）+ 安装形态改 machine-wide + 指纹实测 |
 | v0.1.27（未发新版） | 88、89 | 0.3.52 同步：车道 7 → 8 + 自证头 `X-DeepAI-Code-Proof`（只登记不发）；随后线上体检 + 指纹第二轮（4 模型）+ 「指纹不符 = 逆向不全」证伪 |
+| v0.1.28 | 90 | 线上长尾整改：非流式预算 90 → 180 s（可调）、上游响应超时可调、issue #7 处置开关（warn/reject）、付费模型硬额度约束 |
+| v0.1.29 | 90 | 硬额度约束的补丁：负余额按 `refresh_at` 判定（快照陈旧不再放行） |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6096,3 +6098,100 @@ Start-Process -FilePath 'DeepAI-Code-0.3.52-x64.exe' -ArgumentList '/S' -Verb Ru
 - 3 个负余额账号要么补 Theos、要么移出付费档调度。
 - 690 条 `body_near_cap` 告警值得单独立项：要么在网关侧提前拒绝（显式 400），
   要么把阈值/告警改成按模型区分。
+
+---
+
+## 90. 2026-11-25 线上体检第二轮 + 四项整改（v0.1.28 / v0.1.29）
+
+**触发**：例行「扫项目 + 扫线上」。本轮**动了代码**：体检数据指向三条根因，逐条整改后
+发了 v0.1.28，上线后对账又发现硬额度约束几乎不生效，补 v0.1.29 再上线。
+
+本轮临时密钥用完即删：`scan-check-20261125`、`scan-check2-20261125`（v0.1.27 体检）、
+`smoke-20261125-v0129`（v0.1.29 冒烟），收尾时 `/admin/api/keys` 只剩 `liziai-deepai`。
+
+### 90.1 项目侧扫描（本地 HEAD `a1deba5`，未提交文档 4 个）
+
+| 项 | 实测 |
+| --- | --- |
+| 代码规模 | 208 个 Go 文件 / 38,735 行；`internal/server` 84 文件 15.2k、`store` 4.2k、`poolsvc` 3.3k、`deepai` 3.3k；前端 ES module 2,436 行 / 253 KB |
+| 依赖 | `go.mod` 零第三方依赖（纯标准库） |
+| 构建与静态检查 | `go build ./...`、`go vet ./...`、`gofmt -l` 全干净 |
+| 测试 | `go test ./...` 全绿；覆盖率 69–100%（`server` 78.7%、`gateway` 94.0%、`deepai` 92.4%、`machine` 69.0% 最低） |
+| CI | 最近 5 次 `ci` 全 success（含 `-race`、每包覆盖率门禁、前端 `node --check` 冒烟） |
+| 仓库卫生 | 无 TODO/FIXME；`.env` 未被跟踪；根目录 `deepaicode2api.exe` / `dist/` 已被 gitignore |
+| 未关闭 issue | #7（请求体 ~40k 有效上限）、#5（`/responses` 上下文）、#1（大陆访问） |
+
+### 90.2 线上运行（容器启动 6.6 h，`deepai2api.liziai.cloud` → nginx → 127.0.0.1:10088）
+
+| 项 | 实测（2026-11-25 12:50 UTC） |
+| --- | --- |
+| 版本 / 镜像 | `v0.1.27` / `local-20261125-v0.1.27-1b24cca`，`healthy`、`restarts=0`、144 MB / 512 MB、CPU 0.00% |
+| 车道 / 目录 | `lane=8 lane_compiled=8 lane_upstream=8 lane_drift=0`、28 个模型、默认 `glm-5.3-flash` |
+| 请求（本次启动以来） | 2xx=5,274、3xx=63、4xx=243、**5xx=63** |
+| 5xx 构成 | `/v1/chat/completions` 504 **59 次全部 `ms=90000`**；`/v1/responses` 504 3 次（`ms=600009`）；`/v1/responses` 408 74 次 |
+| 生命周期累计 | 266,780 次请求、失败 14,609（5.5%）；入 7.32 B、出 197.4 M、缓存命中 4.42 B（≈60%）、成本 $358.44 |
+| 延迟 | 整体 p50 30 s / p95 300 s；chat p50 30 s / p95 120 s；responses p95 300 s / p99 600 s |
+| 上游拒绝 | `transport` 475、`call_timeout` 75、`session_busy` 38、`context_length_exceeded` 26、`upstream_error` 4、`theos_exhausted` 1 |
+| 告警（6 h） | `body_near_cap` **1,073**、出口代理探测失败 **363**（≈1/分钟）、签到阻塞推理 202；ERROR 0 条 |
+| 号池 | 17/17 `ok`、`lane_version` 全 8、`quota_fresh` **2/17**、`quota_due` 1、3 个号 Theos 为负 |
+| 主机 | Ubuntu 22.04、11 个容器；load 8.33 但 CPU idle 92–95%；内存 2.7/3.9 GB + swap 1.06 GB；磁盘 26/40 G（68%）；无 OOM |
+| TLS | `*.liziai.cloud` 有效期至 2027-01-25，acme.sh cron 0/6/12/18:49 在跑 |
+
+端到端：并发高时一条探测 **150 s 零字节**（`admission_wait_seconds_count=0`，说明不是排队，
+卡在上游/出口）；20 分钟后同参数复测 **TTFB 2.19 s / 总 2.52 s / 200**。
+
+### 90.3 三条根因 → v0.1.28
+
+| 现象 | 根因 | 改动 | 默认值 |
+| --- | --- | --- | --- |
+| chat 504 × 59 全部 `ms=90000` | 非流式预算硬编码 90 s，与实测非流式 p95（120 s 级）不匹配 | `nonstream_budget_sec` 进设置；`stream_idle_sec` / `first_byte_sec` 一并可调 | 180 / 120 / 300 |
+| `body_near_cap` 1,073 条/6 h，1 MB 级请求体仍 200 | 196 KB 静默截断阈值只有告警、没有处置开关，也改不了（只有环境变量） | `context_body_bytes` 进设置 + `body_cap_mode`（`warn`/`reject`）；`reject` 在**选号前**回 400，`bodyCapError` 让三处错误映射统一记 400 | 196608 / `warn` |
+| 3 个负余额号仍在被付费请求选中 | 选号是「先选有额度的、都没有就全集兜底」，且 `needQuota` 的硬过滤从没被打开 | `PickFilteredFor(requireQuota)` / `PickAccountFor` / `PickAvoidingFor`，粘性命中也要过 `HasQuota`；`requireQuotaFor(modelID)` 按 `theosPerRequest` 判付费 | 免费模型行为不变 |
+
+顺带修掉一处真实回归：`server.TestHoldResponseBodyBudgets` 抓到「流式首字节误用 300 s」，
+改成流式走 `stream_idle_sec`、非流式才走 `first_byte_sec`。
+
+### 90.4 负余额三个号：Theos 充不了，只能等 grant（v0.1.29 的由来）
+
+**Theos 无法在网关侧充值**——它只由上游每日 grant 下发（`refresh_at`）或账号侧购买。
+本轮能做的两件事都做了：额度复探 + 让付费调度在 grant 到账前排除它们。
+
+| 账号 | Theos | `refresh_at`（下次 grant） | 复探结果 |
+| --- | --- | --- | --- |
+| `yvbeghihag6wvjd@lmoir.com` | −13.89402 | 2026-11-26T09:56:50Z | `/theos` 正常，仍为负（grant 未到） |
+| `zupxzenogljb` | −15.81422 | 2026-11-26T05:38:34Z | `DeepAI models are temporarily unavailable`（重试 2 次） |
+| `pwvjkhiq1hwz` | −0.04773 | 2026-11-26T02:38:37Z | 同上 |
+
+对账发现 v0.1.28 的硬约束**几乎不生效**：`pool.HasQuota` 原本只有「余额解析为 0 且快照
+≤15 分钟」一条判定，负余额落进「其余一律放行」；而线上 `quota_fresh` 只有 2/17，
+绝大多数快照都是陈旧的。v0.1.29 把两类已知没额度拆开判：
+
+- `= 0`：仍按快照新鲜度（入池瞬间上游常回 `balance=0`，当日额度随后才下发）；
+- `< 0`：按 `refresh_at` —— 未到就排除，已到 / 缺失 / 解析失败则放行
+  （宁可白撞一次 403，也不要因为一条坏时间戳把号永久钉在付费调度之外）。
+
+### 90.5 上线与验证
+
+| 项 | 结果 |
+| --- | --- |
+| v0.1.28 | `local-20261125-v0.1.28-dd75d1f`，`/healthz` `version=v0.1.28`、healthy |
+| v0.1.29 | `local-20261125-v0.1.29-2ca9d89`，`/healthz` `version=v0.1.29`、healthy、`quota_fresh=3` |
+| 设置回显 | `/admin/api/settings`：`context_body_bytes=196608`、`body_cap_mode=warn`、`nonstream_budget_sec=180`、`stream_idle_sec=120`、`first_byte_sec=300`（旧状态文件无需迁移，`Normalize` 补默认） |
+| 端到端 | 免费模型 SSE：**200 / TTFB 8.15 s / 2.4 KB**（当时池里还有并发流量）；密钥已删 |
+| 回滚 | `DEEPAI2API_IMAGE=deepaicode2api:local-20261125-v0.1.27-1b24cca docker compose up -d --no-build` |
+
+**`request_timeout_sec` 保持 600**：它是流式请求的外壳上限（responses p99 正好 600 s），
+实测长尾来自「非流式预算」与「帧间空闲」两处，已由新设置覆盖；再往下调会把
+300–600 s 的长流式回复从 200 变成 504，收益为负。
+
+### 90.6 待办
+
+- `zupxzenogljb` / `pwvjkhiq1hwz` 的 `/theos` 报 `temporarily unavailable`，等 `refresh_at`
+  后复探；若仍失败再按账号级异常处置（`failures` 目前 0/1，未标记 blocked）；
+- `body_cap_mode=reject` 目前只在单测里验证过，线上仍是 `warn`：要切需要先在低峰
+  观察 sub2api 侧 1 MB 级请求的来源，避免一刀切；
+- `claude-haiku-5-5` 仍需一轮**低负载**下的 3/3 有效样本指纹复测；
+- 签到仍在推理前同步执行（设计取舍，`internal/server/upstream.go` 有注释说明不能改异步），
+  6 h 内 195/296 次耗满 5 s 预算，每次都在推迟首字节；
+- 出口代理探测失败 363/6 h（住宅出口可用性问题），继续按出口冷却自动换；
+- 日志 `body_near_cap` 占比过高，下轮可考虑按模型分档而不是单一 196 KB。
