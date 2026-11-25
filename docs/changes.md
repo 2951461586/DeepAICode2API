@@ -34,6 +34,7 @@
 | v0.1.24 | 85 | 客户端 0.3.48 同步复核：启动配对令牌修复 / 目录权限文案轮，wire protocol **仍零变更**（车道仍 7、`binCli` 只有 1 行语义改动）+ 本机升级与旧包清理 |
 | v0.1.25 | 86 | 后台签到预热：补 `err` 日志、预算 10s → 20s、连续失败 2m → 20m 退避（治「每 30s 超时一次」的死循环） |
 | v0.1.26 | 87 | 客户端 0.3.50 同步复核：agent 运行时 pi → dsh，wire protocol **仍零变更**（车道仍 7、请求头 / 指纹 / 请求体不变）+ 模型目录 27 → 28（新增免费 `claude-haiku-5-5`）+ 安装形态改 machine-wide + 指纹实测 |
+| v0.1.27（未发新版） | 88、89 | 0.3.52 同步：车道 7 → 8 + 自证头 `X-DeepAI-Code-Proof`（只登记不发）；随后线上体检 + 指纹第二轮（4 模型）+ 「指纹不符 = 逆向不全」证伪 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -5976,3 +5977,122 @@ Start-Process -FilePath 'DeepAI-Code-0.3.52-x64.exe' -ArgumentList '/S' -Verb Ru
 
 > 注意：v0.1.26 那条「`lane_upstream` 为 0 / `/theos` temporarily unavailable」的遗留问题
 > 本轮已自然恢复 —— 本次 `/theos` 正常回 `lane_version: 8`，签到与额度刷新都通。
+
+---
+
+## 89. 2026-11-25 线上体检 + 模型指纹第二轮（v0.1.27，无代码变更）
+
+**触发**：例行「扫线上 + 测指纹」。线上就是 v0.1.27（`1b24cca`），本轮**不动代码、不发版**，
+只做只读体检、一次聚焦 4 模型的指纹实测，并把「指纹对不上是不是因为客户端逆向不全」
+这条反复出现的疑问用可观测证据证伪/证实。
+
+本轮所有临时密钥用完即删：`fp-check-20261125b`、`proto-check-20261125` 已删；
+另有一把**并行会话**留下的 `fp-probe-20261125`（85 次请求，测完无人清理）也已删除。
+收尾时 `/admin/api/keys` 只剩 `liziai-deepai`。
+
+### 89.1 线上运行情况（`deepai2api.liziai.cloud` → nginx → 127.0.0.1:10088）
+
+> 注意端口：容器 10087 映射到**宿主 10088**，宿主上 `curl 127.0.0.1:10087` 是空响应，
+> `/healthz`、`/admin/api/*`、`/metrics` 都要打 10088（宿主侧没有容器内的 wget 兜底）。
+
+| 项 | 实测（容器启动于 07:11 UTC，约 3 h） |
+| --- | --- |
+| 版本 / 镜像 | `v0.1.27` / `deepaicode2api:local-20261125-v0.1.27-1b24cca`，`healthy`，`restarts=0` |
+| 车道 | `lane=8 lane_compiled=8 lane_upstream=8 lane_drift=0` |
+| 模型 | 28 个，默认 `glm-5.3-flash`，`/v1/models` 200 |
+| 号池 | accounts=17、ready=17、degraded=0、blocked=0、`machine_ready=true`、`quota_fresh=4` |
+| 请求量 | 2xx=3153、3xx=4、4xx=99、5xx=59（本次启动以来） |
+| 上游拒绝 | `transport` 261、`session_busy`(409) 35+3、`context_length_exceeded`(400) 24、`theos_exhausted`(403) 1 |
+| 延迟 | 整体 p50 30 s / p95 300 s；chat p50 30 s / p95 120 s；responses、messages p95 300 s |
+| 签到 | 229 次尝试、**161 次慢阻塞**（≥`checkin_block_ms`=2.5 s）、**155 次超预算**（5 s），p50=p95=5 s |
+| 请求体接近截断阈值 | **690 条**告警（issue #7，阈值 196,608 B，实测有 1 MB 级 body） |
+| 资源 | 内存 2.1/3.9 GB、磁盘 68% |
+
+三条待跟进（都不是本次回归）：
+
+1. **3 个号 Theos 余额为负**：`yvbeghihag6wvjd` −13.89、`zupxzenogljb` −15.81、`pwvjkhiq1hwz` −0.05；
+   付费模型对它们会 403 `theos_exhausted`。`quota_fresh` 只有 4/17 说明额度刷新偏慢。
+2. **签到仍在热路径白等**：229 次里 155 次耗满 5 s 预算、161 次越过 2.5 s 告警线。
+   功能上没坏（17 个号 `theos.lane_version` 全是 8、余额在刷新），但每次都推迟首字节。
+3. **`body_near_cap` 690 条**：`deepseek-v4.1-flash` 有 1,027,760 B 的请求体，
+   远超 196,608 B 的静默截断阈值，仍在 200 —— 属于「透传成功但可能已被上游截断」的灰区。
+
+### 89.2 指纹实测（lmfpd，参考库 `shared-detector-v2` / 76 模型 / `89f2a3ea…`）
+
+参数：`-a chatcompletion`、**默认 SSE（不用 `-ns`）**、`-p 1`、`--count 3`、`--timeout 180`
+（`claude-haiku-5-5` 重试用 300）。选 4 个模型是为了与 §87.8（11-24）同口径可比：
+1 个最新免费模型 + 3 个对照。
+
+| 模型 | 有效样本 | 概率状态 | 判定为 | 家族 | 与目录名 |
+| --- | ---: | --- | --- | --- | --- |
+| `qwen-3.8-flash` | **3/3** | reference_calibrated，p=0.361 | qwen3.8-omni-flash | **qwen** | ✅ 家族对齐 |
+| `glm-5.3-flash` | **3/3** | reference_calibrated，p=0.503 | grok-4.6 | grok | ❌ 与 §87.8 的 0.503 / grok-4.6 **逐位复现** |
+| `deepseek-v4.1-flash` | **3/3** | reference_calibrated，p=0.205 | mimo-v2.5-pro | mimo | ❌ 真身 `deepseek-v4.1-flash-1017` 只排第 3（p=0.112） |
+| `claude-haiku-5-5` | 1/3（重试 2/3） | unavailable | deepseek-v4.1-flash（1 样本）/ openpangu-2.0-flash（2 样本） | deepseek / openpangu | ⚠️ **待复测** |
+
+网关侧对应观测（同一批请求，含复测）：**19 次上游请求：15×200、4×499**。4 次 499 里
+3 次是 `claude-haiku-5-5`（两次运行，`latency_ms` 179,931 / 179,938，正好是 lmfpd 的 180 s
+首字节超时），1 次是 `deepseek-v4.1-flash` 复测的第三条（流了 37 KB 后撞 168 s）；
+当时并行还有另一个会话在用 `-ns` 非流式打同一条线上，把队列压满了。四个模型全是免费档，
+**Theos 消耗为 0**。
+
+复测 `deepseek-v4.1-flash`（同参数、19 分钟后）：**3/3 有效、openpangu-2.0-pro、p=0.920**。
+同一模型、同一请求形状、同一参考库，20 分钟内给出两个完全不同且都「高置信」的答案 ——
+这条数据是 §89.3 的关键证据。
+
+### 89.3 「指纹不符 = 客户端逆向不全」不成立（协议面对齐的证据）
+
+先把可测的协议面逐项对齐。同一模型（`glm-5.3-flash`）、同一提示、非流式，
+「经网关」与「桌面端形状直连上游」（`go run ./cmd/probe`，用的是 `deepai.NewClient()`，
+即 `BrowserFingerprint=false` 的推理形态）对比：
+
+| 项 | 经网关 v0.1.27 | 直连上游（桌面端形状） |
+| --- | --- | --- |
+| HTTP | 200 | 200 |
+| `id` | `gen-e59bff1e…`（32 hex） | `gen-8fcb98b8…`（32 hex） |
+| `model` 回显 | `glm-5.3-flash`（网关按目录归一） | `zai/glm-5.3-flash` |
+| `system_fingerprint` | `fp_wip25d53el` | `fp_65j0eshvcd` |
+| `provider` / `service_tier` | 无 | 无 |
+| `reasoning_details[0].format` | `unknown` | `unknown` |
+| `usage` 字段集合 | 同上游（含 `*_tokens_details`） | 同上游 |
+
+再叠加四类长期观测：
+
+1. **请求体形状一次通过**：本次启动以来 `gateway_fallback_total{reason="body_shape"} = 0`，
+   即上游从未以「请求体不是 DeepAI Code 发的」拒绝我们的首个 body（11-10 那次是 75 次）。
+2. **车道 / 模型目录 / 签到逐项对齐**：`lane_upstream=8`、17/17 账号 `theos.lane_version=8`、
+   目录 28 条与桌面端逐字段一致；`/theos` 正常下发 `check_in` nonce。
+3. **`X-DeepAI-Code-Proof` 未发不影响对齐**：§88.4 已实测「不发 / 64 位乱填 / 24 位乱填」
+   三种情况 `/theos` 与 `/chat/completions` 全部 200；桌面端 helper 缺失时自己也会省略该头。
+4. **响应形状与 §3.1 的 2026-11-13 结论一致**：`gen-<32 hex>`、无 `provider` / `service_tier`、
+   `system_fingerprint` 存在、`reasoning_details.format = unknown`。这是**当前真实分支**的形状，
+   不是替身特征。
+
+结论与判据：
+
+- 如果问题出在「逆向不全」，症状会是**全体模型一起被判到同一家族**（同一个替身后端）。
+  实测是**逐模型发散**：`qwen` 对得上、`glm` 落到 grok、`deepseek` 落到 mimo 又在 19 分钟后
+  落到 openpangu。形状差异解释不了这种发散。
+- `deepseek-v4.1-flash` 三次（11-10 deepseek / 11-24 gemini / 11-25 mimo → openpangu）
+  **一次一个答案**，说明在当前参考库下该模型**没有可重复的指纹**，检测器给的排序是噪声；
+  它自己每次也都带 `evidence.insufficient=true`。
+- 因此本轮判读维持 §87.8 的口径：**只有「同一轮里 3/3 有效样本给出的家族是否与目录名一致」
+  可以比较**；跨轮、跨参考库的绝对值得不出身份结论。**不能**用「指纹不符」反推客户端逆向不全。
+- 反过来讲，逆向面确实还有两处已知留白（`X-DeepAI-Code-Proof` 不实现、交还 ToS §4 的
+  `resource-monitor --attest` 不复制），二者都有实测证明「不参与模型路由」，不作为对齐证据。
+
+### 89.4 顺带修掉的操作坑
+
+| 坑 | 结论 |
+| --- | --- |
+| `DELETE /admin/api/keys?key=<名字>` | 回 404「密钥不存在」——删除只认**明文 key 或 key_id**，不认 name |
+| 宿主 `curl 127.0.0.1:10087/healthz` 空响应 | 容器端口映射在 **10088**；10087 只在容器网络内 |
+| 指纹实测用 `-ns`（非流式） | 线上非流式 p95=300 s，必然撞网关/客户端超时；**SSE + `-p 1`** 才稳 |
+
+### 89.5 待办
+
+- `claude-haiku-5-5` 需要一轮**低负载**下的 3/3 有效样本复测（本轮两次都因首字节超时丢样本，
+  11-24 那次 3/3 判成 claude 家族，不能因此否定，也不能据此确认）。
+- 3 个负余额账号要么补 Theos、要么移出付费档调度。
+- 690 条 `body_near_cap` 告警值得单独立项：要么在网关侧提前拒绝（显式 400），
+  要么把阈值/告警改成按模型区分。
