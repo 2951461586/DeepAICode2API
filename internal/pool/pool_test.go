@@ -127,7 +127,11 @@ func TestPickFilteredForRequiresQuota(t *testing.T) {
 	s := New()
 	now := time.Now().Unix()
 	neg, pos := acct("neg", ""), acct("pos", "")
-	neg.Theos = &model.Allowance{Enabled: true, Balance: "-13.89000", CheckedAt: now}
+	// 负余额必须带「grant 还没到」的 refresh_at 才算确定没额度（见 HasQuota）。
+	neg.Theos = &model.Allowance{
+		Enabled: true, Balance: "-13.89000", CheckedAt: now,
+		RefreshAt: time.Now().Add(6 * time.Hour).UTC().Format(time.RFC3339),
+	}
 	pos.Theos = &model.Allowance{Enabled: true, Balance: "2.50000", CheckedAt: now}
 
 	// 免费模型（requireQuota=false）：保持旧语义，池里还有号就绝不硬阻塞。
@@ -210,5 +214,44 @@ func TestPickSkipsQuotaExhausted(t *testing.T) {
 	}
 	if !seen["a"] || !seen["b"] {
 		t.Fatalf("额度恢复后两个账号都应参与轮询，实际 %v", seen)
+	}
+}
+
+// TestHasQuotaNegativeBalance 固化「负余额 ≠ 陈旧的 0」。
+//
+// 0 可能是「刚入池、当日额度还没下发」，所以陈旧就要放行；负数是已经超额消耗，
+// 只能等上游 grant（refresh_at）。2026-11-25 线上 17 个号里 quota_fresh 只有 2 个，
+// 若负数也按陈旧放行，付费硬约束（requireQuota）就只会拦掉刚探过的那几个。
+func TestHasQuotaNegativeBalance(t *testing.T) {
+	now := time.Now()
+	future := now.Add(6 * time.Hour).UTC().Format(time.RFC3339)
+	past := now.Add(-6 * time.Hour).UTC().Format(time.RFC3339)
+	staleChecked := now.Add(-2 * time.Hour).Unix()
+
+	cases := []struct {
+		name string
+		a    *model.Account
+		want bool
+	}{
+		{"负余额+refresh 未到（快照很旧）", &model.Account{Theos: &model.Allowance{
+			Enabled: true, Balance: "-13.89402", RefreshAt: future, CheckedAt: staleChecked,
+		}}, false},
+		{"负余额+refresh 已过（grant 应已下发）", &model.Account{Theos: &model.Allowance{
+			Enabled: true, Balance: "-13.89402", RefreshAt: past, CheckedAt: staleChecked,
+		}}, true},
+		{"负余额+无 refresh", &model.Account{Theos: &model.Allowance{
+			Enabled: true, Balance: "-0.04773", CheckedAt: staleChecked,
+		}}, true},
+		{"负余额+refresh 格式不对", &model.Account{Theos: &model.Allowance{
+			Enabled: true, Balance: "-0.04773", RefreshAt: "2026-11-26 09:56", CheckedAt: staleChecked,
+		}}, true},
+		{"旧的 0（陈旧放行）", &model.Account{Theos: &model.Allowance{
+			Enabled: true, Balance: "0", RefreshAt: future, CheckedAt: staleChecked,
+		}}, true},
+	}
+	for _, c := range cases {
+		if got := HasQuota(c.a); got != c.want {
+			t.Fatalf("%s: HasQuota = %v，期望 %v", c.name, got, c.want)
+		}
 	}
 }

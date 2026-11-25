@@ -188,9 +188,33 @@ func HasQuota(a *model.Account) bool {
 	if v > 0 {
 		return true
 	}
+	// 负余额：已经超额消耗，不会自己回正，只能等上游 grant。快照再旧也不放行，
+	// 除非 refresh_at 已经过去（grant 应该已下发，只是快照没跟上）。
+	// 2026-11-25 线上 17 个号里 quota_fresh 只有 2 个：若负数也按「陈旧即放行」
+	// 处理，付费硬约束会形同虚设。
+	if v < 0 {
+		return grantDue(a.Theos.RefreshAt)
+	}
 	// 0 额度只在「刚探过」时才算数。
 	if a.Theos.CheckedAt <= 0 {
 		return true
 	}
 	return time.Since(time.Unix(a.Theos.CheckedAt, 0)) > QuotaStaleAfter
+}
+
+// grantDue 报告 refresh_at 是否已经过去（空值 / 解析失败一律按已过去处理）。
+//
+// 语义：「上游应该已经发了新额度，只是快照没跟上」⇒ 不应按没额度硬拦。
+// 失败时放行是为了不把号池钉死：宁可白撞一次 403，也不要因为一条格式不对的
+// 时间戳就把账号永久排除在付费调度之外。
+func grantDue(refreshAt string) bool {
+	s := strings.TrimSpace(refreshAt)
+	if s == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return true
+	}
+	return !time.Now().Before(t)
 }
