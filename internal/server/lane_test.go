@@ -15,13 +15,13 @@ import (
 func TestLaneUnsupportedRefreshesAndRetries(t *testing.T) {
 	var mu sync.Mutex
 	var chatLanes []string
-	// 上游只接受 8（编译期车道 7 的下一档），模拟“先抬车道、后发客户端”。
+	// 上游只接受 9（编译期车道 8 的下一档），模拟“先抬车道、后发客户端”。
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		lane := r.Header.Get("X-DeepAI-Code-Theos")
 		mu.Lock()
 		chatLanes = append(chatLanes, lane)
 		mu.Unlock()
-		if lane != "8" {
+		if lane != "9" {
 			w.WriteHeader(http.StatusUpgradeRequired)
 			_, _ = io.WriteString(w, `{"error":{"code":"lane_version_unsupported","message":"old build"}}`)
 			return
@@ -37,17 +37,17 @@ func TestLaneUnsupportedRefreshesAndRetries(t *testing.T) {
 	})
 	s, key := newTestServer(t, u)
 
-	if got := s.CurrentLane(); got == "8" {
-		t.Fatalf("初始车道不应是 8: %q", got)
+	if got := s.CurrentLane(); got == "9" {
+		t.Fatalf("初始车道不应是 9: %q", got)
 	}
 	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key, chatProbeBody)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("换道后应成功，实际 %d: %s", rec.Code, rec.Body.String())
 	}
-	if s.CurrentLane() != "8" {
+	if s.CurrentLane() != "9" {
 		t.Fatalf("探测到的车道应生效，实际 %q", s.CurrentLane())
 	}
-	if got := s.Store.Settings().Lane; got != "8" {
+	if got := s.Store.Settings().Lane; got != "9" {
 		t.Fatalf("车道应落盘，实际 %q", got)
 	}
 	if got := s.Store.Settings().LaneBuild; got != deepai.LaneVersion {
@@ -65,7 +65,7 @@ func TestLaneUnsupportedRefreshesAndRetries(t *testing.T) {
 	mu.Lock()
 	added := chatLanes[before:]
 	mu.Unlock()
-	if len(added) != 1 || added[0] != "8" {
+	if len(added) != 1 || added[0] != "9" {
 		t.Fatalf("第二次应只用新车道打一次，实际 %v", added)
 	}
 }
@@ -144,13 +144,13 @@ func TestNewKeepsNewerProbedLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	st.UpdateSettings(func(s *store.Settings) { s.Lane = "8" })
+	st.UpdateSettings(func(s *store.Settings) { s.Lane = "9" })
 	if err := st.Save(); err != nil {
 		t.Fatalf("保存状态: %v", err)
 	}
 
-	if got := New(st).CurrentLane(); got != "8" {
-		t.Fatalf("车道 = %q，期望保留探测到的 8", got)
+	if got := New(st).CurrentLane(); got != "9" {
+		t.Fatalf("车道 = %q，期望保留探测到的 9", got)
 	}
 }
 

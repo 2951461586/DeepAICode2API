@@ -69,9 +69,15 @@ const (
 	//
 	// 2026-11-20 复核 0.3.42、2026-11-21 复核 0.3.43、2026-11-22 复核 0.3.44 /
 	// 0.3.45、2026-11-23 复核 0.3.47（跳过 0.3.46 安装包，0.3.45 → 0.3.47 一次性
-	// 比对）、2026-11-24 复核 0.3.48 / 0.3.50：`DEEPAI_LANE_HEADERS` 仍是 `"7"`，
-	// 没有抬到 8（两个 origin 实测一致：车道 7 均 401、8 均 426）。
-	LaneVersion = "7"
+	// 比对）、2026-11-24 复核 0.3.48 / 0.3.50：`DEEPAI_LANE_HEADERS` 仍是 `"7"`。
+	//
+	// **0.3.52（2026-11-25T00:50Z 发布）把车道抬到 8**：`DEEPAI_LANE_HEADERS`
+	// 变成 `{"X-DeepAI-Code-Theos": "8", "X-DeepAI-Code-Instance": …}`，
+	// 同一轮新增 `X-DeepAI-Code-Proof`（见 HeaderProof）。2026-11-25 实测门槛
+	// 回到「窗口」形态：`/models` / `/theos` 的 6 与 9 被拒（`This version of
+	// DeepAI Code is no longer supported.`），7 / 8 都 200，`/theos` 回
+	// `lane_version: 8` —— 即服务端当前车道是 8，7 仍可用但已是旧车道。
+	LaneVersion = "8"
 
 	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
 	//
@@ -184,7 +190,24 @@ const (
 	// 时补空串。这是客户端构造历史的行为，网关只透传，不改请求语义。
 	// 模型目录 27 → 28（新增免费 `claude-haiku-5-5`，95k 上下文 / 64k 输出），
 	// 其余条目逐字段未变，默认模型仍 `glm-5.3-flash`。见 `docs/changes.md` §87。
-	AppVersion = "0.3.50"
+	//
+	// 0.3.50 → 0.3.52（`releaseDate` 2026-11-25T00:50:10Z）是**车道 7 → 8 + 源码级
+	// 自证轮**，首次真正动了推理请求头集合：
+	//   1. `DEEPAI_LANE_HEADERS` 的 Theos 从 `"7"` 抬到 `"8"`（实例号粒度不变）；
+	//   2. 新增 `X-DeepAI-Code-Proof`（`src/deepai/laneProof.ts`）：值来自随包原生
+	//      helper `resource-monitor --attest`（Rust `native/resource-monitor/src/
+	//      attest.rs`）用「本构建的密钥」算出的 24–64 位 hex。`/theos` 送签到证明
+	//      `{n:nonce,a:sha256(apiKey),m:machine,i:instance,v:version}`，模型调用送
+	//      请求标签 `{n:上次签到 nonce,b:sha256(body)}`；helper 缺失 / 5s 超时 / 输出
+	//      不合规时**省略该头**，请求照发。网关不实现该头（见 HeaderProof 注释）；
+	//   3. 协议面其余部分零变更：5 个头字面量不变（+Proof 共 6）、`/deepai_code/*`
+	//      端点集合不变、beacon 形态逐字节不变、`machineId.ts` 区域 sha256 完全相同、
+	//      请求体构造者 `openai-completions.js` 顶层副本 sha256 完全相同（`f0dd1d00…`）；
+	//   4. 其余 diff（593 块 / +1594 / −1262 段）落在本地编排面：Orchestrator v2、
+	//      ACP provider、DeepSeek harness 的 Node 版本探测、OpenCode runtime 校验、
+	//      历史同步失败重试、DeepAIPeerCollaboration 的 capability_denied 语义。
+	// 模型目录仍 28 条，逐字段未变。见 `docs/changes.md` §88。
+	AppVersion = "0.3.52"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。
@@ -208,6 +231,18 @@ const (
 	// 形态 `v=<版本>;up=<秒>;pi=<0|1>;focus=<0|1>`，其中 focus 只在
 	// 焦点状态已知时出现（见 deepaiBeacon）：网关没有窗口焦点，因此省略。
 	HeaderBeacon = "X-DeepAI-Code-Beacon"
+	// HeaderProof 是 0.3.52（车道 8）新增的自证头。
+	//
+	// 值由随包原生 helper `resource-monitor --attest` 用「本构建的密钥」算出
+	// （24–64 位 hex），`/theos` 与模型调用各送一种请求给 helper：
+	//   - 签到证明：`{n:签到 nonce | "", a: sha256(apiKey), m: 机器指纹, i: 实例号, v: 版本}`
+	//   - 调用标签：`{n: 上次签到 nonce, b: sha256(请求体)}`
+	// 客户端在 helper 缺失 / 5s 超时 / 输出不合规时直接省略该头。
+	//
+	// **网关不实现、也不发送它**（没有密钥，也不应该从客户端抠密钥）：
+	// 2026-11-25 实测上游**不校验** —— 缺该头的 /models /theos /chat/completions
+	// 全 200，随手编的 64 位 hex 同样 200。仅登记头名，便于将来被强制时快速定位。
+	HeaderProof = "X-DeepAI-Code-Proof"
 
 	// 上游错误码。
 	CodeSessionBusy     = "session_busy"

@@ -105,8 +105,8 @@ func TestWritePrometheusContract(t *testing.T) {
 		LogRequests:  10,
 		LogFailed:    1,
 		Keys:         2,
-		Lane:         7,
-		CompiledLane: 7,
+		Lane:         8,
+		CompiledLane: 8,
 		UpstreamLane: 9,
 	})
 	body := b.String()
@@ -117,8 +117,8 @@ func TestWritePrometheusContract(t *testing.T) {
 		`gateway_accounts{state="quota_due"} 1`,
 		`gateway_log_requests_total 10`,
 		`gateway_keys 2`,
-		`gateway_lane 7`,
-		`gateway_lane{source="compiled"} 7`,
+		`gateway_lane 8`,
+		`gateway_lane{source="compiled"} 8`,
 		`gateway_upstream_lane 9`,
 		`gateway_request_duration_seconds_bucket{endpoint="chat",le="0.25"} 1`,
 		"gateway_checkin_seconds_bucket",

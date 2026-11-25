@@ -6,6 +6,44 @@
 
 > 抓包时间：应用版本 **0.3.20**（车道 4，2026-11-07 发布）。
 >
+> **2026-11-25 复核到 0.3.52（2026-11-25T00:50Z 发布）：车道 7 → 8 + 新增源码级自证头 `X-DeepAI-Code-Proof`；其余协议面零变更。**
+> 官方 `latest.yml` 从 0.3.50 跳到 **0.3.52**；x64 `sha512` = `j5LBDdKU…`（586,881,344 B）、arm64 `sha512` = `cx/6sQF2A…`
+> （565,693,024 B），下载包 sha512 与 `latest.yml` 逐字节一致。`app.asar` 的 `package.json` 为 0.3.52
+> （`t3codeCommitHash: 20b44c095c22`）。
+>
+> `server.asar` → `apps/server/dist/binCli-B89xRT2q.mjs`（15,039,943 B，0.3.50 为
+> `binCli-COh41gMK.mjs` 15,004,074 B），按 `;` 切段做 `SequenceMatcher`：**593 个变更块 / +1594 / −1262 段**；
+> `server.asar` 条目 **26,602 → 26,699**、`app.asar` 46,667,328 → **46,674,489 B**。
+> 落在 `src/deepai/*` 的变更只有 `api.ts`（车道 + 证明请求构造）、`DeepAIAccount.ts`（`checkInHeaders(apiKey)` / `callProof`）、
+> `localTransport.ts`（模型调用带头）、新增 `laneProof.ts` 与 `resourceTelemetry/ResourceMonitorBinary.ts`，
+> 其余全在编排面（`src/orchestration-v2/*` 146 块、`provider-acp` 63 块、`provider-pi` 17 块、katex 33 块…）。
+>
+> | 复核项 | 0.3.50 | 0.3.52 |
+> | --- | --- | --- |
+> | `DEEPAI_LANE_HEADERS` 整个对象 | `Theos:"7"` + `Instance:randomBytes(16).hex` | **`Theos:"8"`**（车道 7 → 8，实例号粒度不变） |
+> | `X-DeepAI-Code-*` 头 | 5 个（Theos / Instance / Machine / Check-In / Beacon） | **6 个**（+ `X-DeepAI-Code-Proof`） |
+> | `/deepai_code/*` 端点 | 推理 / `models` / `theos` / 搜索 / `sessions/*` / `connect/*` | **字面量集合零差异** |
+> | 聊天请求体 | 由 `pi-ai` 的 `openai-completions.js` 构造 | 顶层副本 **`f0dd1d00…` 与 0.3.50 完全相同**（字节级）；`dsh-llm-pi-ai` 内嵌副本升级（多 `openrouter-cost` / `streaming-json` 工具流），但 `max_tokens` / `max_completion_tokens` / `reasoning_effort` / `prompt_cache_key` / `reasoning_content` 等字段集合不变 |
+> | `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** |
+> | beacon `v=` | `v=${version$2};up=…;pi=…;focus=…` | **逐字节一致**，`version$2` 现报 0.3.52 |
+> | 机器指纹 | `machineId.ts` 逻辑 | **区域 sha256 完全相同**（`d8750df9…`，3571 B） |
+> | 凭据文件 `deepai-account.bin` | `{apiKey,username,isPro,…}` | **Schema 未动** |
+>
+> **本轮唯一的新协议元素：`X-DeepAI-Code-Proof`（`src/deepai/laneProof.ts`）**：值来自随包原生 helper
+> `resource-monitor --attest`（Rust `native/resource-monitor/src/attest.rs`）用「本构建的密钥」算出的
+> 24–64 位 hex，一次一问一答（JSON 行）。`/theos` 送签到证明
+> `{n:nonce|"", a:sha256(apiKey), m:machine, i:instance, v:version}`；模型调用送请求标签
+> `{n:上次签到 nonce, b:sha256(body)}`（无签到 nonce 时不送）。helper 缺失 / 5s 超时 / 输出不合规 → **省略该头**，
+> 请求照发。客户端注释同时声明：ToS §4 不允许把该 helper 复制进其它客户端。
+>
+> **2026-11-25 线上实测（真实账号，单请求）**：`/models` / `/theos` 车道 **6 被拒**（`This version of DeepAI Code
+> is no longer supported.`）、**7 / 8 均 200**、**9 被拒**；`/theos` 无论发 7 还是 8 都回 `lane_version: 8`。
+> **上游目前不校验 Proof**：`/theos` 与 `/chat/completions` 在「不发 / 64 hex 乱填 / 24 hex」三种情况下全部 200
+> （`/theos` 照常下发 `check_in` nonce）。模型目录仍 **28 条（12 免费 / 16 付费）**，且**车道 7 与车道 8 拿到的目录逐字段零差异**。
+>
+> → 结论：`deepai.AppVersion` 跟到 **0.3.52**、`deepai.LaneVersion` 跟到 **8**；Proof 头只登记、不实现（无密钥且不该有），
+> 其余协议逻辑（指纹 / 签到 / beacon / 请求体）无需改动即可吃 0.3.52 写出的凭据。
+>
 > **2026-11-24 复核到 0.3.50（2026-11-24T05:37Z 发布）：wire protocol 仍零变更，只跟心跳版本号；本轮是 agent 运行时迁移轮（pi → dsh）。**
 > 官方 `latest.yml` 从 0.3.48 跳到 **0.3.50**；x64 `sha512` = `gFLL4LJN…`（509,379,384 B）、arm64 `sha512` = `dUy0eEHY…`
 > （488,534,408 B），下载包 sha512 与 `latest.yml` 逐字节一致。`app.asar` 的 `package.json` 为 0.3.50
@@ -378,7 +416,7 @@
 
 | 标记 | 含义 | 怎么复核 |
 | --- | --- | --- |
-| **【源码级】** | 白盒确认：读的是 0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 / 0.3.47 / 0.3.48 / 0.3.50 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`，打包进 `dist/binCli-*.mjs`） | 解包 asar 后对着代码看，可 100% 复现 |
+| **【源码级】** | 白盒确认：读的是 0.3.41 / 0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 / 0.3.47 / 0.3.48 / 0.3.50 / 0.3.52 客户端 `app.asar` / `server.asar`（`src/deepai/*.ts`，打包进 `dist/binCli-*.mjs`） | 解包 asar 后对着代码看，可 100% 复现 |
 | **【实测】** | 线上真打过，附日期与样本量 | 按文中命令复跑；样本量小的结论会写明 |
 | **【推断】** | 由前两类推广而来，**尚未验证** | 照着改代码前先补一次实测 |
 
@@ -388,7 +426,7 @@
 
 ---
 
-## 1. 进程与数据目录【源码级 0.3.50】
+## 1. 进程与数据目录【源码级 0.3.52】
 
 | 项 | 值 |
 | --- | --- |
@@ -400,7 +438,7 @@
 
 自动探测顺序见 `internal/deepai/helpers.go` 的 `DesktopSecretDirs`。
 
-## 2. 上游端点【源码级 0.3.50】
+## 2. 上游端点【源码级 0.3.52】
 
 基础地址 `https://api.deepai.org`（可用 `DEEPAI_API_ORIGIN` 覆盖）。
 
@@ -492,14 +530,16 @@
   刷新目录直接给出可行动的错误，而不是把 401 抛成「Key 失效」；
 - 代理预热（`WarmUpstream`）把 **401 当作成功**：DNS/TCP/TLS 与代理 CONNECT
   都已经通了，预热的目的一样达到，只有 5xx / 超时才不算；
-- 车道探测失败不再影响正确性：编译期 `LaneVersion=7` 仍是默认值，
+- 车道探测失败不再影响正确性：编译期 `LaneVersion=8` 仍是默认值，
   真遇到 426 也会触发一次探测（此时号池里必然有账号）；
-- 探测的局限（2026-11-19 起）：门槛放宽后所有 ≤7 都 200，`/models`
-  既分不出当前车道也看不出上游已抬到 8。上游车道只能从 `/theos` 的
+- 探测的局限：门槛可能放宽成一大段（2026-11-19：≤7 全通过）也可能收窄成窗口
+  （2026-11-25：7 / 8 通过、6 与 9 被拒），`/models` 分不出当前车道，也看不出
+  上游是否已抬到 9。上游车道只能从 `/theos` 的
   `lane_version` 观测（`Client.LaneHook` → `Server.UpstreamLane` / `LaneDrift`）。
 
-车道门槛（**2026-11-19 复测：已放宽**）：`/theos` 的车道 2 / 4 / 5 / 6 / 7 → 200
-且都回 `lane_version: 7`，8 → 426；`/models` 同样的 2~7 → 200、8 → 426；
+车道门槛（**2026-11-25 复测：窗口 7 / 8**）：`/theos` 的 7 与 8 → 200（都回
+`lane_version: 8`），6 与 9 → 拒绝（`This version of DeepAI Code is no longer supported.`）；
+`/models` 同样 7 / 8 → 200、6 / 9 → 拒绝；
 `/chat/completions` 实测 5 / 6 / 7 → 200。0.3.41 发布当天（2026-11-18）「只有 7 通过」
 的硬门槛只维持了一天。目录本身仍是 27 个（11 免费 / 16 付费），`default` 仍是
 `glm-5.3-flash`；**车道 5 / 6 / 7 的目录逐字段一致**（`glyph-cluster` 256,000，
@@ -513,7 +553,7 @@
 `id,name,reasoning,input,contextWindow,maxTokens,premier,theosPerRequest,api`，
 没有新增字段。
 
-### 2.3 上下文续接：桌面端从不使用 `previous_response_id`【源码级 0.3.50，2026-11-24 复核】
+### 2.3 上下文续接：桌面端从不使用 `previous_response_id`【源码级 0.3.52，2026-11-25 复核】
 
 issue #5（“模型失忆”）要回答的第一个问题是「上游/客户端到底支持不支持链式续接」。
 把 0.3.41 的 `apps/server/dist/binCli-DAkBc9bP.mjs`（14.8 MB，即 t3code server
@@ -547,12 +587,13 @@ issue #5 的「每轮发完整历史」契约仍成立。
 3. 因此网关的处理是：透传路径原样转发（由上游决定），合成路径（chat 模型）
    直接 400 `unsupported_parameter` —— 静默忽略等于把对话截成一问一答。
 
-## 3. 请求头【源码级 0.3.50】
+## 3. 请求头【源码级 0.3.52】
 
 | 头 | 值 | 作用 |
 | --- | --- | --- |
 | `Api-Key` | 账号 API Key | **鉴权走这个头，不是 `Authorization`** |
-| `X-DeepAI-Code-Theos` | `7` | 计费车道版本（0.3.41 起；2026-11-24 复核 0.3.48 / 0.3.50 未变）；门槛是服务端行为，2026-11-19 起 ≤7 全通过、8 及以上 426，见下方「车道版本门槛」 |
+| `X-DeepAI-Code-Theos` | `8` | 计费车道版本（0.3.41–0.3.50 为 `7`，**0.3.52 抬到 `8`**）；门槛是服务端行为，2026-11-19 起 ≤7 全通过、8+ 426，**2026-11-25 变成窗口：7 / 8 通过、6 与 9 被拒**，见下方「车道版本门槛」 |
+| `X-DeepAI-Code-Proof` | 24–64 位 hex（`resource-monitor --attest` 产出） | **0.3.52 新增**：`/theos` 送签到证明（`{n:nonce,a:sha256(apiKey),m:machine,i:instance,v:version}`），模型调用送请求标签（`{n:上次签到 nonce,b:sha256(body)}`）；helper 不可用时省略。**网关不实现**，2026-11-25 实测上游不校验 |
 | `X-DeepAI-Code-Instance` | 16 字节随机数的 hex（每进程一次） | 进程实例标识，随所有 JSON 请求发出 |
 | `X-DeepAI-Code-Machine` | `sha256(小写原始机器 UUID)` | 按天发放免费额度；计量模型缺失时 `machine_required` |
 | `X-Session-Affinity` | 任意会话 id | 会话粘性（body 的 `prompt_cache_key` 同效） |
@@ -616,6 +657,12 @@ issue #5 的「每轮发完整历史」契约仍成立。
 > `DeepAIAccount.ts` 的改动同样只在登录指引、恢复提示与 Sentry 归因侧（新增的拒答码
 > `theos_insufficient` / `pro_required` / `rate_limit_exceeded` 只进 tag，不上行）。
 >
+> **2026-11-25 用 0.3.52 复核：本轮首次真正改了头集合** —— `DEEPAI_LANE_HEADERS` 的
+> Theos 从 `"7"` 抬到 `"8"`，并新增第 6 个头 `X-DeepAI-Code-Proof`（`src/deepai/laneProof.ts`
+> + `resourceTelemetry/ResourceMonitorBinary.ts`）。其余 5 个字面量、实例号粒度、
+> `deepAIBeacon`、`checkInHeaders()` 的 check-in / beacon 分支、`machineId.ts` 区域 sha256
+> 全部未动；`/theos` 的请求头构造从同步变成异步（要等 helper 的 proof，5s 超时后省略）。
+>
 > **2026-11-24 用 0.3.50 复核：车道块与 5 个头字面量仍逐字节一致**，`machineId.ts` 区域
 > sha256 相同；`api.ts` 的改动是默认 origin 切到 api2、登录 exchange 抽到 `shared/signInExchange`、
 > 以及给 10 个模型打开 reasoning 回填，均不改进推面的请求头形态。
@@ -629,7 +676,7 @@ issue #5 的「每轮发完整历史」契约仍成立。
 > `deepAIBeacon` 仍 `v=${version$2};up=…;pi=…;focus=…`；`src/deepai/api.ts` 唯一的
 > 新增是两段注释 + `deepAIFailureCode()`（错误码归因，不上行）。
 >
-> ⚠ **0.3.43 新增 ToS 声明注释（0.3.44 / 0.3.45 / 0.3.47 / 0.3.48 仍在）**（`src/deepai/api.ts`，就在
+> ⚠ **0.3.43 新增 ToS 声明注释（0.3.44 / 0.3.45 / 0.3.47 / 0.3.48 / 0.3.50 / 0.3.52 仍在，且 0.3.52 给 `laneProof.ts` 补了同款声明）**（`src/deepai/api.ts`，就在
 > `DEEPAI_LANE_HEADERS` 上方）：援引 DeepAI ToS 第 4 条，明写这些头与签到是
 > 「DeepAI Code 应用自识别用」，不允许复制进其它客户端。这是**文本声明，不改行为**，
 > 但 README 的合规说明已引用它。
@@ -638,9 +685,12 @@ issue #5 的「每轮发完整历史」契约仍成立。
 
 - 车道版本门槛（**2026-11-19 实测矩阵**在最上面一行；旧行保留作对比）：
 
-  | 端点 | lane 1 | 2 | 3 | 4 | 5 | 6 | **7** | 8 |
-  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-  | `/models`（2026-11-19） | 未测 | 200 | 未测 | 200 | 200 | 200 | **200** | 426 |
+  | 端点 | lane 1 | 2 | 3 | 4 | 5 | 6 | 7 | **8** | 9 |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `/models`（2026-11-25） | 未测 | 未测 | 未测 | 未测 | 未测 | **拒** | 200 | **200** | **拒** |
+  | `/theos`（2026-11-25） | 未测 | 未测 | 未测 | 未测 | 未测 | **拒** | 200（回 `lane_version: 8`） | **200**（回 `lane_version: 8`） | **拒** |
+  | `/chat/completions`（2026-11-25） | 未测 | 未测 | 未测 | 未测 | 未测 | 未测 | 未测 | **200** | 未测 |
+  | `/models`（2026-11-19） | 未测 | 200 | 未测 | 200 | 200 | 200 | **200** | 426 | 未测 |
   | `/theos`（2026-11-19） | 未测 | 200 | 未测 | 200 | 200 | 200 | **200**（都回 `lane_version: 7`） | 426 |
   | `/chat/completions`（2026-11-19） | 未测 | 未测 | 未测 | 未测 | 200 | 200 | **200** | 未测 |
   | `/models`（0.3.41 当日） | 未测 | 未测 | 未测 | 未测 | 426 | 426 | **200** | 426 |
@@ -657,13 +707,15 @@ issue #5 的「每轮发完整历史」契约仍成立。
   | `/chat/completions`（2026-11-11 快照） | 未测 | **426** | **426** | 200 | 未测 | 未测 | — | — |
 
   → 0.3.41 当天把门槛收紧成**只有 lane 7**（元数据、配额、推理三条路径的 6 与 8
-  都是 426 `lane_version_unsupported`），但 **2026-11-19 又放宽成 ≤7 全通过**。
-  于是「发旧车道会 426」不再是可依赖的安全网：旧车道能跑通只说明门槛宽松，
-  不说明车道对得上。**网关跟发 `7`**（`deepai.LaneVersion`）；探测序列仍是
-  从 7 开始向上猜、再下降到 2，以免上游先抬车道再发客户端。
-  探测的局限（2026-11-19 起）：所有 ≤7 都 200，`/models` 既分不出当前车道，
-  也看不出上游已抬到 8 —— 唯一信号是 `/theos` 的 `lane_version`
-  （`deepai.Client.LaneHook` → `Server.UpstreamLane` / `LaneDrift`）。
+  都是 426 `lane_version_unsupported`），**2026-11-19 放宽成 ≤7 全通过**，
+  **2026-11-25（0.3.52 发布当天）又变成窗口形态：7 与 8 通过，6 与 9 被拒**
+  （拒绝文案是 `This version of DeepAI Code is no longer supported.`，不是 426 错误码）。
+  于是「发旧车道会 426」从来不是可依赖的安全网：旧车道能跑通只说明门槛宽松，
+  不说明车道对得上。**网关跟发 `8`**（`deepai.LaneVersion`）；探测序列仍从 8
+  开始向上猜、再下降到 2，以免上游先抬车道再发客户端。
+  探测的局限：能通过的窗口可能包含多档（2026-11-25 是 7 与 8），`/models`
+  既分不出当前车道，也看不出上游已抬到 9 —— 唯一信号是 `/theos` 的
+  `lane_version`（`deepai.Client.LaneHook` → `Server.UpstreamLane` / `LaneDrift`）。
 - `X-DeepAI-Code-Instance` 只在进程启动时生成一次；网关按「进程 / 出口代理」
   各生成一份即可（`clientFor` 按代理缓存 Client），**不要每请求换值**
   （桌面端也不是每请求换）。

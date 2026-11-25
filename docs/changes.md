@@ -5837,3 +5837,102 @@ goal mode / 压缩 / 用量统计 / 托管模型设置」，看起来是功能�
   对照里 `qwen-3.8-flash` 3/3 被判成 GPT 家族，`glm-5.3-flash` / `deepseek-v4.1-flash`
   样本不足。这与 11-10 的历史结论一致：部分目录名并不对应真实路由，检测器只能作为参考，
   要固定参数、多轮重复再下结论。
+
+---
+
+## 88. 2026-11-25 客户端 0.3.52 同步复核：车道 7 → 8 + 新增自证头 `X-DeepAI-Code-Proof`（v0.1.27）
+
+**触发**：例行扫描。官方 `latest.yml` 从 **0.3.50** 跳到 **0.3.52**
+（`releaseDate` 2026-11-25T00:50:10.886Z）。release notes 是修 bug 轮（中文等非拉丁语长会话
+压缩后不再失败、部分模型起不来、大图片、Linux 图片提示、输出过多的命令卡顿、切权限模式时
+agent 重启、Windows 上模型列表 / secrets 被别的程序占用、安装没完成的 agent 起不来、本地库
+损坏导致反复重启、Podman WSL 发行版、无关联程序的链接），但白盒比对发现**协议面本轮真的变了**：
+车道抬到 8，并且第一次新增了一个请求头。
+
+### 88.1 版本核实
+
+| 复核项 | 0.3.50 | 0.3.52 |
+| --- | --- | --- |
+| `latest.yml` `version` / `releaseDate` | 0.3.50 / 2026-11-24T05:37:49Z | **0.3.52 / 2026-11-25T00:50:10Z** |
+| x64 包 | 509,379,384 B | **586,881,344 B**（sha512 `j5LBDdKU…`，与 `latest.yml` 逐字节一致） |
+| arm64 包 | 488,534,408 B | **565,693,024 B**（sha512 `cx/6sQF2A…`） |
+| `app.asar` | 46,667,328 B | **46,674,489 B**（`package.json` 0.3.52，`t3codeCommitHash: 20b44c095c22`） |
+| `server.asar` | 279,410,481 B / 26,602 条目 | **269,365,520 B / 26,699 条目** |
+| `binCli` | `binCli-COh41gMK.mjs` 15,004,074 B | **`binCli-B89xRT2q.mjs` 15,039,943 B** |
+
+包体变大 77 MB 主要是渲染层（下载页给的仍是 x64 NSIS 单包）：白盒只碰
+`resources/{app,server}.asar` 与其中的 `binCli`。
+
+### 88.2 协议面复核（逐项）
+
+比对对象：本机已装的 0.3.50（`C:\Program Files\DeepAI Codeesources\server.asar`）与新包解出的 0.3.52。
+
+| 复核项 | 0.3.50 | 0.3.52 | 判据 |
+| --- | --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` 整块 | `{Theos:"7", Instance:randomBytes(16).hex}` | **`Theos:"8"`**（实例号粒度不变） | 源码级 |
+| `X-DeepAI-Code-*` 头字面量 | 14 个 `X-*` 字面量、5 个 Code 头 | **+`X-DeepAI-Code-Proof`（第 6 个）** | 源码级 |
+| `/deepai_code/*`、`/get_usage_summary`、`/speech_to_text`、`/sessions/*` 端点 | — | **字面量集合零差异** | 源码级 |
+| 心跳 `deepAIBeacon()` | `v=${version$2};up=…;pi=…;focus=…` | **逐字节一致**，`version$2` 报 0.3.52 | 源码级 |
+| 机器指纹 | `machineId.ts` 区域 3571 B | **区域 sha256 完全相同**（`d8750df9…`） | 源码级 |
+| 聊天请求体 | 顶层 `pi-ai` `openai-completions.js` | **sha256 `f0dd1d00…` 与 0.3.50 完全相同**（字节级）；`dsh-llm-pi-ai` 内嵌副本变（新增 `openrouter-cost` / `streaming-json`），但 `max_tokens` / `max_completion_tokens` / `reasoning_effort` / `prompt_cache_key` / `reasoning_content` 字段集合不变 | 字节级 |
+| `previous_response_id` / `item_reference` | 0 / 0 | **0 / 0** | 源码级 |
+| 凭据文件 `deepai-account.bin` | `{apiKey,username,isPro,…}` | **Schema 未动** | 源码级 |
+
+`binCli` 按 `;` 切段做 `SequenceMatcher`：**593 个变更块 / +1594 / −1262 段**。
+落在 `src/deepai/*` 的只有 5 个模块：`api.ts`（车道 + 证明请求构造）、`DeepAIAccount.ts`
+（`checkInHeaders(apiKey)` 异步化、`callProof`）、`localTransport.ts`（模型调用带头）、
+新增 `laneProof.ts` 与 `resourceTelemetry/ResourceMonitorBinary.ts`；其余集中在
+`src/orchestration-v2/Orchestrator.ts`（146 块）、`packages/provider-acp`（63 块）、
+`provider-pi`（17 块）、katex（33 块）等编排/渲染面。
+
+### 88.3 本轮唯一的新协议元素：`X-DeepAI-Code-Proof`
+
+`src/deepai/laneProof.ts`：值来自随包原生 helper `resource-monitor --attest`
+（Rust `native/resource-monitor/src/attest.rs`）用「本构建的密钥」算出的 24–64 位 hex，
+一问一答（JSON 行，串行，5s 超时）。
+
+- `/theos`：`{n:签到 nonce | "", a: sha256(apiKey), m: 机器指纹, i: 实例号, v: 版本}`；
+- 模型调用（`localTransport` 与 `accountRequest` 的 `/chat/completions`）：
+  `{n: 上次签到 nonce, b: sha256(请求体)}`，没有签到 nonce 时不发；
+- helper 缺失 / 超时 / 输出不合规 → **省略该头**，请求照发（不影响可用性）；
+- 源码注释明确写了 ToS §4：**不允许把 helper 复制进其它客户端**。
+
+**网关的处理：只登记头名（`model.HeaderProof`），不实现、不发送。** 依据是 88.4 的实测 ——
+上游当前不校验它；而实现它必须从客户端抠出密钥，正是注释明确禁止的行为。
+
+### 88.4 线上实测（2026-11-25，真实账号，单请求）
+
+| 端点 | lane 6 | lane 7 | lane 8 | lane 9 |
+| --- | --- | --- | --- | --- |
+| `GET /deepai_code/models` | 拒绝 | 200（28 个） | **200（28 个）** | 拒绝 |
+| `GET /deepai_code/theos` | 拒绝 | 200（回 `lane_version: 8`） | **200（回 `lane_version: 8`）** | 拒绝 |
+| `POST /deepai_code/chat/completions` | 未测 | 未测 | **200** | 未测 |
+
+- 拒绝文案是 `This version of DeepAI Code is no longer supported. Please update the app.`
+  （不是 426 错误码），即**门槛又换了形态：窗口 7 / 8**；
+- **Proof 头不被校验**：`/theos` 与 `/chat/completions` 在「不发 / 64 位乱填 / 24 位乱填」
+  三种情况下全部 200，`/theos` 照常下发 `check_in` nonce；
+- 模型目录 **28 条（12 免费 / 16 付费）逐字段未变**，且**车道 7 与车道 8 拿到的目录完全相同**；
+- 线上网关（v0.1.26，车道 7）的 `/healthz` 在复核期间已经报出 `lane_upstream: 8, lane_drift: 1`
+  —— 与上面的矩阵一致：旧车道还能用，但已经不是当前车道。
+
+### 88.5 代码与文档落地
+
+- `internal/model/types.go`：`AppVersion` 0.3.50 → **0.3.52**、`LaneVersion` `"7"` → **`"8"`**；
+  `LaneVersion` 注释补 2026-11-25 的窗口形态实测；`AppVersion` 注释补 0.3.50 → 0.3.52 的差异清单；
+  新增 `HeaderProof`（只登记，附「不实现」的理由与实测结论）；
+- 测试锚点：`deepai/client_test.go`（车道 8）、`observe/metrics_test.go`（`gateway_lane 8`）、
+  `server/lane_test.go`（探测场景 7→9 上移一档，保留「旧状态文件 6 → 编译值 8」用例）；
+- 版本链注释同步：`gateway/chatbody.go`、`machine/machine.go`、`machine/machine_test.go`；
+- `README.md` / `README.en.md`：应用版本、车道（含 0.3.52 抬到 8）、车道门槛三次形态、
+  `X-DeepAI-Code-Proof` 行、模型目录 11-25 复核结论、PKCE 默认值、心跳 `v=`、ToS 声明版本链；
+- `docs/recon.md`：顶部新增 0.3.52 复核块（含 Proof 的请求构造与「上游不校验」实测）、
+  §3 头表加 Proof、车道门槛矩阵新增 2026-11-25 行并改写「探测的局限」、`【源码级】` 标签跟进。
+
+### 88.6 本机桌面端：仍停在 0.3.50（未做静默安装）
+
+当前 shell **不是管理员**，而 0.3.50 起安装器改成 machine-wide（`C:\Program Files\DeepAI Code`，
+需要 UAC 提权）。本轮改为**只解包比对**：把 0.3.52 的安装包解到临时目录，取
+`resources/{app,server}.asar` 与本机 0.3.50 逐项 diff，用完即删（安装包 + NSIS `app-64.7z` +
+应用树，约 2 GB）。网关不依赖桌面端版本（凭据文件 Schema 未变），所以不在无提权的情况下
+冒险装一半；需要跟版时以管理员运行 `DeepAI-Code-0.3.52-x64.exe /S` 即可。
