@@ -600,3 +600,24 @@ func TestReplayBodyBytesCeiling(t *testing.T) {
 		}
 	})
 }
+
+// TestSetBodyLimitOverridesEnv 固化优先级：控制台设置 > 环境变量 > 默认。
+//
+// issue #7 的上限现在由 server 在每个请求的设置快照里推过来；环境变量保留给
+// probe CLI / 单测这类没有 server 的场景。SetBodyLimit(0) 必须能退回环境变量，
+// 否则测试之间会相互污染（全局原子变量的常见坑）。
+func TestSetBodyLimitOverridesEnv(t *testing.T) {
+	t.Setenv("DEEPAI2API_CONTEXT_BODY_BYTES", "12345")
+	if got := ContextBodyBytes(); got != 12345 {
+		t.Fatalf("环境变量未生效: %d", got)
+	}
+	SetBodyLimit(40000)
+	t.Cleanup(func() { SetBodyLimit(0) })
+	if got := ContextBodyBytes(); got != 40000 {
+		t.Fatalf("运行期覆盖未生效: %d（期望 40000）", got)
+	}
+	SetBodyLimit(0)
+	if got := ContextBodyBytes(); got != 12345 {
+		t.Fatalf("清除覆盖后应回到环境变量: %d（期望 12345）", got)
+	}
+}

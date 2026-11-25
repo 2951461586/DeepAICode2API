@@ -28,6 +28,12 @@ func sanitizedSettings(st store.Settings) map[string]any {
 		"key_concurrency":      st.KeyConcurrency,
 		"checkin_block_ms":     st.CheckinBlockMS,
 		"preset_desktop_shape": st.PresetDesktopShape,
+		// issue #7 / 长尾预算（2026-11-25 新增，全部可在控制台调）。
+		"context_body_bytes":   st.ContextBodyBytes,
+		"body_cap_mode":        st.BodyCapMode,
+		"nonstream_budget_sec": st.NonStreamBudget,
+		"stream_idle_sec":      st.StreamIdleSec,
+		"first_byte_sec":       st.FirstByteSec,
 		"admin_password_set":   st.AdminPassword != "",
 	}
 }
@@ -157,6 +163,12 @@ type settingsPatch struct {
 	KeyConcurrency     *int              `json:"key_concurrency"`
 	CheckinBlockMS     *int              `json:"checkin_block_ms"`
 	PresetDesktopShape *bool             `json:"preset_desktop_shape"`
+	// issue #7 / 长尾预算：指针 nil = 本次不改；0 = 回到默认（Normalize 负责）。
+	ContextBodyBytes   *int    `json:"context_body_bytes"`
+	BodyCapMode        *string `json:"body_cap_mode"`
+	NonStreamBudgetSec *int    `json:"nonstream_budget_sec"`
+	StreamIdleSec      *int    `json:"stream_idle_sec"`
+	FirstByteSec       *int    `json:"first_byte_sec"`
 }
 
 // apply 把增量合入设置（调用方持写锁）。
@@ -201,6 +213,29 @@ func (p settingsPatch) apply(st *store.Settings) {
 	}
 	if p.PresetDesktopShape != nil {
 		st.PresetDesktopShape = *p.PresetDesktopShape
+	}
+	p.applyBudgets(st)
+}
+
+// applyBudgets 合入「issue #7 / 长尾预算」这一组字段。
+//
+// 拆成独立方法是为了不让 apply 的复杂度继续膨胀：这里每个字段都是同一种模式
+// （nil = 本次不改，0 = 回默认值，具体默认值由 store.Normalize 负责）。
+func (p settingsPatch) applyBudgets(st *store.Settings) {
+	if p.ContextBodyBytes != nil && *p.ContextBodyBytes >= 0 {
+		st.ContextBodyBytes = *p.ContextBodyBytes
+	}
+	if p.BodyCapMode != nil {
+		st.BodyCapMode = *p.BodyCapMode
+	}
+	if p.NonStreamBudgetSec != nil && *p.NonStreamBudgetSec >= 0 {
+		st.NonStreamBudget = *p.NonStreamBudgetSec
+	}
+	if p.StreamIdleSec != nil && *p.StreamIdleSec >= 0 {
+		st.StreamIdleSec = *p.StreamIdleSec
+	}
+	if p.FirstByteSec != nil && *p.FirstByteSec >= 0 {
+		st.FirstByteSec = *p.FirstByteSec
 	}
 }
 

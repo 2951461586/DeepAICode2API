@@ -51,12 +51,27 @@ func (s *Scheduler) Pick(accounts []*model.Account, group string) *model.Account
 // skip 用于「并发槽位已满」这类与账号健康度无关的临时排除，必须是**纯函数**：
 // 第一轮扫描不到时会再扫第二轮，同一账号可能被问两次。
 func (s *Scheduler) PickFiltered(accounts []*model.Account, group string, skip func(*model.Account) bool) *model.Account {
+	return s.PickFilteredFor(accounts, group, skip, false)
+}
+
+// PickFilteredFor 在 PickFiltered 上增加一个硬约束：requireQuota。
+//
+// requireQuota 为 true 时**不跑底轮**：付费模型（theosPerRequest > 0）绝不能
+// 落到余额 ≤ 0 的账号上。旧行为只有“先选有额度的、都没有就全集兜底”，
+// 于是负余额账号仍会被选中，每个请求白撞一次上游 403 theos_exhausted，
+// 然后靠 403 返回的 QuotaUntil 在分钟内避开（2026-11-25 线上体检）。
+func (s *Scheduler) PickFilteredFor(accounts []*model.Account, group string, skip func(*model.Account) bool, requireQuota bool) *model.Account {
 	group = strings.TrimSpace(group)
 	eligible := func(a *model.Account) bool {
 		return s.Eligible(a, group) && (skip == nil || !skip(a))
 	}
 	if a := s.pick(accounts, eligible, true); a != nil {
 		return a
+	}
+	if requireQuota {
+		// 池里可能有额度未知的账号（HasQuota 对未知一律放行），所以这里为空
+		// 确实意味着「所有可调度账号的额度都已确认非正」。
+		return nil
 	}
 	return s.pick(accounts, eligible, false)
 }
@@ -90,6 +105,12 @@ func (s *Scheduler) Eligible(a *model.Account, group string) bool {
 // HasEligible 报告池里是否存在可调度账号（分组 / 启用 / 未拦截），
 // 忽略 PickFiltered 的 skip。调用方用它区分「全忙」与「池里没号」。
 func (s *Scheduler) HasEligible(accounts []*model.Account, group string) bool {
+	return s.HasEligibleFor(accounts, group, false)
+}
+
+// HasEligibleFor 是 HasEligible 的严格版：requireQuota 为 true 时只统计
+// 「额度未知或 > 0」的账号，与 PickFilteredFor 的硬约束保持同一口径。
+func (s *Scheduler) HasEligibleFor(accounts []*model.Account, group string, requireQuota bool) bool {
 	group = strings.TrimSpace(group)
 	now := time.Now().Unix()
 	for _, a := range accounts {
@@ -99,9 +120,13 @@ func (s *Scheduler) HasEligible(accounts []*model.Account, group string) bool {
 		if a.QuotaUntil > 0 && now < a.QuotaUntil {
 			continue
 		}
-		if group == "" || strings.EqualFold(a.GroupName(), group) {
-			return true
+		if group != "" && !strings.EqualFold(a.GroupName(), group) {
+			continue
 		}
+		if requireQuota && !HasQuota(a) {
+			continue
+		}
+		return true
 	}
 	return false
 }

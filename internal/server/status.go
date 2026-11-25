@@ -26,6 +26,12 @@ func StatusOf(err error) int {
 	if errors.As(err, &he) && he.Status >= 400 && he.Status < 600 {
 		return he.Status
 	}
+	// issue #7 reject 模式下的请求体超限：这是调用方的请求问题，日志必须记 400，
+	// 否则它会落到下面的 502 分支，和真正的代理 / 上游故障混在一起。
+	var bce *bodyCapError
+	if errors.As(err, &bce) {
+		return http.StatusBadRequest
+	}
 	// 这两个必须与 writeUpstreamErr 的实际响应一致，否则日志里的状态码会撒谎：
 	//   - 客户端断开：writeUpstreamErr 什么都不写（连接已经没了），日志记 499，
 	//     不计失败（见 store.Record）；

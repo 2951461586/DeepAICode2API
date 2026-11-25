@@ -47,7 +47,7 @@ func TestShapeFallbackRetryKeepsIdleTimeoutGuard(t *testing.T) {
 		t.Fatalf("序列化请求: %v", err)
 	}
 
-	resp, acct, err := s.openModel(context.Background(), deepai.PathChat, body, "", "", "", false)
+	resp, acct, err := s.openModel(context.Background(), deepai.PathChat, body, "", "", "", false, false)
 	if err != nil {
 		t.Fatalf("openModel: %v", err)
 	}

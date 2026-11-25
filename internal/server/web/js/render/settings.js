@@ -16,6 +16,11 @@ export function renderSettings(s){
   $("#sBurst").value = num(s.rate_limit_burst);
   $("#sConcurrency").value = num(s.key_concurrency);
   $("#sCheckinBlock").value = num(s.checkin_block_ms);
+  $("#sBodyCap").value = num(s.context_body_bytes);
+  $("#sBodyCapMode").value = s.body_cap_mode || "warn";
+  $("#sNonStream").value = num(s.nonstream_budget_sec);
+  $("#sStreamIdle").value = num(s.stream_idle_sec);
+  $("#sFirstByte").value = num(s.first_byte_sec);
   $("#sPresetShape").checked = !!s.preset_desktop_shape;
   $("#sAliases").value = JSON.stringify(s.model_aliases || {}, null, 2);
   $("#sPw").placeholder = s.admin_password_set ? "已设置，留空则不修改" : "未设置";

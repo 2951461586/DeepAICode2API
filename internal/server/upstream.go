@@ -16,6 +16,7 @@ import (
 	"deepaicode2api/internal/logx"
 	"deepaicode2api/internal/poolsvc"
 	"deepaicode2api/internal/proxy"
+	"deepaicode2api/internal/store"
 )
 
 // openModel 在账号池上打开一次上游推理请求。
@@ -26,13 +27,22 @@ import (
 //   - 401/403/429/5xx：记录账号失败并换号重试；
 //   - 409 session_busy：池里有空号就立刻换号，整池都满才按 Retry-After 等一次；
 //   - 槽位不够：短暂排队（admissionWait），超时才回 429。
-func (s *Server) openModel(ctx context.Context, path string, body []byte, affinity, group, apiKey string, stream bool) (*http.Response, *deepai.Account, error) {
+//
+// requireQuota 为 true（付费模型）时，选号不接受「额度已确认非正」的账号，
+// 也不会靠会话粘性把付费请求钉到负余额账号上。
+func (s *Server) openModel(ctx context.Context, path string, body []byte, affinity, group, apiKey string, stream, requireQuota bool) (*http.Response, *deepai.Account, error) {
 	// 只需要号池规模：AccountCounts 不解包快照，避免为了一次 len() 深拷贝全池。
 	acctTotal, _ := s.Store.AccountCounts()
 	if acctTotal == 0 {
 		return nil, nil, errors.New("没有可用账号，请先在控制台导入桌面端凭据或添加 API Key")
 	}
 	settings := s.settingsOf(ctx)
+	// issue #7：请求体超限时的处置（warn 透传 / reject 400）在选号之前判定，
+	// 不占用账号槽位，也不把已知会被上游静默截断的请求发上去。
+	if err := bodyCapReached(settings, body); err != nil {
+		return nil, nil, err
+	}
+	rt := settings.RuntimeView()
 	// 预置桌面端形状：只对「已被上游按形状拒绝过」的调用方生效（shape.go），
 	// 且只补 system、不裁剪字段，因此不会改调用方显式给的采样参数。
 	if path == deepai.PathChat && settings.PresetDesktopShape && apiKey != "" && s.shapeNeeded(apiKey) {
@@ -40,7 +50,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			body = alt
 		}
 	}
-	maxTries := settings.RuntimeView().MaxRetries // 已归一化（>=1），无需兜底
+	maxTries := rt.MaxRetries // 已归一化（>=1），无需兜底
 	if maxTries > acctTotal+2 {
 		maxTries = acctTotal + 2
 	}
@@ -54,7 +64,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 	prefer := s.Pool.StickyAccount(affinity)
 	deadline := time.Now().Add(s.admissionWait)
 	for i := 0; i < maxTries; i++ {
-		acct, ok, candidates := s.Pool.PickAvoiding(group, prefer, s.avoidCoolingProxy)
+		acct, ok, candidates := s.Pool.PickAvoidingFor(group, prefer, s.avoidCoolingProxy, requireQuota)
 		prefer = ""
 		if !candidates {
 			// 池里没有可调度账号（全被拦 / 分组为空）：交给 noAccountError 说明原因。
@@ -117,7 +127,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			s.noteProxyResult(acct, true)
 			s.Pool.MarkResult(acct.ID, true, "")
 			s.Pool.BindSticky(affinity, acct.ID)
-			resp.Body = s.holdResponseBody(resp.Body, acct.ID, stream)
+			resp.Body = s.holdResponseBody(resp.Body, acct.ID, stream, rt)
 			return resp, acct, nil
 		}
 
@@ -160,7 +170,7 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 					if retry.StatusCode/100 == 2 {
 						s.Pool.MarkResult(acct.ID, true, "")
 						s.Pool.BindSticky(affinity, acct.ID)
-						retry.Body = s.holdResponseBody(retry.Body, acct.ID, stream)
+						retry.Body = s.holdResponseBody(retry.Body, acct.ID, stream, rt)
 						return retry, acct, nil
 					}
 					payload2, _ := io.ReadAll(io.LimitReader(retry.Body, 4<<20))
@@ -253,15 +263,15 @@ const checkInSlowWarn = 2 * time.Second
 // 两条「返回 2xx」的路径（正常响应与请求体形状回退重试）必须完全一致：
 // 漏掉任何一层，上游发完首帧后挂住时就会把连接与账号槽位一起挂到客户端断开。
 // 历史上回退路径就漏了外层，这是回归测试要锁住的点。
-func (s *Server) holdResponseBody(body io.ReadCloser, acctID string, stream bool) io.ReadCloser {
-	firstByte := upstreamIdleTimeout
+func (s *Server) holdResponseBody(body io.ReadCloser, acctID string, stream bool, rt store.Runtime) io.ReadCloser {
+	firstByte := rt.StreamIdle
 	if !stream {
 		// 非流式：首字节可能要等很久（长思考），之后才按帧间空闲判死。
-		firstByte = upstreamFirstByteTimeout
+		firstByte = rt.FirstByte
 	}
 	return newIdleTimeoutBody(
 		s.Pool.WrapBody(body, acctID),
-		upstreamIdleTimeout,
+		rt.StreamIdle,
 		firstByte,
 	)
 }
@@ -270,8 +280,8 @@ func (s *Server) holdResponseBody(body io.ReadCloser, acctID string, stream bool
 //
 // 第三个返回值是实际序列化后发往上游的 body 字节数：调用方要把它记进
 // 请求日志（issue #5 / #7 的排障需要，尤其区分长历史与上游静默截断）。
-func (s *Server) callJSON(ctx context.Context, path string, payload map[string]any, affinity, group, apiKey string) (map[string]any, *deepai.Account, int, error) {
-	ctx, cancel := context.WithTimeout(ctx, nonStreamBudget)
+func (s *Server) callJSON(ctx context.Context, path string, payload map[string]any, affinity, group, apiKey string, requireQuota bool) (map[string]any, *deepai.Account, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.nonStreamBudgetOf(ctx))
 	defer cancel()
 
 	body, err := json.Marshal(payload)
@@ -279,7 +289,7 @@ func (s *Server) callJSON(ctx context.Context, path string, payload map[string]a
 		return nil, nil, 0, fmt.Errorf("请求序列化失败: %w", err)
 	}
 	outBytes := len(body)
-	resp, acct, err := s.openModel(ctx, path, body, affinity, group, apiKey, false)
+	resp, acct, err := s.openModel(ctx, path, body, affinity, group, apiKey, false, requireQuota)
 	if err != nil {
 		return nil, acct, outBytes, err
 	}
@@ -297,6 +307,13 @@ func (s *Server) callJSON(ctx context.Context, path string, payload map[string]a
 
 // writeUpstreamErr 把上游错误原样（或包装后）返回给客户端。
 func writeUpstreamErr(w http.ResponseWriter, err error) {
+	var bce *bodyCapError
+	if errors.As(err, &bce) {
+		// issue #7 的 reject 模式：这是调用方的请求形状问题，不是上游故障，
+		// 回 400 invalid_request_error（而不是 502 upstream_error）。
+		httpx.WriteErr(w, http.StatusBadRequest, bce.Error(), "invalid_request_error")
+		return
+	}
 	var he *deepai.HTTPError
 	if errors.As(err, &he) {
 		if json.Valid(he.Body) && len(he.Body) > 0 {
@@ -320,6 +337,11 @@ func writeUpstreamErr(w http.ResponseWriter, err error) {
 
 // writeAnthropicUpstreamErr 按 Anthropic 错误结构回传上游错误。
 func writeAnthropicUpstreamErr(w http.ResponseWriter, err error) {
+	var bce *bodyCapError
+	if errors.As(err, &bce) {
+		writeAnthropicErr(w, http.StatusBadRequest, "invalid_request_error", bce.Error())
+		return
+	}
 	var he *deepai.HTTPError
 	if errors.As(err, &he) {
 		typ := "api_error"

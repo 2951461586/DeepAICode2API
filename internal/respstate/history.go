@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"deepaicode2api/internal/configenv"
@@ -560,11 +561,29 @@ const catalogContextCap = 320000
 // 同樣 40k tokens 的西里爾文（≈193 KB）仍能完整讀入。
 const defaultContextBodyBytes = 196608
 
-// ContextBodyBytes 返回單次請求允許發往上游的請求體上限（位元組）。
+// bodyLimitOverride 是控制台设置下发的运行期上限（0 = 未覆盖，回去看环境变量）。
 //
-// DEEPAI2API_CONTEXT_BODY_BYTES 可覆寫；0 / 負數表示關閉這道閘門
-// （回到只看 token 估算的舊行為）。
+// 为什么要一层覆盖：限上限的优先顺序必须是「控制台设置 > 环境变量 > 默认」，
+// 而本包不依赖 internal/store（要保持可脱离 HTTP 层单测），所以由 server 在
+// 每个请求的设置快照里调 SetBodyLimit 把值推过来。原子读写，热路径无锁。
+var bodyLimitOverride atomic.Int64
+
+// SetBodyLimit 设置运行期请求体上限（n <= 0 表示清除覆盖）。
+func SetBodyLimit(n int) {
+	if n < 0 {
+		n = 0
+	}
+	bodyLimitOverride.Store(int64(n))
+}
+
+// ContextBodyBytes 返回单次请求允许发往上游的请求体上限（字节）。
+//
+// 优先顺序：SetBodyLimit 推入的运行期值 > DEEPAI2API_CONTEXT_BODY_BYTES > 默认。
+// 环境变量为 0 / 负数表示关闭这道闸门（回到只看 token 估算的旧行为）。
 func ContextBodyBytes() int {
+	if n := bodyLimitOverride.Load(); n > 0 {
+		return int(n)
+	}
 	if raw := strings.TrimSpace(os.Getenv("DEEPAI2API_CONTEXT_BODY_BYTES")); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil {
 			if n <= 0 {

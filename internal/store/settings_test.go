@@ -79,6 +79,60 @@ func TestNormalizeIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestBudgetSettingsDefaultsAndRange 固化 issue #7 / 长尾预算这一组设置。
+//
+// 它们全部可以在控制台调，所以「0 = 未设置」必须补默认值、越界必须被拒、
+// reject 必须是合法模式——三者任何一条漏了，线上就会在不知情时换了语义。
+func TestBudgetSettingsDefaultsAndRange(t *testing.T) {
+	def := Settings{}.Normalize()
+	if def.ContextBodyBytes != DefaultContextBodyBytes {
+		t.Fatalf("ContextBodyBytes = %d，期望 %d", def.ContextBodyBytes, DefaultContextBodyBytes)
+	}
+	if def.BodyCapMode != BodyCapWarn {
+		t.Fatalf("BodyCapMode = %q，期望 %q（旧状态文件没有这个字段）", def.BodyCapMode, BodyCapWarn)
+	}
+	if def.NonStreamBudget != DefaultNonStreamBudget || def.StreamIdleSec != DefaultStreamIdle || def.FirstByteSec != DefaultFirstByte {
+		t.Fatalf("预算默认值不对: %+v", def)
+	}
+
+	rt := def.RuntimeView()
+	if rt.NonStreamBudget != time.Duration(DefaultNonStreamBudget)*time.Second {
+		t.Fatalf("Runtime.NonStreamBudget = %v", rt.NonStreamBudget)
+	}
+	if rt.StreamIdle != time.Duration(DefaultStreamIdle)*time.Second || rt.FirstByte != time.Duration(DefaultFirstByte)*time.Second {
+		t.Fatalf("Runtime 空闲/首字节预算 = %v / %v", rt.StreamIdle, rt.FirstByte)
+	}
+
+	// reject 是合法模式（issue #7 的严格处置）。
+	reject := def
+	reject.BodyCapMode = BodyCapReject
+	if err := reject.Validate(); err != nil {
+		t.Fatalf("reject 应被接受: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		mut  func(*Settings)
+		want string
+	}{
+		{"非流式预算过小", func(s *Settings) { s.NonStreamBudget = MinNonStreamBudget - 1 }, "非流式预算"},
+		{"非流式预算过大", func(s *Settings) { s.NonStreamBudget = MaxNonStreamBudget + 1 }, "非流式预算"},
+		{"空闲超时过小", func(s *Settings) { s.StreamIdleSec = MinStreamIdle - 1 }, "流式空闲超时"},
+		{"首字节过大", func(s *Settings) { s.FirstByteSec = MaxFirstByte + 1 }, "首字节超时"},
+		{"请求体上限过小", func(s *Settings) { s.ContextBodyBytes = MinContextBodyBytes - 1 }, "请求体上限"},
+		{"请求体上限过大", func(s *Settings) { s.ContextBodyBytes = MaxContextBodyBytes + 1 }, "请求体上限"},
+		{"超限处置非法", func(s *Settings) { s.BodyCapMode = "drop" }, "超限处置"},
+	}
+	for _, c := range cases {
+		st := def
+		c.mut(&st)
+		err := st.Validate()
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("%s: 期望错误包含 %q，实际 %v", c.name, c.want, err)
+		}
+	}
+}
+
 // TestValidateAcceptsDefaults 验证默认设置有理由被接受。
 func TestValidateAcceptsDefaults(t *testing.T) {
 	if err := DefaultSettings().Normalize().Validate(); err != nil {

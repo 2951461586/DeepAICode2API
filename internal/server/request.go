@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/jsonx"
@@ -113,10 +114,15 @@ func hashSystemMessages(h hash.Hash, v any) bool {
 	return wrote
 }
 
-// nonStreamBudget 是非流式请求的整体预算（选号 + 重试 + 读体）。
+// nonStreamBudgetOf 返回本请求的非流式预算（来自设置快照，已归一化）。
 //
-// 没有它时，「MaxRetries × Retry-After≤30s」理论上可挂 90s 以上。
-const nonStreamBudget = 90 * time.Second
+// 旧版是个硬编码的 90s（选号 + 重试 + 读体的整体预算）：
+// 2026-11-25 线上 6h 内 /v1/chat/completions 的 60 次 504 全部落在 ms=90000
+// 上，是当时 5xx 的绝对主因。现在默认值改为 settings 的
+// nonstream_budget_sec（store.DefaultNonStreamBudget = 180s，区间 30~600）。
+func (s *Server) nonStreamBudgetOf(ctx context.Context) time.Duration {
+	return s.settingsOf(ctx).RuntimeView().NonStreamBudget
+}
 
 // requestModelName 提取请求里的 model 字段。
 func requestModelName(payload map[string]any) string {

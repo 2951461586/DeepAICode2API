@@ -71,6 +71,31 @@ type Settings struct {
 	// 只对已经确认过需要该形状的调用方生效（按 API Key 记忆 10 分钟），
 	// 首次仍走「透传 → 400 → 补形状重试」的学习路径。
 	PresetDesktopShape bool `json:"preset_desktop_shape,omitempty"`
+
+	// ContextBodyBytes 是发往上游的请求体上限（字节，0 = 用默认 196608）。
+	//
+	// issue #7：上游约 196 KB 起会对请求体「静默砍头」（丢开头、保留尾部，
+	// usage.prompt_tokens 钉在 ~40k）。这个值是网关上唯一的量化闸门，
+	// 之前只能靠环境变量 DEEPAI2API_CONTEXT_BODY_BYTES 改，控制台看不到。
+	ContextBodyBytes int `json:"context_body_bytes,omitempty"`
+
+	// BodyCapMode 决定请求体超过 ContextBodyBytes 时的处置：
+	//
+	//	warn   只告警（默认；保持既有「透传成功但可能已被上游截断」的行为）
+	//	reject 立刻回 400，不把已知会被截断的请求送上去
+	BodyCapMode string `json:"body_cap_mode,omitempty"`
+
+	// NonStreamBudget 是非流式请求的整体预算（秒，0 = 默认 180）。
+	//
+	// 2026-11-25 线上 6 h 内 60 次 /v1/chat/completions 的 504 全部落在旧的
+	// 硬编码 90 s 上（ms=90000、字节=0），是当时 5xx 的绝对主因。
+	NonStreamBudget int `json:"nonstream_budget_sec,omitempty"`
+
+	// StreamIdleSec 是上游响应「多久没有新数据就判死」的预算（秒，0 = 默认 120）。
+	// FirstByteSec 是非流式等首字节的预算（秒，0 = 默认 300）：长思考模型
+	// 首字节前可能超过 2 分钟，不能与帧间空闲用同一个值。
+	StreamIdleSec int `json:"stream_idle_sec,omitempty"`
+	FirstByteSec  int `json:"first_byte_sec,omitempty"`
 }
 
 // LogEntry 是一条请求日志（只记元信息，不落对话内容）。
@@ -222,5 +247,11 @@ func DefaultSettings() Settings {
 		// 默认仅放行本机来源；如需局域网访问，在控制台显式配置。
 		CORSOrigin:    "",
 		FallbackModel: "",
+		// issue #7 / 长尾预算：显式写出默认值，与控制台回显一致。
+		ContextBodyBytes: DefaultContextBodyBytes,
+		BodyCapMode:      BodyCapWarn,
+		NonStreamBudget:  DefaultNonStreamBudget,
+		StreamIdleSec:    DefaultStreamIdle,
+		FirstByteSec:     DefaultFirstByte,
 	}
 }

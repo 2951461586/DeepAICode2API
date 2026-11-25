@@ -5,6 +5,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"deepaicode2api/internal/store"
 )
 
 // upstreamIdleTimeout 是上游响应「多久没有新数据就判定为死连接」。
@@ -16,7 +18,10 @@ import (
 //
 // 取 120s 的依据：推理 p50 约 1.1s、长尾 10s 级；深度思考模型首帧可能
 // 十几秒。120s 内一个字节都没有，基本只能是连接已死或上游静默丢包。
-const upstreamIdleTimeout = 120 * time.Second
+//
+// 现在它只是**默认值**：运行期取 settings.stream_idle_sec（区间 10~600），
+// 由 holdResponseBody 每个请求现取。
+const upstreamIdleTimeout = store.DefaultStreamIdle * time.Second
 
 // upstreamFirstByteTimeout 是**非流式**响应等待首字节的预算。
 //
@@ -26,7 +31,9 @@ const upstreamIdleTimeout = 120 * time.Second
 // 「帧间空闲」分开：首字节最多等 300s，之后仍按 120s 判死。
 //
 // 流式保持 120s 不变：SSE 若连首帧都 120s 不给，槽位一直被占着更贵。
-const upstreamFirstByteTimeout = 300 * time.Second
+//
+// 与上面的 idle 一样，现在只是默认值：运行期取 settings.first_byte_sec。
+const upstreamFirstByteTimeout = store.DefaultFirstByte * time.Second
 
 // errUpstreamIdle 是空闲超时后向上层报告的错误。
 //

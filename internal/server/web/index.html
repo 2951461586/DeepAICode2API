@@ -295,6 +295,17 @@
             <div><label>限流桶容量（0=按 RPS 自动）</label><input id="sBurst" type="number" min="0"></div>
             <div><label>每密钥并发上限（0=不限）</label><input id="sConcurrency" type="number" min="0"></div>
             <div><label>签到预算（毫秒，0=默认 10 秒）</label><input id="sCheckinBlock" type="number" min="0" step="100"></div>
+            <div><label>请求体上限（字节，0=默认 196608）</label><input id="sBodyCap" type="number" min="0" step="1024"></div>
+            <div>
+              <label>请求体超限处置</label>
+              <select id="sBodyCapMode">
+                <option value="warn">warn：只告警，继续透传</option>
+                <option value="reject">reject：超过上限直接 400</option>
+              </select>
+            </div>
+            <div><label>非流式预算（秒）</label><input id="sNonStream" type="number" min="30" max="600"></div>
+            <div><label>流式空闲超时（秒）</label><input id="sStreamIdle" type="number" min="10" max="600"></div>
+            <div><label>首字节超时（秒，非流式）</label><input id="sFirstByte" type="number" min="30" max="600"></div>
             <div>
               <label>预置桌面端形状</label>
               <label class="check-label">

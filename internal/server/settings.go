@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"deepaicode2api/internal/respstate"
 	"deepaicode2api/internal/store"
 )
 
@@ -24,7 +25,13 @@ type settingsCtxKey struct{}
 // 调用都必须看到同一份设置。
 func (s *Server) withSettingsSnapshot(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), settingsCtxKey{}, s.Store.Settings())
+		snap := s.Store.Settings()
+		// 请求体上限在 respstate 里（历史重放要先裁剪），而那个包不依赖 store
+		// （保持可脱离 HTTP 层单测），所以由这里把本快照的值推过去。
+		// 一次原子写，好处是控制台改完设置后不需要重启也不需要重启定时同步：
+		// 下一个请求就会把新值带上。
+		respstate.SetBodyLimit(snap.ContextBodyBytes)
+		ctx := context.WithValue(r.Context(), settingsCtxKey{}, snap)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

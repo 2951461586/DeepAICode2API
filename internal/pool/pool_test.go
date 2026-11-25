@@ -119,6 +119,48 @@ func TestHasQuota(t *testing.T) {
 	}
 }
 
+// PickFilteredFor(requireQuota) 是硬约束：付费模型绝不能落到负余额账号上。
+//
+// 旧行为（PickFiltered）是「先选有额度的、都没有就全集兜底」，所以负余额号
+// 仍会被选中，每个请求白撞一次 403 theos_exhausted（2026-11-25 线上体检）。
+func TestPickFilteredForRequiresQuota(t *testing.T) {
+	s := New()
+	now := time.Now().Unix()
+	neg, pos := acct("neg", ""), acct("pos", "")
+	neg.Theos = &model.Allowance{Enabled: true, Balance: "-13.89000", CheckedAt: now}
+	pos.Theos = &model.Allowance{Enabled: true, Balance: "2.50000", CheckedAt: now}
+
+	// 免费模型（requireQuota=false）：保持旧语义，池里还有号就绝不硬阻塞。
+	if got := s.PickFilteredFor([]*model.Account{neg}, "", nil, false); got == nil {
+		t.Fatal("免费模型不应因为负余额而无号可用")
+	}
+	// 付费模型（requireQuota=true）：只有负余额号时返回 nil，由调用方报「无可用账号」。
+	if got := s.PickFilteredFor([]*model.Account{neg}, "", nil, true); got != nil {
+		t.Fatalf("付费模型不应选到负余额账号，实际 %v", got.ID)
+	}
+	// 两类都在时选有钱的那个。
+	for i := 0; i < 10; i++ {
+		if got := s.PickFilteredFor([]*model.Account{neg, pos}, "", nil, true); got == nil || got.ID != "pos" {
+			t.Fatalf("付费模型应选到有余额的账号，实际 %v", got)
+		}
+	}
+}
+
+// HasEligibleFor 与 PickFilteredFor 必须同口径，否则「说有号、选不到」。
+func TestHasEligibleForRequiresQuota(t *testing.T) {
+	s := New()
+	now := time.Now().Unix()
+	neg := acct("neg", "")
+	neg.Theos = &model.Allowance{Enabled: true, Balance: "0", CheckedAt: now}
+
+	if !s.HasEligibleFor([]*model.Account{neg}, "", false) {
+		t.Fatal("免费模型口径下应认为有可调度账号")
+	}
+	if s.HasEligibleFor([]*model.Account{neg}, "", true) {
+		t.Fatal("付费模型口径下不应认为有可调度账号")
+	}
+}
+
 func TestPickEmpty(t *testing.T) {
 	if got := New().Pick(nil, ""); got != nil {
 		t.Fatalf("空号池应返回 nil，实际 %v", got)

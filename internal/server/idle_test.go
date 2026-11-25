@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"deepaicode2api/internal/poolsvc"
+	"deepaicode2api/internal/store"
 	"time"
 )
 
@@ -114,22 +115,23 @@ func TestIdleTimeoutFirstByteBudget(t *testing.T) {
 // TestHoldResponseBodyBudgets 固化「流式与非流式用不同首字节预算」。
 func TestHoldResponseBodyBudgets(t *testing.T) {
 	s := &Server{Pool: poolsvc.New(poolsvc.Config{})}
+	rt := store.Settings{}.RuntimeView() // Normalize 会补上默认预算
 
-	streamBody := s.holdResponseBody(newSlowBody(), "acct", true)
+	streamBody := s.holdResponseBody(newSlowBody(), "acct", true, rt)
 	defer streamBody.Close()
 	if b, ok := streamBody.(*idleTimeoutBody); !ok {
 		t.Fatalf("应返回 idleTimeoutBody，实际 %T", streamBody)
-	} else if b.first != upstreamIdleTimeout {
-		t.Fatalf("流式首字节预算 = %v，期望 %v", b.first, upstreamIdleTimeout)
+	} else if b.first != rt.StreamIdle {
+		t.Fatalf("流式首字节预算 = %v，期望 %v", b.first, rt.StreamIdle)
 	}
 
-	blockBody := s.holdResponseBody(newSlowBody(), "acct", false)
+	blockBody := s.holdResponseBody(newSlowBody(), "acct", false, rt)
 	defer blockBody.Close()
 	if b, ok := blockBody.(*idleTimeoutBody); !ok {
 		t.Fatalf("应返回 idleTimeoutBody，实际 %T", blockBody)
-	} else if b.first != upstreamFirstByteTimeout {
-		t.Fatalf("非流式首字节预算 = %v，期望 %v", b.first, upstreamFirstByteTimeout)
-	} else if b.idle != upstreamIdleTimeout {
-		t.Fatalf("非流式帧间预算 = %v，期望 %v", b.idle, upstreamIdleTimeout)
+	} else if b.first != rt.FirstByte {
+		t.Fatalf("非流式首字节预算 = %v，期望 %v", b.first, rt.FirstByte)
+	} else if b.idle != rt.StreamIdle {
+		t.Fatalf("非流式帧间预算 = %v，期望 %v", b.idle, rt.StreamIdle)
 	}
 }

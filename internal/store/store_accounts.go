@@ -159,11 +159,17 @@ func (s *Store) RemoveAccount(id string) bool {
 // 返回值第二个标记“池里是否有可调度账号（忽略 skip）”，
 // 供调用方区分“全忙”与“根本没号”。
 func (s *Store) PickAccount(group string, skip func(*model.Account) bool) (*model.Account, bool) {
+	return s.PickAccountFor(group, skip, false)
+}
+
+// PickAccountFor 是 PickAccount 的严格版：requireQuota 为 true 时不接受
+// 「额度已确认非正」的账号（付费模型专用，见 pool.PickFilteredFor）。
+func (s *Store) PickAccountFor(group string, skip func(*model.Account) bool, requireQuota bool) (*model.Account, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	acct := s.sched.PickFiltered(s.st.Accounts, group, skip)
+	acct := s.sched.PickFilteredFor(s.st.Accounts, group, skip, requireQuota)
 	if acct == nil {
-		return nil, s.sched.HasEligible(s.st.Accounts, group)
+		return nil, s.sched.HasEligibleFor(s.st.Accounts, group, requireQuota)
 	}
 	return acct.Clone(), true
 }

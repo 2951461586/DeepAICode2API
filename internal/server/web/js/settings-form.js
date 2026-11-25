@@ -32,6 +32,12 @@ export function initSettingsForm(opts) {
       key_concurrency: parseInt($("#sConcurrency").value, 10) || 0,
       // 0 = 用后端默认（10s），是合法值。
       checkin_block_ms: parseInt($("#sCheckinBlock").value, 10) || 0,
+      // issue #7 / 长尾预算：0 = 用后端默认值（196608 B / 180s / 120s / 300s）。
+      context_body_bytes: parseInt($("#sBodyCap").value, 10) || 0,
+      body_cap_mode: $("#sBodyCapMode").value,
+      nonstream_budget_sec: parseInt($("#sNonStream").value, 10) || 0,
+      stream_idle_sec: parseInt($("#sStreamIdle").value, 10) || 0,
+      first_byte_sec: parseInt($("#sFirstByte").value, 10) || 0,
       preset_desktop_shape: $("#sPresetShape").checked
     };
     var np = $("#sPw").value;

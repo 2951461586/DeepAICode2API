@@ -117,7 +117,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 	rl = rl.withOutboundBytes(len(body))
-	resp, acct, err := s.openModel(ctx, deepai.PathResponses, body, affinity, s.requestGroup(r), rl.apiKey(), rl.stream)
+	resp, acct, err := s.openModel(ctx, deepai.PathResponses, body, affinity, s.requestGroup(r), rl.apiKey(), rl.stream, s.requireQuotaFor(rl.model))
 	rl.acct = acct
 	if err != nil {
 		rl.done(0, gateway.Usage{}, err)
@@ -220,7 +220,7 @@ func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request,
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
-	out, acct, outBytes, err := s.callJSON(ctx, deepai.PathChat, chatPayload, affinity, s.requestGroup(r), rl.apiKey())
+	out, acct, outBytes, err := s.callJSON(ctx, deepai.PathChat, chatPayload, affinity, s.requestGroup(r), rl.apiKey(), s.requireQuotaFor(rl.model))
 	if outBytes > 0 {
 		rl = rl.withOutboundBytes(outBytes)
 	}
@@ -251,7 +251,7 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 	rl = rl.withOutboundBytes(len(body))
-	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, s.requestGroup(r), rl.apiKey(), true)
+	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, s.requestGroup(r), rl.apiKey(), true, s.requireQuotaFor(rl.model))
 	rl.acct = acct
 	if err != nil {
 		rl.done(0, gateway.Usage{}, err)

@@ -61,10 +61,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !stream {
 		// 非流式请求加整体预算：MaxRetries × Retry-After 理论上可挂 90s 以上。
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, nonStreamBudget)
+		ctx, cancel = context.WithTimeout(ctx, s.nonStreamBudgetOf(ctx))
 		defer cancel()
 	}
-	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, group, key, stream)
+	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, group, key, stream, s.requireQuotaFor(model.ID))
 	rl := s.newReqLog(key, nil, model.ID, "chat", stream, start, promptLen).
 		withHistory(payload).withOutboundBytes(len(body))
 	rl.acct = acct

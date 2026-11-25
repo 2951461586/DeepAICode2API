@@ -13,7 +13,7 @@ dependencies.
 
 **[中文](README.md) / English**
 
-[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-616%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
+[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-652%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#3-endpoint-reference) [![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://img.shields.io/badge/Ask%20DeepWiki-blue.svg?labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAPoAAAD6AG1e1JrAAACIUlEQVRYw+2XP2gUQRTGv7d3JhYWQawkIBaCVWzETos0gmAnVoKNTSoLK0E7EQQrC20sBVFBtLPQRgTBtBaKjYgIQUSxiJq7fT+LvCGPJZdNLt4dQj5Y3u7sznzfzLw/s9IO/icANiniCujEfWdsQgBLxAbsbraPZcmBfcAt4DNwKQsZNfEUsAB8YRV12LfA6ZHuedg7AO7ed/c+UBcbQhbiu+6wXIM6EnZWkszMJe2Ke0n6I2la0v51hFeSMLN6OwIK6jJwEBdUYb2MAxRSz6sY4geiahFgLe1Hwq6YWe3us8AN4FQQU4QM64SPY69Xyr43fADgNjAPXHb3peSsD4FDQ0VLEjAHvIhBPS6AHvA1bBO9JPAXcHFbIRtJ5yzwIQZ9CZwAusDJENIkLqsG8DpNyIZJwSUk9wLHgakcesC1JCCjiHm1kYDNOEjptCxpSVK/8f73OFLxPLAYM3oCzEX7MXf/lJbc/8kWpA4HgQdpYI9IWAbeh83whi84cHXL+58EPBoQhnmm94EzwE3gZ2p/Dhzdbhg+TaRr01x7ftb4/jBwFzjXrCvDpmLW9crVLNeR9CaapoGemb2TdCERW1tNaBNQ8jktwmozqwtpqRNtdWAjARYk39IS12ZWRX7vmJmA71nQZgi36gN7gCvAj5xc3P0jcH7kx7Ik5IC73wsh14GZsZySow5002l4Jr0b6+m4eSyvpAn8lEzsx2QHo8RfUrlN+uPq4ksAAAAASUVORK5CYII=)](https://deepwiki.com/2951461586/DeepAICode2API)
 
@@ -986,6 +986,25 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
   the desktop shape (remembered by API key for 10 minutes), prepend a system message before the
   first send, saving a 400 that is certain to fail. When off, the learning path still runs
   "passthrough → 400 → shape retry";
+- **Request body cap and what happens when it is exceeded** (since v0.1.28): `context_body_bytes`
+  (default 196608) and `body_cap_mode` (default `warn`). Upstream silently truncates the *start* of
+  request bodies above ~196 KB (issue #7: system prompt and the earliest turns are dropped while
+  `usage.prompt_tokens` pins at ~40k). `warn` only records those requests in the log
+  (`body_near_cap` + WARN at 90% of the cap); `reject` returns `400 invalid_request_error` with the
+  byte count and the cap instead of forwarding a request that is known to be truncated. The
+  `DEEPAI2API_CONTEXT_BODY_BYTES` env var still works as a fallback (console settings win);
+- **Three timeout budgets** (console-tunable since v0.1.28): `nonstream_budget_sec` (overall budget
+  for non-streaming requests, default 180s, range 30–600) replaces the hard-coded 90s — on
+  2026-11-25 all 60 `504`s on `/v1/chat/completions` in 6 hours landed exactly on `ms=90000`;
+  `stream_idle_sec` (per-frame idle while streaming, default 120s) and `first_byte_sec`
+  (first byte for non-streaming, default 300s) cover the "stream stalled" and "long reasoning has
+  not produced a first byte yet" tails separately;
+- **Paid models only use accounts with a positive balance** (since v0.1.28): models with
+  `theosPerRequest > 0` no longer accept accounts whose allowance is known to be non-positive, and
+  session stickiness cannot pin a paid request to such an account. The old behaviour was "prefer
+  accounts with quota, fall back to the whole pool", so negative-balance accounts were still picked
+  and burned one upstream `403 theos_exhausted` per request (2026-11-25 health check: 3 accounts
+  were negative);
 - **Check-in cadence** matches the desktop app (anchored at the moment the reply completes,
   `seconds/2`, default 300s). The earlier "latest nonce ≠ replied nonce" check degenerated to one
   check-in every 30s (see `docs/changes.md` §60);
@@ -1039,7 +1058,7 @@ overturned by later rechecks (trust the latest entries in `docs/changes.md` and 
 | `docs/lessons.md` | **Engineering lessons**: ten stress rounds → reusable rules + pre-change checklist | Maintained |
 | `docs/performance.md` | Stress data and optimization plan: single-account E2E, phase breakdown, P0/P1/P2 payoff estimates | Maintained (data snapshot 2026-11-10) |
 | `docs/pi-lens.md` | This repo's pi-lens configuration: what is off, why, how to verify and restore | Maintained |
-| `docs/model-fingerprint-2026-11-10.md` | Fingerprint measurements for 22 pooled models (criteria and reproduction commands) | Historical snapshot: the catalog is now 28 models; criteria still apply |
+| `docs/model-fingerprint-2026-11-10.md` | Fingerprint measurements for pooled models (11-10 full sweep + 11-11 / 11-24 / 11-25 follow-ups, criteria and reproduction commands) | Historical snapshot: the catalog is now 28 models; the 11-25 rerun narrowed the rule to same-round 3/3 family comparison |
 | `docs/optimization-plan.md` | The first scan's full optimization plan | Historical: fully implemented |
 | `docs/optimization-plan-r2.md` | Second scan (write amplification / console / re-probe) plan and payoff estimates | Historical: implemented |
 | `docs/assets/` | Project icons: `logo.png` (512, used by README) / `logo.ico` (16–256 multi-size, Windows); the console's `/favicon.ico` is the same file (see `docs/changes.md` §58) |

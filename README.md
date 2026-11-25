@@ -12,7 +12,7 @@
 
 **中文 / [English](README.en.md)**
 
-[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-616%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
+[![ci](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml/badge.svg)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev) [![deps](https://img.shields.io/badge/deps-0%20(stdlib)-00ADD8)](go.mod) [![tests](https://img.shields.io/badge/tests-652%20cases-brightgreen)](https://github.com/2951461586/DeepAICode2API/actions/workflows/ci.yml)
 [![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-6b4fbb)](#三接口清单) [![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://img.shields.io/badge/Ask%20DeepWiki-blue.svg?labelColor=000000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAPoAAAD6AG1e1JrAAACIUlEQVRYw+2XP2gUQRTGv7d3JhYWQawkIBaCVWzETos0gmAnVoKNTSoLK0E7EQQrC20sBVFBtLPQRgTBtBaKjYgIQUSxiJq7fT+LvCGPJZdNLt4dQj5Y3u7sznzfzLw/s9IO/icANiniCujEfWdsQgBLxAbsbraPZcmBfcAt4DNwKQsZNfEUsAB8YRV12LfA6ZHuedg7AO7ed/c+UBcbQhbiu+6wXIM6EnZWkszMJe2Ke0n6I2la0v51hFeSMLN6OwIK6jJwEBdUYb2MAxRSz6sY4geiahFgLe1Hwq6YWe3us8AN4FQQU4QM64SPY69Xyr43fADgNjAPXHb3peSsD4FDQ0VLEjAHvIhBPS6AHvA1bBO9JPAXcHFbIRtJ5yzwIQZ9CZwAusDJENIkLqsG8DpNyIZJwSUk9wLHgakcesC1JCCjiHm1kYDNOEjptCxpSVK/8f73OFLxPLAYM3oCzEX7MXf/lJbc/8kWpA4HgQdpYI9IWAbeh83whi84cHXL+58EPBoQhnmm94EzwE3gZ2p/Dhzdbhg+TaRr01x7ftb4/jBwFzjXrCvDpmLW9crVLNeR9CaapoGemb2TdCERW1tNaBNQ8jktwmozqwtpqRNtdWAjARYk39IS12ZWRX7vmJmA71nQZgi36gN7gCvAj5xc3P0jcH7kx7Ik5IC73wsh14GZsZySow5002l4Jr0b6+m4eSyvpAn8lEzsx2QHo8RfUrlN+uPq4ksAAAAASUVORK5CYII=)](https://deepwiki.com/2951461586/DeepAICode2API)
 
@@ -888,6 +888,22 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 - **预置桌面端形状**（`preset_desktop_shape`，默认关）：对已确认需要桌面端形状的
   调用方（按 API Key 记忆 10 分钟），在首次发送前补 system 消息，省掉一次注定
   失败的 400。关闭时仍走「透传 → 400 → 补形状重试」的学习路径；
+- **请求体上限与超限处置**（v0.1.28 起，`context_body_bytes` 默认 196608、
+  `body_cap_mode` 默认 `warn`）：上游在约 196 KB 处会对请求体「静默砍头」
+  （issue #7：保留尾部、丢掉开头的 system / 最初几轮，`usage.prompt_tokens`
+  钉在约 40k）。`warn` 只把这类请求记进日志（`body_near_cap` + WARN，阈值 90%）；
+  `reject` 则直接回 `400 invalid_request_error` 并说明字节数与上限，不再把已知会被
+  截断的请求送上去。环境变量 `DEEPAI2API_CONTEXT_BODY_BYTES` 仍可兜底（控制台
+  设置优先）；
+- **三类超时预算**（v0.1.28 起可在控制台调）：`nonstream_budget_sec`（非流式请求
+  整体预算，默认 180s、区间 30~600）取代了旧的硬编码 90s——2026-11-25 线上 6h 内
+  `/v1/chat/completions` 的 60 次 504 全部落在 `ms=90000` 上；`stream_idle_sec`
+  （流式帧间空闲，默认 120s）与 `first_byte_sec`（非流式等首字节，默认 300s）
+  分别覆盖「流卡住」与「长思考还没出首字节」两种长尾；
+- **付费模型只选余额为正的号**（v0.1.28 起）：`theosPerRequest > 0` 的模型在选号时
+  不再接受「额度已确认非正」的账号，也不再靠会话粘性钉到负余额号上。旧行为是
+  「先选有额度的、都没有就全集兜底」，于是负余额号仍会被选中，每个请求白撞一次
+  上游 `403 theos_exhausted`（2026-11-25 线上体检：3 个号为负）；
 - **签到节奏**与桌面端一致（以回传完成时刻为基准，`seconds/2` 默认 300s）；
   之前用「最新 nonce ≠ 已回传 nonce」判断，会退化成 30s 一次（见 `docs/changes.md` §60）；
 - **管理口令有防爆破退避**：同一来源连续失败 5 次后进入指数退避（1s 起，上限 30s），
@@ -938,7 +954,7 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 | `docs/lessons.md` | **工程经验沉淀**：十批压测 → 可复用规则 + 改动前检查清单 | 维护中 |
 | `docs/performance.md` | 压测数据与优化方案：单号 E2E、阶段分解、P0/P1/P2 收益测算 | 维护中（数据快照 2026-11-10） |
 | `docs/pi-lens.md` | 本仓的 pi-lens 配置说明：关了什么、为什么、怎么验证与恢复 | 维护中 |
-| `docs/model-fingerprint-2026-11-10.md` | 号池 22 个模型的指纹实测（判据与复现命令） | 历史快照：目录已变 28 个，判据仍适用 |
+| `docs/model-fingerprint-2026-11-10.md` | 号池模型指纹实测（11-10 全量 + 11-11 / 11-24 / 11-25 三轮补测，判据与复现命令） | 历史快照：目录已变 28 个；11-25 复测得出「只能用同一轮 3/3 家族比较」的口径 |
 | `docs/optimization-plan.md` | 首轮扫描的完整优化方案 | 历史：已全部实施 |
 | `docs/optimization-plan-r2.md` | 第二轮扫描（写放大 / 控制台 / 复探）的方案与收益测算 | 历史：已实施 |
 | `docs/assets/` | 项目图标：`logo.png`（512，README 用）/ `logo.ico`（16–256 多尺寸，Windows 用）；控制台的 `/favicon.ico` 是同一份（见 `docs/changes.md` §58） |

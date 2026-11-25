@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"deepaicode2api/internal/deepai"
+	"deepaicode2api/internal/pool"
 )
 
 // MaxInFlightPerAccount 是单账号同时进行的上游请求上限。
@@ -27,7 +28,7 @@ const MaxInFlightPerAccount = 2
 // 实现要点：选号在 store 里一次读完（只拷贝被选中的那个），忙号通过纯谓词
 // 排除；Acquire 只处理「检查到占用」的窄竞态，失败就排除后重试。
 func (p *Service) Pick(group, prefer string) (*deepai.Account, bool, bool) {
-	return p.pickWith(group, prefer, nil)
+	return p.pickWith(group, prefer, nil, false)
 }
 
 // PickAvoiding 先在没有被 avoid 排除的候选里选号；若这样会挖空整个池
@@ -38,18 +39,29 @@ func (p *Service) Pick(group, prefer string) (*deepai.Account, bool, bool) {
 // 也不要对外回 429（线上 2026-11-22：16 个号各绑一个住宅代理，
 // 经常同时有两三个出口在超时）。
 func (p *Service) PickAvoiding(group, prefer string, avoid func(*deepai.Account) bool) (*deepai.Account, bool, bool) {
+	return p.PickAvoidingFor(group, prefer, avoid, false)
+}
+
+// PickAvoidingFor 是 PickAvoiding 的严格版：requireQuota 为 true 时
+// 余额已确认非正的账号既不参与常规调度，也不接受粘性命中。
+//
+// 付费模型（theosPerRequest > 0）必须走这条路：否则一个负余额账号仍会被
+// 选上（旧版本会“先选有额度的、都没有就全集兜底”），每个请求白撞一次
+// 上游 403 theos_exhausted。
+func (p *Service) PickAvoidingFor(group, prefer string, avoid func(*deepai.Account) bool, requireQuota bool) (*deepai.Account, bool, bool) {
 	if avoid != nil {
-		if a, ok, candidates := p.pickWith(group, prefer, avoid); ok || !candidates {
+		if a, ok, candidates := p.pickWith(group, prefer, avoid, requireQuota); ok || !candidates {
 			return a, ok, candidates
 		}
 	}
-	return p.pickWith(group, prefer, nil)
+	return p.pickWith(group, prefer, nil, requireQuota)
 }
 
 // pickWith 是 Pick 的实现体，avoid 非 nil 时额外排除一批账号。
-func (p *Service) pickWith(group, prefer string, avoid func(*deepai.Account) bool) (*deepai.Account, bool, bool) {
+func (p *Service) pickWith(group, prefer string, avoid func(*deepai.Account) bool, requireQuota bool) (*deepai.Account, bool, bool) {
 	if prefer != "" {
-		if a := p.store.PreferredAccount(prefer, group); a != nil && (avoid == nil || !avoid(a)) && p.Acquire(a.ID) {
+		if a := p.store.PreferredAccount(prefer, group); a != nil && (avoid == nil || !avoid(a)) &&
+			(!requireQuota || pool.HasQuota(a)) && p.Acquire(a.ID) {
 			return a, true, true
 		}
 	}
@@ -68,7 +80,7 @@ func (p *Service) pickWith(group, prefer string, avoid func(*deepai.Account) boo
 		return p.Busy(a.ID)
 	}
 	for {
-		a, candidates := p.store.PickAccount(group, skip)
+		a, candidates := p.store.PickAccountFor(group, skip, requireQuota)
 		if a == nil {
 			return nil, false, candidates
 		}
