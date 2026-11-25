@@ -5929,13 +5929,29 @@ agent 重启、Windows 上模型列表 / secrets 被别的程序占用、安装�
 - `docs/recon.md`：顶部新增 0.3.52 复核块（含 Proof 的请求构造与「上游不校验」实测）、
   §3 头表加 Proof、车道门槛矩阵新增 2026-11-25 行并改写「探测的局限」、`【源码级】` 标签跟进。
 
-### 88.6 本机桌面端：仍停在 0.3.50（未做静默安装）
+### 88.6 本机桌面端升级 0.3.50 → 0.3.52（2026-11-25 15:37 CST，提权安装）
 
-当前 shell **不是管理员**，而 0.3.50 起安装器改成 machine-wide（`C:\Program Files\DeepAI Code`，
-需要 UAC 提权）。本轮改为**只解包比对**：把 0.3.52 的安装包解到临时目录，取
-`resources/{app,server}.asar` 与本机 0.3.50 逐项 diff，用完即删（安装包 + NSIS `app-64.7z` +
-应用树，约 2 GB）。网关不依赖桌面端版本（凭据文件 Schema 未变），所以不在无提权的情况下
-冒险装一半；需要跟版时以管理员运行 `DeepAI-Code-0.3.52-x64.exe /S` 即可。
+0.3.50 起安装器是 machine-wide，需要提权；本轮由用户确认 UAC 后静默安装：
+
+```powershell
+Start-Process -FilePath 'DeepAI-Code-0.3.52-x64.exe' -ArgumentList '/S' -Verb RunAs -Wait
+# ExitCode=0
+```
+
+**安装形态又变回 per-user**：0.3.52 装到 `%LOCALAPPDATA%\Programs\deepai-code-desktop`，
+卸载项是 HKCU 的「DeepAI Code 0.3.52」，**0.3.50 的 `C:\Program Files\DeepAI Code`（machine-wide）
+被安装器删掉，HKLM 无残留**。核对结果：
+
+| 项 | 值 |
+| --- | --- |
+| `DeepAI Code.exe` | `ProductVersion 0.3.52.0` / `FileVersion 0.3.52` |
+| `resources/app.asar` | 46,674,489 B（与本轮解包比对的 0.3.52 包一致） |
+| `resources/server.asar` | 269,365,520 B（同上） |
+| `wsl-runtime.tar.gz` | 195,479,586 B（0.3.50 为 115,961,053 B，安装包增大主要来自这里） |
+| 凭据文件 `~/.deepai-code/userdata/secrets/deepai-account.bin` | **未改写**（仍是 2026-11-07 的 88 B，Schema 未变） |
+
+装完用 `go run ./cmd/probe` 直接读桌面端凭据验证：`模型目录: 28 个，默认 glm-5.3-flash`
+（首次调用遇到一次上游 `EOF`，重试即成功，属于上游抖动）。安装包与临时解包目录随即清理。
 
 ### 88.7 发版与上线（2026-11-25 15:10 CST）
 
@@ -5954,9 +5970,9 @@ agent 重启、Windows 上模型列表 / secrets 被别的程序占用、安装�
   `POST /v1/chat/completions`（`glm-5.3-flash`）**200** 且返回正文与 `reasoning_details`，
   `/admin/api/overview` 显示 `lane_upstream: 8`；测完立刻删除该密钥（列表回到只剩
   `liziai-deepai`）；
-- 镜像只保留 2 个：当前 `local-20261125-v0.1.27-1b24cca` 与回滚用的
-  `local-20261124-v0.1.26-635af25`（各 27.4 MB），更早的 v0.1.25 已清理。
-- 回滚：`DEEPAI2API_IMAGE=deepaicode2api:local-20261124-v0.1.26-635af25 docker compose up -d --no-build`
+- 镜像：按用户要求**只保留当前版** `local-20261125-v0.1.27-1b24cca`（27.4 MB），
+  v0.1.26 / v0.1.25 两个备份镜像都已删除（`docker images` 里只剩这一条）。
+- 回滚方式相应变成「按 tag 重建」：`cd /root/DeepAICode2API && git checkout v0.1.26 &&   GIT_TAG=v0.1.26 sh scripts/deploy.sh v0.1.26`（脚本会校验 tag 与 HEAD 一致）。
 
 > 注意：v0.1.26 那条「`lane_upstream` 为 0 / `/theos` temporarily unavailable」的遗留问题
 > 本轮已自然恢复 —— 本次 `/theos` 正常回 `lane_version: 8`，签到与额度刷新都通。
