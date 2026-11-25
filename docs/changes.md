@@ -5936,3 +5936,27 @@ agent 重启、Windows 上模型列表 / secrets 被别的程序占用、安装�
 `resources/{app,server}.asar` 与本机 0.3.50 逐项 diff，用完即删（安装包 + NSIS `app-64.7z` +
 应用树，约 2 GB）。网关不依赖桌面端版本（凭据文件 Schema 未变），所以不在无提权的情况下
 冒险装一半；需要跟版时以管理员运行 `DeepAI-Code-0.3.52-x64.exe /S` 即可。
+
+### 88.7 发版与上线（2026-11-25 15:10 CST）
+
+**发版**：`v0.1.27`（`1b24cca`），5 平台交叉编译 + `checksums.txt`，
+`https://github.com/2951461586/DeepAICode2API/releases/tag/v0.1.27`（只挂本版资产 + 本版 notes）。
+
+**上线**：服务器 `/root/DeepAICode2API` 从 `635af25` fast-forward 到 `1b24cca`，
+`sh scripts/deploy.sh v0.1.27` 构建并启动镜像
+`deepaicode2api:local-20261125-v0.1.27-1b24cca`，健康检查一次通过：
+
+- `/healthz`：`accounts=17 ready=17 lane=8 lane_compiled=8 lane_drift=0 lane_upstream=8 models=28
+  version=v0.1.27`、`machine_ready=true`；容器内二进制里 `0.3.52` 1 处、`0.3.50` / `0.3.48` 0 处；
+- 启动日志：`模型目录已更新：28 个模型，默认 glm-5.3-flash`、
+  `[lane] 上游车道: 8（网关当前发 8，编译期 8）`（无 drift 告警）；
+- **端到端实测**：临时建一把 `sync-check-20261125` 密钥 → `GET /v1/models` 28 条、
+  `POST /v1/chat/completions`（`glm-5.3-flash`）**200** 且返回正文与 `reasoning_details`，
+  `/admin/api/overview` 显示 `lane_upstream: 8`；测完立刻删除该密钥（列表回到只剩
+  `liziai-deepai`）；
+- 镜像只保留 2 个：当前 `local-20261125-v0.1.27-1b24cca` 与回滚用的
+  `local-20261124-v0.1.26-635af25`（各 27.4 MB），更早的 v0.1.25 已清理。
+- 回滚：`DEEPAI2API_IMAGE=deepaicode2api:local-20261124-v0.1.26-635af25 docker compose up -d --no-build`
+
+> 注意：v0.1.26 那条「`lane_upstream` 为 0 / `/theos` temporarily unavailable」的遗留问题
+> 本轮已自然恢复 —— 本次 `/theos` 正常回 `lane_version: 8`，签到与额度刷新都通。
