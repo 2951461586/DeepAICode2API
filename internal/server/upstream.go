@@ -60,12 +60,29 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		used    *deepai.Account
 	)
 	// 会话粘性：同一会话优先回上次用过的号（前缀缓存 / 上游会话上下文都在那）。
-	// 只在第一次尝试时生效 —— 重试必须换号，否则会在一把坏号上打转。
+	// 首次尝试用粘性号；之后的重试默认换号，只有「瞬时故障」才同号再来一次。
 	prefer := s.Pool.StickyAccount(affinity)
+	// retrySame 非空表示下一轮优先重试这个号。
+	//
+	// 为什么值得多花一次重试：上游前缀缓存是**按账号（出口）分区**的，换号等于
+	// 整段上下文重新冷启动。线上 2026-11-27 的日志里能直接看到代价——同一段
+	// 130+ 条消息的会话，命中率稳定在 98~100%，唯独换号那两次是 0%。
+	// 只对「账号本身没问题、链路瞬时坏了」的错误生效（见 sameAccountRetryable）；
+	// 429 / 403 / 400 是账号级或请求级语义，同号重试只会白等。
+	retrySame := ""
+	sameRetried := make(map[string]bool, 1)
 	deadline := time.Now().Add(s.admissionWait)
 	for i := 0; i < maxTries; i++ {
-		acct, ok, candidates := s.Pool.PickAvoidingFor(group, prefer, s.avoidCoolingProxy, requireQuota)
+		avoid := s.avoidCoolingProxy
+		if retrySame != "" {
+			prefer = retrySame
+			// 同号重试时不再排除「出口冷却」：刚被冷却的是那条住宅出口，不是这个
+			// 账号本身；clientFor 会因冷却自动改走全局出口，等于「换路不换号」。
+			avoid = nil
+		}
+		acct, ok, candidates := s.Pool.PickAvoidingFor(group, prefer, avoid, requireQuota)
 		prefer = ""
+		retrySame = ""
 		if !candidates {
 			// 池里没有可调度账号（全被拦 / 分组为空）：交给 noAccountError 说明原因。
 			break
@@ -119,6 +136,12 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			s.Pool.MarkFailure(acct.ID, err)
 			if ctx.Err() != nil {
 				break
+			}
+			// 传输层失败（连不上 / 断流）不等于号坏了：同号再试一次，代价是
+			// 一次往返，收益是整段前缀缓存不用重建。每个号本轮最多一次。
+			if !sameRetried[acct.ID] {
+				sameRetried[acct.ID] = true
+				retrySame = acct.ID
 			}
 			continue
 		}
@@ -187,7 +210,21 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		s.Pool.Release(acct.ID)
 		s.metrics.ObserveUpstreamError(path, httpErr.Code(), httpErr.Status)
 
-		switch classifyUpstreamError(httpErr) {
+		action := classifyUpstreamError(httpErr)
+		// 上游 5xx（502 unexpected EOF / 503 / 504）多半是边缘与上游之间的一次
+		// 抖动，账号本身还能用：先在同一个号上重试一次保前缀缓存，再谈换号。
+		if action == actRetryOther && sameAccountRetryable(httpErr) && !sameRetried[acct.ID] {
+			sameRetried[acct.ID] = true
+			s.Pool.MarkFailure(acct.ID, httpErr)
+			lastErr = httpErr
+			if ctx.Err() != nil {
+				break
+			}
+			retrySame = acct.ID
+			continue
+		}
+
+		switch action {
 		// 邮箱未验证：账号登录态无效，换号也救不了它。
 		// 标记后继续试下一个号（下次 /theos 成功会自动解封）；
 		// 不要把它当普通 403 反复重试。

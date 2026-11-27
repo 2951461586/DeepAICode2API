@@ -52,6 +52,7 @@ func rollStatsDay(st *Stats, now time.Time) {
 	st.DayTokensIn = 0
 	st.DayTokensOut = 0
 	st.DayCachedTokens = 0
+	st.DayCacheWriteTokens = 0
 }
 
 // Stats 返回统计快照。
@@ -67,6 +68,7 @@ func (s *Store) Stats() Stats {
 		st.DayTokensIn = 0
 		st.DayTokensOut = 0
 		st.DayCachedTokens = 0
+		st.DayCacheWriteTokens = 0
 	}
 	return st
 }
@@ -95,11 +97,13 @@ func (s *Store) Record(e LogEntry, outChars int) {
 	s.st.Stats.TotalTokensIn += int64(e.TokensIn)
 	s.st.Stats.TotalTokensOut += int64(e.TokensOut)
 	s.st.Stats.TotalCachedTokens += int64(e.CachedTokens)
+	s.st.Stats.TotalCacheWriteTokens += int64(e.CacheWriteTokens)
 	// 当日用量：跨天时先清零（不用定时任务，读路径上判定即可）。
 	rollStatsDay(&s.st.Stats, time.Now())
 	s.st.Stats.DayTokensIn += int64(e.TokensIn)
 	s.st.Stats.DayTokensOut += int64(e.TokensOut)
 	s.st.Stats.DayCachedTokens += int64(e.CachedTokens)
+	s.st.Stats.DayCacheWriteTokens += int64(e.CacheWriteTokens)
 	s.st.Stats.TotalCost += e.Cost
 	s.statsDirty = true
 	keep := s.st.Settings.LogKeep

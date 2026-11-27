@@ -61,6 +61,27 @@ func classifyUpstreamError(e *deepai.HTTPError) upstreamAction {
 	return actReturn
 }
 
+// sameAccountRetryable 报告这个上游拒绝是否值得「在同一个号上再试一次」。
+//
+// 判据是「账号本身没问题、链路抖了一下」：
+//   - 5xx（502 unexpected EOF 之类）：上游或边缘的一次失败，号还能用；
+//   - 429：账号级限流，同号重试只会立刻再被拒，必须换号；
+//   - 403 / 400 / 426：策略、语义、车道问题，重试同一个号没有意义。
+//
+// 为什么这件事值得单独成函数：换号的隐性代价是上游前缀缓存整段冷启动。
+// 线上日志里同一段会话命中率 98~100%，只有换号那几次是 0%——而缓存命中
+// 折价的是首字节延迟与上游成本，不会以错误的形式暴露出来。
+func sameAccountRetryable(e *deepai.HTTPError) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Status {
+	case 500, 502, 503, 504:
+		return true
+	}
+	return false
+}
+
 // quotaExhaustedFallback 是 theos_exhausted 没给 refresh_at 时的恢复等待。
 //
 // 上游文案是 “They refresh at <RFC3339>”，一般都能解析；解析不到时取 6h，

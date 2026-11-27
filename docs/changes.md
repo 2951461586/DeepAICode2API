@@ -39,6 +39,7 @@
 | v0.1.29 | 90 | 硬额度约束的补丁：负余额按 `refresh_at` 判定（快照陈旧不再放行） |
 | v0.1.29（未发新版） | 91 | 线上入口迁移：`deepai2api.liziai.cloud`（410）→ `deepai-gw.liziai.cloud`；文档可执行示例换新域名，无代码变更 |
 | v0.1.29（未发新版） | 92 | 线上 400 归因（两个调用族均撞上游上下文窗口）+ 请求日志补 UA/IP 排障字段 + `liziwww235` 429 降权 |
+| v0.1.29（未发新版） | 93 | 缓存命中率口径拆成「读 / 写 / 全新」三段（`cache_creation_input_tokens`）+ 5xx 改为同号重试保前缀缓存 + 客户端前缀契约进 README |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -5870,7 +5871,8 @@ agent 重启、Windows 上模型列表 / secrets 被别的程序占用、安装�
 
 ### 88.2 协议面复核（逐项）
 
-比对对象：本机已装的 0.3.50（`C:\Program Files\DeepAI Codeesources\server.asar`）与新包解出的 0.3.52。
+比对对象：本机已装的 0.3.50（`C:\Program Files\DeepAI Code
+esources\server.asar`）与新包解出的 0.3.52。
 
 | 复核项 | 0.3.50 | 0.3.52 | 判据 |
 | --- | --- | --- | --- |
@@ -6298,3 +6300,75 @@ POST /admin/api/accounts {"action":"set-group","id":"a0c967a16714141b","group":"
 - `body_cap_mode` 仍是 `warn`：`reject` 会在选号前直接回 400，省掉上游那 2–44 s，但同一窗口里
   也有 2.3 MB 的请求成功过（200），切之前需要先确认调用方来源（正好等 UA/IP 字段部署后的数据）。
 - 签到预算（615 次里 63 次超时、p95 = 5 s）保持 §90.6 的待办口径，本轮未动。
+
+---
+
+## 93. 2026-11-27 缓存命中率口径拆账 + 5xx 同号重试
+
+### 93.1 起因：60–70% 是不是统计错了
+
+先做四项交叉校验，结论是**算术没错**：
+
+| 校验 | 结果 |
+| --- | --- |
+| 分子分母同窗口 | 控制台主值 `day_cached_tokens / day_tokens_in`、tooltip `total_cached_tokens / total_tokens_in`，各自同窗口（`store.go` 里特意写了「累计值不能与当日值混算」的警告） |
+| 用原始日志复算 | 最近 500 条中 456 条 200：`4,137,577 / 6,014,193` = **68.8%**，与接口今日 66.7%、累计 60.7% 同量级 |
+| 数据完整性 | `cached > tokens_in` 的条目 0 条；200 但 `tokens_in=0` 的 0 条；`tokens_in/prompt_len` p50 = 0.30（≈3.3 字符/token） |
+| 结构合理性 | 单请求命中率 p50 58% / p90 98%；按历史长度单调递增（msgs=1 → 20%，2–9 → 62%，10–49 → 70%，100+ → 80%）——统计错位不会长出这种结构 |
+
+真实构成（同窗口）：
+
+| 分组 | 请求 | prompt token | 命中率 |
+| --- | ---: | ---: | ---: |
+| `cached_tokens = 0` | 149（33%） | 1,244,732（20.7%） | 0% |
+| `cached_tokens > 0` | 307 | 4,769,461 | **86.8%** |
+
+即：**33% 的冷请求吃掉了 66% 的未命中 token**。冷请求按「距上一条同模型、同规模请求」
+再分：< 60 s 占冷 token 57%（多为新会话首轮）、60–300 s 占 9.5%、**> 300 s 占 16.5%
+（上游前缀缓存 TTL 过期）**、窗口内无前序占 16.9%。
+
+同一段长会话内部是稳定的：`msgs` 130→143 那一串命中率 98.9 / 99.8 / 92.3 / 82.3 /
+99.4 / 100%，只有两处断崖——`msgs=141, gap=376 s`（TTL 过期）与 `msgs=208, gap=3 s`
+（3 秒就冷，只可能是换号或前缀被改）。**这正是本节两处改动的依据。**
+
+### 93.2 改动 A：命中率拆成「读 / 写 / 全新」
+
+| 层 | 改动 |
+| --- | --- |
+| `gateway.ParseUsage` | 新增 `CacheWriteTokens`，收 `cache_creation_input_tokens`（上游实发形态）与 `*_tokens_details.cache_creation_tokens` 两种写法；与 `CachedTokens` 严格分开 |
+| `store.LogEntry` | 新增 `cache_write_tokens` |
+| `store.Stats` | 新增 `total_cache_write_tokens` / `day_cache_write_tokens`，`Record` 累加、跨天清零 |
+| `server.reqlog` | 落盘时带上该字段 |
+| 控制台 KPI | 命中率 tooltip 改为「读 / 写 / 全新 / 入（累计命中 …）」 |
+
+这样「新会话首轮把前缀写进缓存」与「本该命中却 miss」在界面上不再同形——前者是命中率的
+结构性上限，后者才是要修的问题。
+
+单测：`TestParseUsageCarriesCacheWriteTokens`（三种形态 + 读写不混）、
+`TestRecordAccumulatesCacheWriteTokens`、`TestDayCacheWriteTokensResetOnNewDay`。
+
+### 93.3 改动 B：5xx 改「同号重试一次」，保住前缀缓存
+
+`openModel` 的重试循环此前「重试必须换号」。换成号等于整段上下文重新冷启动
+（日志里换号那两次命中率直接 0%），而 502/503/504 多半只是边缘与上游之间抖一下。
+
+- 新增 `sameAccountRetryable`：500/502/503/504 → 同号重试；429 / 403 / 400 / 426 不适用
+  （账号级或请求级语义，同号重试只会白等）；
+- 循环里加 `retrySame`：同号重试时 `avoid = nil`，允许该号在出口刚被冷却时改走全局出口
+  （「换路不换号」）；每个号本轮最多一次；
+- 传输层失败（连不上 / 断流）同样先同号重试一次。
+
+单测：`TestSameAccountRetryable`（边界表）+ `TestOpenModelRetries5xxOnSameAccount`
+（端到端断言两次上行请求的 `Api-Key` 相同——换号会直接让这条断言失败）。
+
+### 93.4 改动 C：客户端前缀契约写进 README
+
+前缀缓存按**字节前缀**匹配，网关无法替客户端稳定它。README §七 补了四条：
+system/tools 字节级稳定、同一会话固定 `prompt_cache_key`/`X-Session-Affinity`、
+空闲超过 TTL 后不要指望命中、重试留同号（对应 §93.3）。
+
+### 93.5 未做
+
+- `body_cap_mode` 仍是 `warn`（见 §92.5）；
+- 日志里还没有 `affinity` / 前缀指纹：要量化「客户端是否真的固定了前缀」，需要
+  再加两个短哈希字段（`affinity` + `prefix`），留到下一轮。

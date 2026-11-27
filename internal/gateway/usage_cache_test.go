@@ -70,3 +70,50 @@ func TestChatToResponsesObjectCachedTokens(t *testing.T) {
 		t.Fatalf("cached_tokens = %v，期望 16（上游已回传）", details["cached_tokens"])
 	}
 }
+
+// TestParseUsageCarriesCacheWriteTokens 锁住「写缓存」这一段的解析。
+//
+// 命中率只有 60–70% 的主要构成项，就是「这段前缀第一次被写进缓存」的那次请求：
+// 它的 token 既不算读命中、也不是真的浪费。不把这个量记下来，控制台上的
+// 「新会话首轮 0%」与「该命中却 miss」完全无法区分。
+func TestParseUsageCarriesCacheWriteTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  map[string]any
+		want int
+	}{
+		{
+			"Anthropic 形状的顶层字段（上游实发形态）",
+			map[string]any{"prompt_tokens": float64(900), "completion_tokens": float64(1), "cache_creation_input_tokens": float64(768)},
+			768,
+		},
+		{
+			"details 里的写法",
+			map[string]any{"prompt_tokens": float64(900), "prompt_tokens_details": map[string]any{"cache_creation_tokens": float64(512)}},
+			512,
+		},
+		{
+			"没有该字段",
+			map[string]any{"prompt_tokens": float64(900)},
+			0,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ParseUsage(c.raw)
+			if got.CacheWriteTokens != c.want {
+				t.Fatalf("CacheWriteTokens = %d，期望 %d", got.CacheWriteTokens, c.want)
+			}
+		})
+	}
+
+	// 写入量不能被当成读命中：两者语义相反，混在一起会让命中率虚高。
+	u := ParseUsage(map[string]any{
+		"prompt_tokens":               float64(1000),
+		"cache_creation_input_tokens": float64(400),
+		"prompt_tokens_details":       map[string]any{"cached_tokens": float64(100)},
+	})
+	if u.CachedTokens != 100 || u.CacheWriteTokens != 400 {
+		t.Fatalf("读/写混淆: cached=%d write=%d，期望 100 / 400", u.CachedTokens, u.CacheWriteTokens)
+	}
+}

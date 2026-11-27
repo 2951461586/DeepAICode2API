@@ -126,6 +126,16 @@ function hitRate(cached, total) {
   return total > 0 ? cached / total : NaN;
 }
 
+// freshTokens 是「既没读命中、也没写缓存」的 prompt token 量（今日）。
+//
+// 命中率的三段分解：读命中 / 写缓存 / 全新。只有第三段是真正的浪费——
+// 「写」是投资（新会话首轮、TTL 过期后的重写），下一笔请求就能兑现成读命中。
+// 不分开看，首轮大 prompt 的 0% 与「该命中却 miss」会混成同一个数字。
+function freshTokens(s) {
+  var fresh = (s.day_tokens_in || 0) - (s.day_cached_tokens || 0) - (s.day_cache_write_tokens || 0);
+  return fresh > 0 ? fresh : 0;
+}
+
 // renderKpis 画 KPI 卡片。
 //
 // 每项是 [标签, 值, 悬停说明?]：标题栏里只放一个数，口径（累计 / 今日）放
@@ -142,10 +152,12 @@ function renderKpis(d) {
     ["账号（就绪/总）", (d.ready || 0) + " / " + (d.accounts || 0)],
     ["今日 Token 入 / 出", fmtCompact(s.day_tokens_in) + " / " + fmtCompact(s.day_tokens_out)],
     ["缓存命中率（今日）", fmtPercent(hitRate(s.day_cached_tokens, s.day_tokens_in), s.day_tokens_in > 0),
-      t("累计 {r} · 命中 {c} / 入 {i}", {
-        r: fmtPercent(hitRate(s.total_cached_tokens, s.total_tokens_in), s.total_tokens_in > 0),
-        c: fmtCompact(s.total_cached_tokens),
-        i: fmtCompact(s.total_tokens_in)
+      t("读 {c} · 写 {w} · 全新 {f} / 入 {i}（累计命中 {r}）", {
+        c: fmtCompact(s.day_cached_tokens),
+        w: fmtCompact(s.day_cache_write_tokens),
+        f: fmtCompact(freshTokens(s)),
+        i: fmtCompact(s.day_tokens_in),
+        r: fmtPercent(hitRate(s.total_cached_tokens, s.total_tokens_in), s.total_tokens_in > 0)
       })]
   ];
   var box = $("#kpis");

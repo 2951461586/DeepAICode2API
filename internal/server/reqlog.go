@@ -139,21 +139,22 @@ func (l reqLog) doneStatus(status int, outLen int, usage gateway.Usage, err erro
 		return
 	}
 	e := store.LogEntry{
-		Time:         time.Now().Unix(),
-		Key:          mask(l.key),
-		Model:        l.model,
-		Endpoint:     l.endpoint,
-		Stream:       l.stream,
-		Status:       status,
-		LatencyMS:    time.Since(l.start).Milliseconds(),
-		PromptLen:    l.inLen,
-		OutputLen:    outLen,
-		Messages:     l.inMsgs,
-		Sys:          l.hasSys,
-		TokensIn:     usage.PromptTokens,
-		TokensOut:    usage.CompletionTokens,
-		CachedTokens: usage.CachedTokens,
-		Cost:         usage.Cost,
+		Time:             time.Now().Unix(),
+		Key:              mask(l.key),
+		Model:            l.model,
+		Endpoint:         l.endpoint,
+		Stream:           l.stream,
+		Status:           status,
+		LatencyMS:        time.Since(l.start).Milliseconds(),
+		PromptLen:        l.inLen,
+		OutputLen:        outLen,
+		Messages:         l.inMsgs,
+		Sys:              l.hasSys,
+		TokensIn:         usage.PromptTokens,
+		TokensOut:        usage.CompletionTokens,
+		CachedTokens:     usage.CachedTokens,
+		CacheWriteTokens: usage.CacheWriteTokens,
+		Cost:             usage.Cost,
 	}
 	if l.acct != nil {
 		e.Account = l.acct.ID

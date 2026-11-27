@@ -76,7 +76,7 @@ export const PAGES_DICT = {
   "账号（就绪/总）":"Accounts (ready/total)",
   "今日 Token 入 / 出":"Today's tokens in / out",
   "缓存命中率（今日）":"Cache hit rate (today)",
-  "累计 {r} · 命中 {c} / 入 {i}":"All time {r} · cached {c} / in {i}",
+  "读 {c} · 写 {w} · 全新 {f} / 入 {i}（累计命中 {r}）":"read {c} · written {w} · fresh {f} / in {i} (all-time {r})",
   "脱敏显示":"Mask sensitive fields",
   "检查更新":"Check for updates",
   "发现新版本 {v}，点击查看 Release":"New version {v} available — click to see the release",

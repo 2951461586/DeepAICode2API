@@ -113,8 +113,15 @@ type LogEntry struct {
 	TokensIn  int    `json:"tokens_in"`
 	TokensOut int    `json:"tokens_out"`
 	// CachedTokens 是上游报告的前缀缓存命中 token 数（无此字段时为 0）。
-	CachedTokens int     `json:"cached_tokens,omitempty"`
-	Cost         float64 `json:"cost"`
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	// CacheWriteTokens 是本次「写入前缀缓存」的 prompt token 数。
+	//
+	// 没有它，控制台上的命中率分不清两种完全不同的 0 命中：
+	//   - 新会话首轮 / 空闲超过上游 TTL 后的第一笔：这一段必须写缓存，下一笔才能命中；
+	//   - 本该命中却 miss（换号、前缀被改）。
+	// 前者是命中率的结构性上限，后者才是要修的问题。
+	CacheWriteTokens int     `json:"cache_write_tokens,omitempty"`
+	Cost             float64 `json:"cost"`
 	// Messages / Sys 是本次请求回喂给上游的历史规模（不含任何正文）。
 	//
 	// 排障时第一眼要回答的问题就是「是客户端没给历史，还是网关把历史弄丢了」：
@@ -155,8 +162,13 @@ type Stats struct {
 	//
 	// 注意它是**累计值**：跟 DayTokensIn（当日）组合算比率是错的（会得出一个
 	// 既不等于累计也不等于当日的数）。控制台因此同时存一份 DayCachedTokens。
-	TotalCachedTokens int64   `json:"total_cached_tokens,omitempty"`
-	TotalCost         float64 `json:"total_cost"`
+	TotalCachedTokens int64 `json:"total_cached_tokens,omitempty"`
+	// TotalCacheWriteTokens 是「写入前缀缓存」的 prompt token 总量。
+	//
+	// 命中率的完整分解：读命中 / 写缓存 / 全新（prompt − 读 − 写）。
+	// 三者里的「写」是投资而非损失：它买的是后续请求的读命中。
+	TotalCacheWriteTokens int64   `json:"total_cache_write_tokens,omitempty"`
+	TotalCost             float64 `json:"total_cost"`
 	// Day / DayTokensIn / DayTokensOut / DayCachedTokens 是「按本地日期」的当日用量。
 	//
 	// 跨天时由 Record 自动清零（不需要定时任务）；Date 用 YYYY-MM-DD。
@@ -164,6 +176,8 @@ type Stats struct {
 	DayTokensIn     int64  `json:"day_tokens_in,omitempty"`
 	DayTokensOut    int64  `json:"day_tokens_out,omitempty"`
 	DayCachedTokens int64  `json:"day_cached_tokens,omitempty"`
+	// DayCacheWriteTokens 是当日写入缓存的 prompt token 量（与 DayCachedTokens 同窗口）。
+	DayCacheWriteTokens int64 `json:"day_cache_write_tokens,omitempty"`
 	// StartedAt 是统计开始时间（首次启动），ResetAt 是最近一次手动重置的时间。
 	//
 	// 两者分开：控制台需要能解释「统计数比日志少」——重置只清计数，

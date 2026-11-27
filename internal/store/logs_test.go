@@ -168,3 +168,42 @@ func TestLogsTrimmedToKeep(t *testing.T) {
 
 // 排序必须由服务端做：分页切片前后都要有序，且相等值按 ID 兜底，
 // 否则同一批数据在翻页时会重复或漏条。
+
+// TestRecordAccumulatesCacheWriteTokens 锁住「读命中 / 写缓存」两段的分账。
+//
+// 两者都随 prompt token 计费，但语义相反：读是收益，写是投资。混算会让
+// 「命中率」这种比率失去意义（把首轮写缓存也算成命中即虚高）。
+func TestRecordAccumulatesCacheWriteTokens(t *testing.T) {
+	st := newStore(t)
+	st.Record(LogEntry{Status: 200, TokensIn: 1000, CachedTokens: 600, CacheWriteTokens: 300}, 0)
+	st.Record(LogEntry{Status: 200, TokensIn: 500, CacheWriteTokens: 100}, 0)
+
+	got := st.Stats()
+	if got.TotalCachedTokens != 600 || got.TotalCacheWriteTokens != 400 {
+		t.Fatalf("累计 读/写 = %d/%d，期望 600/400", got.TotalCachedTokens, got.TotalCacheWriteTokens)
+	}
+	if got.DayCachedTokens != 600 || got.DayCacheWriteTokens != 400 {
+		t.Fatalf("当日 读/写 = %d/%d，期望 600/400", got.DayCachedTokens, got.DayCacheWriteTokens)
+	}
+}
+
+// TestDayCacheWriteTokensResetOnNewDay 保证跨天后当日「写缓存」也归零。
+//
+// 漏掉这个字段不会报错，只会让第二天的界面沿用一个不存在的分子/分母组合
+// （当日写缓存越积越大、命中率越看越低），属于典型的静默统计漂移。
+func TestDayCacheWriteTokensResetOnNewDay(t *testing.T) {
+	st := newStore(t)
+	st.Record(LogEntry{Status: 200, TokensIn: 1000, CachedTokens: 600, CacheWriteTokens: 300}, 0)
+
+	st.mu.Lock()
+	st.st.Stats.Day = "2000-01-01"
+	st.mu.Unlock()
+
+	got := st.Stats() // 读路径跨天判定：只改返回值
+	if got.DayCacheWriteTokens != 0 || got.DayCachedTokens != 0 || got.DayTokensIn != 0 {
+		t.Fatalf("跨天未清零: %+v", got)
+	}
+	if got.TotalCacheWriteTokens != 300 {
+		t.Fatalf("累计不该被清零: %d", got.TotalCacheWriteTokens)
+	}
+}
