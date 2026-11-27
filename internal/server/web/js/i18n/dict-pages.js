@@ -87,6 +87,8 @@ export const PAGES_DICT = {
   "严格模型模式":"Strict model mode",
   "改绑分组":"Rebind group",
   "检测中…":"Checking…",
+  "会话":"Session",
+  "会话 {a} · 前缀 {p}；前缀每轮变化＝客户端在改 system / tools；前缀稳定而命中为 0＝换号或上游 TTL 过期":"session {a} · prefix {p}; a per-turn prefix change means the client rewrites system / tools; a stable prefix with 0 hits means account switch or upstream TTL expiry",
   "请求日志":"Request logs",
   "未知错误":"Unknown error",
   "未设置":"Not set",

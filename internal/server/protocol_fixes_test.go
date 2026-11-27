@@ -502,3 +502,70 @@ func TestShapeFallbackKeepsHistory(t *testing.T) {
 		t.Fatalf("历史正文被改写: %q", got)
 	}
 }
+
+// TestPrefixFingerprintTracksCacheablePrefix 锁住「前缀指纹」的判定边界。
+//
+// 它只回答一个问题：客户端这一轮发来的**可缓存前缀**（模型 + system + tools）
+// 与上一轮是不是同一段。用户轮次增长不算变化（对话本来就在变长），但 system
+// 或 tools 改一个字节就算——上游前缀缓存正是按字节前缀匹配的。
+func TestPrefixFingerprintTracksCacheablePrefix(t *testing.T) {
+	base := map[string]any{
+		"model":  "glm-5.3-flash",
+		"system": "你是代码助手",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "你是代码助手"},
+			map[string]any{"role": "user", "content": "第一轮"},
+		},
+		"tools": []any{map[string]any{"name": "read_file"}},
+	}
+	next := map[string]any{
+		"model":  "glm-5.3-flash",
+		"system": "你是代码助手",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "你是代码助手"},
+			map[string]any{"role": "user", "content": "第一轮"},
+			map[string]any{"role": "assistant", "content": "好的"},
+			map[string]any{"role": "user", "content": "第二轮"},
+		},
+		"tools": []any{map[string]any{"name": "read_file"}},
+	}
+	toolsChanged := map[string]any{
+		"model":    "glm-5.3-flash",
+		"system":   "你是代码助手",
+		"messages": base["messages"],
+		"tools":    []any{map[string]any{"name": "read_file"}, map[string]any{"name": "write_file"}},
+	}
+	systemChanged := map[string]any{
+		"model":  "glm-5.3-flash",
+		"system": "你是代码助手（现在是 10:31）",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "你是代码助手（现在是 10:31）"},
+			map[string]any{"role": "user", "content": "第一轮"},
+		},
+		"tools": []any{map[string]any{"name": "read_file"}},
+	}
+
+	p1 := prefixFingerprint(base)
+	if p1 == "" || p1[:3] != "pf-" {
+		t.Fatalf("前缀指纹不合法: %q", p1)
+	}
+	if p2 := prefixFingerprint(next); p1 != p2 {
+		t.Fatalf("只增长用户轮次不应改变前缀指纹: %q vs %q", p1, p2)
+	}
+	if got := prefixFingerprint(toolsChanged); got == p1 {
+		t.Fatal("tools 变了但前缀指纹没变——命中率归因会失效")
+	}
+	if got := prefixFingerprint(systemChanged); got == p1 {
+		t.Fatal("system 变了但前缀指纹没变——命中率归因会失效")
+	}
+
+	// 与 sessionAffinity 用同一段摘要：派生的会话 id 就是 aa1-<同一份 hex>。
+	if a := sessionAffinity(nil, base); a[4:] != p1[3:] {
+		t.Fatalf("affinity 与 prefix 应基于同一摘要: %q vs %q", a, p1)
+	}
+	// 裸请求（没有 system / tools）没有可缓存前缀，两个都不该有值。
+	bare := map[string]any{"model": "glm-5.3-flash", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+	if got := prefixFingerprint(bare); got != "" {
+		t.Fatalf("裸请求不应有前缀指纹，实际 %q", got)
+	}
+}

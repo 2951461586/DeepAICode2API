@@ -41,6 +41,9 @@ type reqLog struct {
 	// ua / ip 是调用方标识（见 withClient）。留着是为了能回答「谁在发」。
 	ua string
 	ip string
+	// affinity / prefix 是会话与前缀指纹（见 withAffinity / withHistory）。
+	affinity string
+	prefix   string
 
 	// state 是「是否已记录」的共享标记。reqLog 是值类型（各 handler 按值传递），
 	// 所以标记必须放在指针后面：done 可能被不同分支各调一次，只有第一次生效
@@ -67,6 +70,18 @@ func (s *Server) newReqLog(key string, acct *deepai.Account, model, endpoint str
 // 不含任何正文：只用于在日志里区分「客户端没给历史」与「网关把历史弄丢了」。
 func (l reqLog) withHistory(payload map[string]any) reqLog {
 	l.inMsgs, l.hasSys = historyStats(payload)
+	// 顺手记下前缀指纹：它与 withAffinity 记的会话指纹配对使用，才能区分
+	// 「客户端每轮重写前缀」与「换号 / TTL 过期」这两种 0 命中。
+	l.prefix = prefixFingerprint(payload)
+	return l
+}
+
+// withAffinity 记录会话粘性标识（调用方给的，或网关派生的 `aa1-…`）。
+//
+// 只截 64 字符：affinity 来自请求头 / 请求体，可能被塞进任意长度的串，
+// 而粘性判定本身有字符集与长度上限（affinityPattern）。
+func (l reqLog) withAffinity(a string) reqLog {
+	l.affinity = truncateRunes(strings.TrimSpace(a), 64)
 	return l
 }
 
@@ -164,6 +179,12 @@ func (l reqLog) doneStatus(status int, outLen int, usage gateway.Usage, err erro
 	}
 	if l.ip != "" {
 		e.IP = l.ip
+	}
+	if l.affinity != "" {
+		e.Affinity = l.affinity
+	}
+	if l.prefix != "" {
+		e.Prefix = l.prefix
 	}
 	if l.outBytes > 0 {
 		e.BodyBytes = l.outBytes

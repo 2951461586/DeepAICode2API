@@ -66,6 +66,27 @@ function countCell(a, b){
   return c;
 }
 
+// sessionCell 画「会话指纹 / 前缀指纹」（日志里只留短视图，完整值在 title）。
+//
+// 这两列是命中率排查的关键：前缀指纹每轮都变说明客户端在重写 system / tools；
+// 两者都稳而 cached_tokens 为 0，则是换号或上游 TTL 过期。没有这两列时，
+// 两种完全不同的原因在界面上长得一模一样。
+function sessionCell(l){
+  if (!l.affinity && !l.prefix) return cell("-", "mono muted");
+  var a = shortHash(l.affinity), p = shortHash(l.prefix);
+  var c = cell(a + (p === "-" ? "" : " / " + p), "mono muted");
+  c.title = t("会话 {a} · 前缀 {p}；前缀每轮变化＝客户端在改 system / tools；前缀稳定而命中为 0＝换号或上游 TTL 过期", {
+    a: l.affinity || "-", p: l.prefix || "-"
+  });
+  return c;
+}
+
+// shortHash 把指纹截成 13 字符（`aa1-` / `pf-` 前缀 + 8 位 hex 刚好留全）。
+function shortHash(v){
+  if (!v) return "-";
+  return v.length > 13 ? v.slice(0, 13) + "…" : v;
+}
+
 function logRow(l){
   var errCell = cell(l.err || "", "muted trunc");
   if (l.err) errCell.title = l.err;
@@ -73,7 +94,7 @@ function logRow(l){
     cell(fmtTime(l.time), "muted"), cell(l.endpoint || "-", "mono muted"), cell(l.model, "mono"),
     cell(t(l.stream ? "是" : "否"), "mono"), statusCell(l), cell((l.latency_ms || 0) + "ms", "mono"),
     historyCell(l), countCell(l.prompt_len, l.output_len), countCell(l.tokens_in, l.tokens_out),
-    cell(fmtCost(l.cost), "mono"),
+    cell(fmtCost(l.cost), "mono"), sessionCell(l),
     cell(l.account, "mono"), errCell
   ]);
 }

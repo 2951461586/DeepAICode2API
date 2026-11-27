@@ -52,6 +52,37 @@ func sessionAffinity(r *http.Request, payload map[string]any) string {
 	if a := affinityFor(r, payload); a != "" {
 		return a
 	}
+	sum, ok := prefixDigest(payload)
+	if !ok {
+		return ""
+	}
+	return "aa1-" + hex.EncodeToString(sum)
+}
+
+// prefixFingerprint 把「可缓存前缀」算成一个短标签（`pf-` + 8 字节 hex），
+// 只写进请求日志，不参与选号。
+//
+// 为什么要它：会话粘性只能证明「同一个 affinity 的请求落在同一个号上」，
+// 证明不了「客户端每轮真的发了同一段前缀」。前者对了而后者在变，命中率
+// 照样是 0——日志里同时有 affinity 与前缀指纹，才能把这两种情况分开：
+//   - 同一 affinity、前缀指纹每轮都变 → 客户端在重写 system / tools；
+//   - 同一 affinity、前缀指纹稳定但 cached_tokens=0 → 换号或上游 TTL 过期。
+//
+// 没有可缓存前缀（裸请求）时返回空串，与 sessionAffinity 的判定保持一致。
+func prefixFingerprint(payload map[string]any) string {
+	sum, ok := prefixDigest(payload)
+	if !ok {
+		return ""
+	}
+	return "pf-" + hex.EncodeToString(sum)
+}
+
+// prefixDigest 计算可缓存前缀的摘要：模型 + 系统提示 + tools。
+//
+// 这三样正是上游前缀缓存的分区键（实测换一个 prompt_cache_key 立刻 miss，
+// 见 poolsvc/sticky.go）；对话正文不参与——它每轮都在增长，参与哈希等于
+// 每轮换一个会话。
+func prefixDigest(payload map[string]any) ([]byte, bool) {
 	h := sha256.New()
 	h.Write([]byte(jsonx.StrOf(payload["model"])))
 	// 只有「有可缓存前缀」的请求才派生：没有 system / tools 的裸请求
@@ -76,9 +107,9 @@ func sessionAffinity(r *http.Request, payload map[string]any) string {
 		}
 	}
 	if !hasPrefix {
-		return ""
+		return nil, false
 	}
-	return "aa1-" + hex.EncodeToString(h.Sum(nil)[:8])
+	return h.Sum(nil)[:8], true
 }
 
 // hashSystemMessages 把 system / developer 角色的消息内容写进哈希，

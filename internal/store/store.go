@@ -145,9 +145,19 @@ type LogEntry struct {
 	// 「conversation exceeds the context window」，網關側無法從體積反查調用方，
 	// 只能請下游挨個自查。有了這兩個字段，下一次同類問題直接在日誌裡歸因。
 	// 注意 UA 可偽造、也常被 SDK 固定成一個值：它是線索，不是身份。
-	UA  string `json:"ua,omitempty"`
-	IP  string `json:"ip,omitempty"`
-	Err string `json:"err,omitempty"`
+	UA string `json:"ua,omitempty"`
+	IP string `json:"ip,omitempty"`
+	// Affinity / Prefix 是「会话粘性」与「可缓存前缀」的指纹，只用于归因。
+	//
+	// Affinity 是调用方给的 `X-Session-Affinity` / `prompt_cache_key`，没给时是
+	// 网关从「模型 + system + tools」派生的 `aa1-…`；Prefix 是对同一段前缀算的
+	// `pf-…` 短哈希。两条放在一起才回答得了「命中率为什么掉」：
+	//   - 同一 Affinity 下 Prefix 每轮都换 → 客户端在重写 system / tools；
+	//   - Affinity、Prefix 都稳但 `cached_tokens=0` → 换号或上游 TTL 过期。
+	// 两者都不含正文，也不参与选号（选号只看 affinity）。
+	Affinity string `json:"affinity,omitempty"`
+	Prefix   string `json:"prefix,omitempty"`
+	Err      string `json:"err,omitempty"`
 }
 
 // Stats 是累计统计。

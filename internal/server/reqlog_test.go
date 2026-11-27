@@ -232,3 +232,44 @@ func TestReqLogRecordsClientIdentity(t *testing.T) {
 		}
 	})
 }
+
+// TestReqLogRecordsSessionFingerprints 锁住「会话 / 前缀指纹」落盘。
+//
+// 两条指纹配对照料的是同一类问题：命中率 0 到底是客户端在改前缀，还是网关
+// 换了账号 / 上游 TTL 过期。任一字段丢失，这两种原因就重新混在一起。
+func TestReqLogRecordsSessionFingerprints(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	payload := map[string]any{
+		"model":    "glm-5.3-flash",
+		"system":   "你是代码助手",
+		"messages": []any{map[string]any{"role": "system", "content": "你是代码助手"}},
+		"tools":    []any{map[string]any{"name": "read_file"}},
+	}
+	rl := s.newReqLog("sk-test", nil, "glm-5.3-flash", "chat", false, time.Now(), 3).
+		withHistory(payload).
+		withAffinity("client-sess-1")
+	rl.done(0, gateway.Usage{}, nil)
+
+	logs := s.Store.Logs(1)
+	if len(logs) != 1 {
+		t.Fatalf("日志条数 = %d，期望 1", len(logs))
+	}
+	got := logs[0]
+	if got.Affinity != "client-sess-1" {
+		t.Fatalf("Affinity = %q", got.Affinity)
+	}
+	if want := prefixFingerprint(payload); got.Prefix != want {
+		t.Fatalf("Prefix = %q，期望 %q", got.Prefix, want)
+	}
+	if got.Prefix == "" || got.Prefix[:3] != "pf-" {
+		t.Fatalf("Prefix 形态不对: %q", got.Prefix)
+	}
+
+	// affinity 来自请求头/体，长度不可信：落盘前必须截断。
+	long := strings.Repeat("a", 300)
+	rl2 := s.newReqLog("sk-test", nil, "glm-5.3-flash", "chat", false, time.Now(), 1).withAffinity(long)
+	rl2.done(0, gateway.Usage{}, nil)
+	if n := len([]rune(s.Store.Logs(1)[0].Affinity)); n != 64 {
+		t.Fatalf("Affinity 字符数 = %d，期望 64", n)
+	}
+}

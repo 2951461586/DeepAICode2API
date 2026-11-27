@@ -40,6 +40,7 @@
 | v0.1.29（未发新版） | 91 | 线上入口迁移：`deepai2api.liziai.cloud`（410）→ `deepai-gw.liziai.cloud`；文档可执行示例换新域名，无代码变更 |
 | v0.1.29（未发新版） | 92 | 线上 400 归因（两个调用族均撞上游上下文窗口）+ 请求日志补 UA/IP 排障字段 + `liziwww235` 429 降权 |
 | v0.1.29（未发新版） | 93 | 缓存命中率口径拆成「读 / 写 / 全新」三段（`cache_creation_input_tokens`）+ 5xx 改为同号重试保前缀缓存 + 客户端前缀契约进 README |
+| v0.1.29（未发新版） | 94 | 请求日志补 `affinity` / `prefix` 指纹 + 控制台「会话」列 + `scripts/prefix-churn.mjs`：把「客户端改前缀」与「换号 / TTL 过期」分开量化 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6372,3 +6373,49 @@ system/tools 字节级稳定、同一会话固定 `prompt_cache_key`/`X-Session-
 - `body_cap_mode` 仍是 `warn`（见 §92.5）；
 - 日志里还没有 `affinity` / 前缀指纹：要量化「客户端是否真的固定了前缀」，需要
   再加两个短哈希字段（`affinity` + `prefix`），留到下一轮。
+
+---
+
+## 94. 2026-11-27 前缀抖动可量化：`affinity` / `prefix` 指纹进日志
+
+### 94.1 要回答的问题
+
+§93 把命中率拆成「读 / 写 / 全新」之后，还剩一个内部矛盾说不清：同样是 0 命中，
+
+- **A. 客户端每轮重写 system / tools**（前缀变了，缓存必然 miss）——客户端侧要修；
+- **B. 前缀稳定但换了账号 / 空闲超过上游 TTL**（缓存分区换了）——网关/网络侧。
+
+日志里只有体积、消息数与（§92 加的）UA/IP，两种原因长得一模一样。
+
+### 94.2 改动
+
+| 层 | 内容 |
+| --- | --- |
+| `server/request.go` | 抽出 `prefixDigest(payload)`（模型 + system/developer 消息 + tools，**不含对话正文**）；`sessionAffinity` 与新增的 `prefixFingerprint` 共用这一份摘要，保证「派生的 `aa1-…`」与「日志里的 `pf-…`」指向同一段前缀 |
+| `store.LogEntry` | 新增 `affinity`（会话粘性标识，落盘截 64 字符）与 `prefix`（`pf-` + 8 字节 hex） |
+| `server/reqlog.go` | `withHistory(payload)` 顺手算前缀指纹；新增 `withAffinity(a)`；chat / responses / messages 三处落盘时挂上 |
+| 控制台日志页 | 新增「会话」列：`aa1-3f2a… / pf-9c11…`，完整值与判读说明放 title |
+| `scripts/prefix-churn.mjs` | 拉 `/admin/api/logs` 按 affinity 分组，输出 churn（1 − 最常见前缀占比）、每个会话的前缀数、稳定组 vs 抖动组的命中率 |
+
+判读规则（脚本末尾也会打印）：
+
+```
+同一 affinity 下多个 prefix   → A：客户端在改 system / tools
+同一 affinity 下只有一个 prefix → B：换号或上游 TTL 过期
+```
+
+### 94.3 单测
+
+- `TestPrefixFingerprintTracksCacheablePrefix`：只增长用户轮次 → 指纹不变；tools / system 改一字节 → 指纹变；`affinity[4:] == prefix[3:]`（同一摘要）；裸请求两个都为空；
+- `TestReqLogRecordsSessionFingerprints`：两条指纹进日志、affinity 落盘截断到 64 字符。
+
+### 94.4 生效与用法
+
+```bash
+# 部署包含本改动的版本后：
+ADMIN_PW=... node scripts/prefix-churn.mjs
+GW=https://deepai-gw.liziai.cloud ADMIN_PW=... LIMIT=500 node scripts/prefix-churn.mjs
+```
+
+- 老日志没有这两个字段：脚本会直接提示「部署后再来」，不会给出误导性的 0%；
+- 字段都是短哈希/截断串，不含正文；`affinity` 本身就是要发给上游的 `X-Session-Affinity`，不是新泄露面。
