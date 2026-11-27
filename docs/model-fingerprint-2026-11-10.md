@@ -173,7 +173,7 @@ done
 方法同前，唯一区别是**不用 `-ns`**（线上非流式 p95 = 300 s，必撞超时）：
 
 ```bash
-npx -y lmfpd@latest -b https://deepai2api.liziai.cloud/v1 -k "$TMP_KEY" \
+npx -y lmfpd@latest -b https://deepai-gw.liziai.cloud/v1 -k "$TMP_KEY" \
   -m "$model" -a chatcompletion --count 3 -p 1 --timeout 180 --json
 ```
 

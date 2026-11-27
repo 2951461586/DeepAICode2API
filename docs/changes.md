@@ -37,6 +37,7 @@
 | v0.1.27（未发新版） | 88、89 | 0.3.52 同步：车道 7 → 8 + 自证头 `X-DeepAI-Code-Proof`（只登记不发）；随后线上体检 + 指纹第二轮（4 模型）+ 「指纹不符 = 逆向不全」证伪 |
 | v0.1.28 | 90 | 线上长尾整改：非流式预算 90 → 180 s（可调）、上游响应超时可调、issue #7 处置开关（warn/reject）、付费模型硬额度约束 |
 | v0.1.29 | 90 | 硬额度约束的补丁：负余额按 `refresh_at` 判定（快照陈旧不再放行） |
+| v0.1.29（未发新版） | 91 | 线上入口迁移：`deepai2api.liziai.cloud`（410）→ `deepai-gw.liziai.cloud`；文档可执行示例换新域名，无代码变更 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6195,3 +6196,29 @@ Start-Process -FilePath 'DeepAI-Code-0.3.52-x64.exe' -ArgumentList '/S' -Verb Ru
   6 h 内 195/296 次耗满 5 s 预算，每次都在推迟首字节；
 - 出口代理探测失败 363/6 h（住宅出口可用性问题），继续按出口冷却自动换；
 - 日志 `body_near_cap` 占比过高，下轮可考虑按模型分档而不是单一 196 KB。
+
+---
+
+## 91. 2026-11-27 线上入口迁移：`deepai2api.liziai.cloud` → `deepai-gw.liziai.cloud`（无代码变更）
+
+**根因**：旧域名已停用（nginx 直接回 `410 Gone`），所有指向 `/v1` 的客户端配置、指纹脚本、
+README 之外的文档示例都会 410 而不是 401/426 —— 这类失败不产生网关日志，排查时容易误判成「密钥错」。
+
+**迁移后的入口**（2026-11-27 实测）：
+
+| 路径 | 结果 |
+| --- | --- |
+| `/healthz` | 200，`version=v0.1.29`、`lane=8`、`lane_compiled=8`、`lane_drift=0`、`models=28`、`ready=17`、`status=ok` |
+| `/` | 200（内嵌控制台；`/index.html`、`/console/`、`/admin/` 均 404，控制台只在根路径） |
+| `/admin/api/version` | 需 `X-Admin-Password`；返回 `current=v0.1.29` / `latest=v0.1.29` / `update_available=false` |
+| `/v1/models`、`/v1/chat/completions` | 无 key → 401 `缺少 API 密钥`（正常） |
+| 旧域名 `/healthz` | **410 Gone**（nginx，非网关返回） |
+
+**改动**：
+
+1. `docs/model-fingerprint-2026-11-10.md` 的 `lmfpd` 复测命令换成新域名（可执行示例，必须能直接跑）；
+2. 本文历史条目（§89 / §90 等）里的旧域名**保持原样**——那是当时的运行记录，改了就成了伪史；
+3. 无代码变更：`DEEPAI_API_ORIGIN` / 客户端 base URL 都属于部署面，网关二进制与 `dist/` 产物不变。
+
+**验证**：新域名 TLS 证书是 `*.liziai.cloud` 通配符（有效期至 2027-01-25），Cloudflare 边缘正常
+返回 `X-Request-Id`；`/admin/api/keys` 只剩 `liziai-deepai`（303,212 次请求，最后使用 2026-11-27）。
