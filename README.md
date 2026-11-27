@@ -44,9 +44,9 @@
 
 ## 一、逆向结论
 
-DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.52**，车道 8；
-0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 → 0.3.43 → 0.3.44 → 0.3.45 → 0.3.47 → 0.3.48 → 0.3.50 → 0.3.52 的 wire protocol 逐项比对：
-**0.3.41 抬了车道（6 → 7），0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 / 0.3.47 / 0.3.48 协议面零变更（车道仍 7），0.3.50 的 agent 运行时迁移（pi → dsh）不碰请求头 / 指纹 / 签到 / 推理端点 / 请求体字段，0.3.52 把车道抬到 8（7 → 8）并新增自证头 `X-DeepAI-Code-Proof`——除此之外请求头集合、指纹、签到形态、推理端点、请求体仍逐字未变**；
+DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.53**，车道 8；
+0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 → 0.3.41 → 0.3.42 → 0.3.43 → 0.3.44 → 0.3.45 → 0.3.47 → 0.3.48 → 0.3.50 → 0.3.52 → 0.3.53 的 wire protocol 逐项比对：
+**0.3.41 抬了车道（6 → 7），0.3.42 / 0.3.43 / 0.3.44 / 0.3.45 / 0.3.47 / 0.3.48 协议面零变更（车道仍 7），0.3.50 的 agent 运行时迁移（pi → dsh）不碰请求头 / 指纹 / 签到 / 推理端点 / 请求体字段，0.3.52 把车道抬到 8（7 → 8）并新增自证头 `X-DeepAI-Code-Proof`——除此之外请求头集合、指纹、签到形态、推理端点、请求体仍逐字未变；**0.3.53 是纯客户端可靠性轮，协议面再次零变更（车道仍 8、6 个头、Proof 输入、心跳、PKCE、机器指纹、请求体全部逐字符相同）**；
 0.3.45 新增的 DeepAI Connect（`/connect/*`、`/sponsored/authorize`、PKCE 登录）与
 0.3.47 的登录指引 / 恢复提示 / 启动与存储错误文案、0.3.48 的启动配对令牌修复与目录权限恢复指引、
 0.3.50 的 DeepSeek / OpenCode 托管 harness 路由、0.3.52 的编排 v2 / ACP provider / harness 运行时探测改动，
@@ -449,7 +449,7 @@ print(client.chat.completions.create(
 | `PROXY_POOL` | 推理代理池（逗号或换行分隔完整 URL；入池时按账号轮询分配） |
 | `PROXY_POOL_FILE` | 代理池文件（每行一个） |
 | `DEEPAI2API_ENV_FILE` | 指定 `.env` 路径 |
-| `DEEPAI2API_LOGIN_PKCE` | 浏览器登录是否带 PKCE（默认 `true`，与桌面端 0.3.52 一致）；`0` 退回只发 `state`+`port` 的旧形态 |
+| `DEEPAI2API_LOGIN_PKCE` | 浏览器登录是否带 PKCE（默认 `true`，与桌面端 0.3.53 一致）；`0` 退回只发 `state`+`port` 的旧形态 |
 | `DEEPAI2API_HISTORY_TTL_HOURS` | `/v1/responses` 伺服端歷史暫存存活小時數（默认 `24`） |
 | `DEEPAI2API_HISTORY_MAX_ENTRIES` | `/v1/responses` 伺服端歷史暫存最多輪次（默认 `500`） |
 | `DEEPAI2API_EFFECTIVE_CONTEXT_WINDOW` | 重放有效上下文上限的全域覆寫（优先級最高；默认按模型查表，見上方上下文契約；`0`/負數關閉） |
@@ -847,7 +847,7 @@ go build -ldflags "-X main.version=v0.1.2" -o bin/deepaicode2api .
 - `X-DeepAI-Code-Theos` 发 `8`（0.3.52 起；0.3.41–0.3.50 是 7）。上游门槛可能放宽，也可能收窄成窗口：2026-11-19 实测 ≤7 全通过、
   8 及以上 426，此时旧车道「能用」并不代表车道是对的 —— 与上游当前车道的差异由
   `/theos` 的 `lane_version` 观测（`Server.UpstreamLane` / `LaneDrift`，控制台概览可见）；
-- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.52**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
+- 心跳 `X-DeepAI-Code-Beacon` 的 `v=` 必须是当前客户端版本（现为 **0.3.53**，见 `deepai.AppVersion`）；`pi=` 在 0.3.30 起是可选的，但发了不会错；
 - 车道探测结果由**当前构建**验证过（`Settings.LaneBuild == deepai.LaneVersion`）时无条件信任，即使它比编译值旧；否则按 `max(存储值, 编译值)` 取较新值。探测序列从编译期车道开始，**不能先试旧车道**；
 - 请求体形状拒绝除匹配两版文案外，还兜底 `400 + code=invalid_request_error`；补形状重试仍失败时回传第二个错误；
 - Anthropic `budget_tokens` 按量级映射到 `low/medium/high/xhigh/max`（4k/16k/32k/64k 分界），`output_config.effort` 原样透传；2026-11-15 实测上游接受六档；

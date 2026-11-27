@@ -207,7 +207,19 @@ const (
 	//      ACP provider、DeepSeek harness 的 Node 版本探测、OpenCode runtime 校验、
 	//      历史同步失败重试、DeepAIPeerCollaboration 的 capability_denied 语义。
 	// 模型目录仍 28 条，逐字段未变。见 `docs/changes.md` §88。
-	AppVersion = "0.3.52"
+	//
+	// 0.3.50 → 0.3.53 也是**纯客户端轮**（release notes 只有「可靠性改进」一栏）：
+	// `server.asar` 与 0.3.52 逐块比对，wire protocol 零变更——`DEEPAI_LANE_HEADERS`
+	// 仍是 `{"X-DeepAI-Code-Theos": "8", "X-DeepAI-Code-Instance": …}`，6 个
+	// `X-DeepAI-Code-*` 头字面量、`--attest`（Proof 输入）、`deepAIBeacon`（含 `focus=`）、
+	// `laneProof`、`ensureCheckedIn`、`parseLinuxMachineId`、`REASONING_REPLAY_MODELS`、
+	// `code_challenge` / `desktop_auth/exchange`（PKCE）全部**逐字符相同**；
+	// `openai-completions.js` 顶层副本 sha256 仍是 `f0dd1d00…`，请求体字段集合未变
+	// （嵌套 pi-ai 副本 +739 B 只改了工具调用参数的流式解析）。客户端内置模型 id 串
+	// 116 个，增删均为 0。唯一新增的是非推理端点 `/deepai_code/connect/browser`
+	// （DeepAI Connect 的浏览器流程）。所以这版只需把心跳 `v=` 与 Proof 输入里的 `v`
+	// 跟到 0.3.53，见 `docs/changes.md` §99。
+	AppVersion = "0.3.53"
 
 	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
 	// 使用的 User-Agent。

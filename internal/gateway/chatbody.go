@@ -25,7 +25,8 @@ const DefaultSystemPrompt = "You are a helpful AI assistant. Answer the user's r
 //
 // 实测桌面端（0.3.20，2026-11-18 用 0.3.41、2026-11-21 用 0.3.43、2026-11-22 用 0.3.44 / 0.3.45、2026-11-23 用 0.3.47、2026-11-24 用 0.3.48 / 0.3.50、
 // 2026-11-25 用 0.3.52 复核；pi 运行时同为 1.3.0，0.3.50 的 `openai-completions.js` 只多了 `extra_content` 回填，
-// 0.3.52 的顶层副本与该版 sha256 完全相同（`f0dd1d00…`），请求体字段未变）
+// 0.3.52 的顶层副本与该版 sha256 完全相同（`f0dd1d00…`），请求体字段未变；
+// 2026-11-27 用 0.3.53 复核：顶层副本仍是同一份 `f0dd1d00…`，请求体字段集合未变）
 // 每个 chat 请求发的是：
 //
 //	model / messages / stream / stream_options / store=false /

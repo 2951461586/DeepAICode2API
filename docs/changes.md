@@ -45,6 +45,7 @@
 | v0.1.29（未发新版） | 96 | 全量 28 模型指纹一轮（fpd，`-e low` + 流式）：6 个 flash 模型同指 `gemini-4-carbon`；付费组 185 Theos |
 | v0.1.29（未发新版） | 97 | 协议面复核：唯一缺头 `X-DeepAI-Code-Proof`（上游不校验）；固定挑战重测证明指纹漂移是采样噪声（同输入两次冠军不同，top1−top2 = 0.02） |
 | v0.1.30 | 98 | 补齐第 6 个协议头 `X-DeepAI-Code-Proof`：`DEEPAI_PROOF=off\|random\|helper` 三档（helper 走随包 `resource-monitor --attest`），`/healthz` 回显 `proof` |
+| v0.1.31 | 99 | 客户端 0.3.53 同步复核：纯可靠性轮，wire protocol **零变更**（车道仍 8、6 个头、Proof 输入、心跳、PKCE、机器指纹、请求体逐字符相同）；只跟 `AppVersion` |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6681,3 +6682,49 @@ stdin 喂 JSON，不存在注入面。静态扫描对该 exec 的告警按「已
 （缺文件 / 输出非 hex / 过短 / 相对路径 → 省略）、`TestProofOnCheckIn`（`/theos` 的
 签到证明含 `n/a/m/i/v` 且 a=sha256(apiKey)）。helper 相关用例在 Windows 跳过
 （脚本不可 exec），由 Linux CI 覆盖。
+
+---
+
+## 99. 2026-11-27 客户端 0.3.53 同步复核：纯可靠性轮，wire protocol 零变更（v0.1.31）
+
+官方 `latest.yml` 从 0.3.52 升到 **0.3.53**（`DeepAI-Code-0.3.53-x64.exe`，587 MB），
+release notes 只有「可靠性改进」四类：启动恢复、长会话滚动与缓存内存、Linux 崩溃 / 预览切换、
+可分享的错误引用、WSL 支持。本机已静默升级（`/S`，213 s，`DisplayVersion 0.3.53`）。
+
+复核方法：0.3.52 的 `app.asar` / `server.asar` 先备份，升完级后对两个 `server.asar`
+做**逐块比对**（自写 asar 头解析，按 offset/size 取文件），并对比关键代码区域的字符串。
+
+### 99.1 逐项结论：全部零变更
+
+| 复核项 | 0.3.52 | 0.3.53 | 判定 |
+| --- | --- | --- | --- |
+| `DEEPAI_LANE_HEADERS` | `{"X-DeepAI-Code-Theos": "8", "X-DeepAI-Code-Instance": …}` | 同 | **车道仍 8** |
+| `X-DeepAI-Code-*` 头字面量 | 6 个（Theos / Instance / Machine / Check-In / Beacon / Proof） | 同 6 个 | 未变 |
+| `--attest`（Proof 输入构造） | `{n,a,m,i,v}` / `{n,b}` | 逐字符相同 | 未变 |
+| `deepAIBeacon`（含 `focus=`） | — | 逐字符相同 | 未变 |
+| `laneProof` / `ensureCheckedIn` | — | 逐字符相同 | 未变 |
+| `parseLinuxMachineId` | systemd machine-id | 逐字符相同 | 未变（WSL 支持改的是探测路径，不是算法） |
+| `REASONING_REPLAY_MODELS` | 10 个 | 逐字符相同 | 未变 |
+| PKCE（`code_challenge` / `desktop_auth/exchange`） | — | 逐字符相同 | 未变 |
+| `openai-completions.js` 顶层副本 | sha256 `f0dd1d00…`（65294 B） | 同 | 请求体构造未变 |
+| 嵌套 pi-ai 副本 | 64433 B | 65172 B（20 个变更块） | 只改了**工具调用参数的流式解析**（`parseToolCallArguments` / `partialArgs` / `customInput`），不碰请求体字段 |
+| 客户端内置模型 id 串 | 116 个 | 116 个 | 增删均为 0 |
+| `/deepai_code/*` 端点 | 4 个 | 5 个 | 新增 `/deepai_code/connect/browser`（DeepAI Connect，**非推理**） |
+
+### 99.2 改动
+
+- `internal/model/types.go`：`AppVersion` 0.3.52 → **0.3.53**（心跳 `v=` 与 Proof 输入里的 `v`
+  都取它），注释补本轮的比对结论；
+- `internal/machine`、`internal/gateway/chatbody.go`：版本清单与复核注释补 0.3.53；
+- `README` §一 / §五 / §十：应用版本、版本链、PKCE 与心跳说明跟版。
+
+**不需要**改：`LaneVersion`（仍 8）、头常量、Proof 输入形态、签到节奏、机器指纹算法、
+请求体白名单 —— 逐项实测未变。
+
+### 99.3 客户端升级的运维细节
+
+- 静默安装用 `DeepAI-Code-0.3.53-x64.exe /S`（NSIS），耗时 213 s，装到 per-user
+  `%LOCALAPPDATA%\Programs\deepai-code-desktop`；
+- 安装前先关掉正在运行的客户端（本次未在运行，无需处理）；
+- 升级后 `app.asar` 46.7 MB / `server.asar` 270.5 MB；旧包已备份到临时目录用于比对，
+  比对完即可删（**不要**留在业务目录）。
