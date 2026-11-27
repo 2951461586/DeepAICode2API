@@ -43,6 +43,7 @@
 | v0.1.29（未发新版） | 94 | 请求日志补 `affinity` / `prefix` 指纹 + 控制台「会话」列 + `scripts/prefix-churn.mjs`：把「客户端改前缀」与「换号 / TTL 过期」分开量化 |
 | v0.1.29（未发新版） | 95 | 上线 `v0.1.29-1693b20`（二进制 bind mount 覆盖镜像入口）；记录上线前后的 429 风暴与下游断流，时间线证明与本次部署无关 |
 | v0.1.29（未发新版） | 96 | 全量 28 模型指纹一轮（fpd，`-e low` + 流式）：6 个 flash 模型同指 `gemini-4-carbon`；付费组 185 Theos |
+| v0.1.29（未发新版） | 97 | 协议面复核：唯一缺头 `X-DeepAI-Code-Proof`（上游不校验）；固定挑战重测证明指纹漂移是采样噪声（同输入两次冠军不同，top1−top2 = 0.02） |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6557,3 +6558,48 @@ ls -la /opt/deepaicode2api/data
 
 采集用临时 key，结束后已删（`/admin/api/keys` 只剩 `liziai-deepai`）；采集期间
 线上无 5xx，`fallback_total=0`。
+
+---
+
+## 97. 2026-11-27 协议面复核：指纹漂移不是缺头造成的
+
+被质疑的因果链是「网关缺请求头 / 缺协议模块 → 上游换路由 → 模型指纹漂移」。逐项核对后
+**不成立**，证据分两层。
+
+### 97.1 协议面逐项对照（桌面端 0.3.52 vs 网关）
+
+| 元素 | 结果 |
+| --- | --- |
+| `Api-Key` / `Content-Type` / `X-DeepAI-Code-Theos` / `-Machine` / `-Instance` / `X-Session-Affinity` | 全在（`commonHeaders` + `OpenModel`） |
+| `user-agent: node` / `accept: */*` / `accept-language: *` / `sec-fetch-mode: cors` | 全在（`desktopInferenceHeaders`） |
+| `/theos` 的 `X-DeepAI-Code-Check-In` + `X-DeepAI-Code-Beacon: v=0.3.52;up=…;pi=…` | 全在；`focus` 省略（桌面端也只在焦点已知时发） |
+| **`X-DeepAI-Code-Proof`（0.3.52 车道 8 新增）** | **缺**：值是随包原生 helper 用构建密钥算的，网关无法实现；2026-11-25 实测上游不校验 |
+| 请求体 | 默认透传调用方字段（`preset_desktop_shape=false`），仅在 400「不是桌面端形状」后收敛并记忆；`gateway_fallback_total=0` 说明从未触发 |
+| 协议模块 | chat 合成 / responses 直通 / messages 合成 / `previous_response_id` 重放 / `prompt_cache_key` 透传均在位 |
+
+即：**唯一的真实缺口是 Proof 头**，而它不是当前漂移的原因（缺它照样 200，且真模型响应
+带 reasoning / 计费字段）。
+
+### 97.2 漂移的主因是采样噪声（固定挑战实测）
+
+同一模型 `glm-5.3-flash`、**同一组挑战**、同一协议、连续两次：
+
+| 轮次 | top-1 | top1−top2 |
+| --- | --- | ---: |
+| run 1 | `gpt-6-astra`（1.62） | **0.02** |
+| run 2 | `grok-4.6`（1.76） | 0.11 |
+
+输入完全相同，冠军不同。再看全量 28 个模型的 top1−top2：**19 个 < 0.25，最大 0.88**。
+换协议（cc ↔ responses）的差异也落在这个尺度内（`glm`/`qwen` 两路径同候选，
+`deepseek-v4.1-flash` 从 `gemini-4-carbon` 变 `gemini-3.5-flash-lite`）。
+
+→ §96 里「6 个 flash 模型同指 `gemini-4-carbon`」**降级为不可判定**：单轮 3 样本
+撑不起「上游同源」的结论。`docs/model-fingerprint-2026-11-27.md` 已补复核章节与
+下轮做法（固定挑战 + `-n 5`，`top1−top2 < 0.3` 视为无法判定）。
+
+### 97.3 待办
+
+- Proof 头保持不实现，等上游开始强制（届时会出现 400/403 而非静默换路由）；
+- 若要正面验证「替身分支」，需在**真实桌面客户端**上抓同挑战请求做对照，或在固定挑战下
+  对 `preset_desktop_shape` 做 A/B（它会补 system 消息，必须固定挑战才可比）；
+- 签名/头清单已逐项落在本节，下次上游改协议只需 diff 这张表。
