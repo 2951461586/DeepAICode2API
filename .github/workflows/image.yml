@@ -1,0 +1,93 @@
+# 发布镜像到 GHCR：tag 推送即构建 linux/amd64 + linux/arm64 并推
+#   ghcr.io/<owner>/<repo>:<tag> 与 :latest
+#
+# 为什么要这条流水线：线上（Altare workstation）原先靠 `altr ws cp` 传二进制再
+# bind mount 进容器，而 guest agent 一天会失联好几次——4 MB 的包要在几十秒的
+# 可用窗口里传完。改成「服务器 docker pull 镜像」后，传输走服务器自己的网络，
+# agent 只需要跑一行极短命令。
+#
+# 用法：
+#   1) 打 tag 推送（自动构建）：git push origin v0.1.32
+#   2) 或手动跑：gh workflow run image.yml -f ref=v0.1.32
+name: image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 要构建的 tag（例如 v0.1.32）
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+
+      # 多架构：线上是 amd64，笔记本 / 未来的 arm 机器也能直接用同一份 tag。
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 版本号从 tag 来；workflow_dispatch 时用输入值。两者都保证是 vX.Y.Z，
+      # 因为控制台的「检查更新」靠 semver 比对，解析不出来就永远不提示升级。
+      - name: resolve version
+        id: ver
+        env:
+          # 用 env 传值而不是在 run: 里内联插值：workflow_dispatch 的输入是
+          # 不可信字符串，拼进 shell 就是注入面。
+          CANDIDATE: ${{ inputs.ref || github.ref_name }}
+        run: |
+          v="$CANDIDATE"
+          case "$v" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "版本必须是 vX.Y.Z，实际：$v" >&2; exit 1 ;;
+          esac
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          push: true
+
+      - name: summary
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          {
+            echo "### 镜像已推送"
+            echo
+            echo '```'
+            echo "$IMAGE:$VERSION"
+            echo "$IMAGE:latest"
+            echo '```'
+            echo "线上换镜像：\`DEEPAI2API_IMAGE=$IMAGE:$VERSION sh /opt/deepaicode2api/start.sh\`"
+          } >> "$GITHUB_STEP_SUMMARY"
