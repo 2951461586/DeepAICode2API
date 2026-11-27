@@ -6491,9 +6491,27 @@ VM 的全局出口，等于把十几个账号的流量压到同一个 IP 上。�
 排查时要回头看）；workstation 上的 `start.sh.bak-20261127`（419 B，是目前唯一的秒级回滚路径，
 等新版本观察过一段时间再删）。
 
-workstation `dev` 侧的清理（旧镜像 / 旧二进制 / 数据备份）**本轮未执行**：Altare 控制面在限流
-（`heavy traffic` + `workstation host didn't answer`），`altr ws exec` 连不上；网关本身不受影响
-（`/healthz` 仍 `v0.1.29-1693b20`、17 号就绪）。恢复后按下述命令清理：
+workstation `dev` 侧的清理**已执行**（2026-11-27 03:5x UTC，先 `altr ws restart dev` 把挂掉的
+guest agent 恢复：VM 重启 ~30 s，容器 `--restart unless-stopped` 自动拉起，bind mount 仍在，
+`/healthz` 复验 `v0.1.29-1693b20`）：
+
+| 对象 | 结果 |
+| --- | --- |
+| 构建缓存 | `docker builder prune -a -f` → **621.2 MB** |
+| 构建基础镜像 | `golang:1.24-alpine`（395 MB）+ `alpine:3.20`（12.2 MB）→ 删；运行中的 `v0.1.29-altare`（27.4 MB）与它的层不受影响 |
+| 旧网关镜像 | **本来就没有**（`docker images` 只有运行中的一个），无需处理 |
+| 旧二进制 | 只有 `deepaicode2api-1693b20` 一个，无残留 |
+| 陈旧数据 | `data-logs.jsonl.1`（8.4 MB 轮转日志）+ `.deepaicode2api-data-sticky.json.tmp-*`（重启时的半成品）→ 删；数据目录 10.5 MB → **2.3 MB** |
+
+合计回收约 **1.03 GB**。保留：运行中的镜像、当前二进制、`start.sh.bak-20261127`（回滚）、
+`proxy_pool.txt`、四个数据文件。
+
+**未完成**：`altr ws set dev --auto-stop off` 一直返回 `The workstation host didn't answer`
+（`ws exec` 间歇可用、`ws set` 稳定失败，`--json` 也只给出同一句），所以 `Auto-stop: 2h idle`
+仍是平台默认值。影响：连续 2 小时无请求会被自动关机。当前流量足够不会触发，等 agent 稳定后
+重试或从 console 的浏览器桌面改。
+
+命令备查（恢复后可直接跑）：
 
 ```bash
 # 只保留在用的镜像
