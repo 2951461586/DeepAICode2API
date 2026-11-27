@@ -46,6 +46,7 @@
 | v0.1.29（未发新版） | 97 | 协议面复核：唯一缺头 `X-DeepAI-Code-Proof`（上游不校验）；固定挑战重测证明指纹漂移是采样噪声（同输入两次冠军不同，top1−top2 = 0.02） |
 | v0.1.30 | 98 | 补齐第 6 个协议头 `X-DeepAI-Code-Proof`：`DEEPAI_PROOF=off\|random\|helper` 三档（helper 走随包 `resource-monitor --attest`），`/healthz` 回显 `proof` |
 | v0.1.31 | 99 | 客户端 0.3.53 同步复核：纯可靠性轮，wire protocol **零变更**（车道仍 8、6 个头、Proof 输入、心跳、PKCE、机器指纹、请求体逐字符相同）；只跟 `AppVersion` |
+| v0.1.31（未发新版） | 100 | 发布方式改为「GHCR 镜像 + 换镜像」：Actions 按 tag 构建 amd64/arm64 并推包，服务器只 `docker pull`；顺带记下数据目录属主导致的一次 5 分钟掉线 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6740,3 +6741,77 @@ release notes 只有「可靠性改进」四类：启动恢复、长会话滚动
 | 冒烟 | 临时 key 打 `/v1/chat/completions`：200 / TTFB 3.35 s；随后 `/admin/api/overview` 的
 签到指标 `attempts=10, blocked=0, timeouts=0` —— 说明上游**接受**心跳 `v=0.3.53`（beacon 只在 `/theos` 上发） |
 | 收尾 | 临时 key 已删，旧 key 复验 401 |
+
+---
+
+## 100. 2026-11-27 发布方式改为 GHCR 镜像（不再用 guest agent 传二进制）
+
+### 100.1 为什么换
+
+`altr ws cp` 走 guest agent 的 base64 通道，3.5 MB 的 gzip 要 3–4 分钟，而 agent 一天会失联
+三五次（§95.4、§98.5 都记过）：每次上线都得先 `altr ws restart dev` 抢几十秒窗口，再把包塞进去。
+改成镜像后，**传输走服务器自己的网络**（`docker pull`），agent 只需要执行一行极短命令，
+失联窗口不再是瓶颈。
+
+### 100.2 流水线（`.github/workflows/image.yml`）
+
+| 项 | 内容 |
+| --- | --- |
+| 触发 | push tag `v*`，或 `gh workflow run image.yml -f ref=vX.Y.Z` |
+| 构建 | `docker/build-push-action`，`linux/amd64` + `linux/arm64`，`--build-arg VERSION=<tag>` |
+| 推送 | `ghcr.io/<owner>/deepaicode2api-gw:<tag>` 与 `:latest`（GHA 缓存复用） |
+| 权限 | `permissions: packages: write`，用 `GITHUB_TOKEN` 登录 GHCR |
+
+两个踩过的坑：
+
+1. **GHCR 要求包名全小写**，而 `github.repository` 是 `2951461586/DeepAICode2API` —— 先用
+   `tr` 转小写，否则 `repository name must be lowercase`。
+2. **仓库名下已有手工推的 `deepaicode2api` 包**（`v0.1.29-altare`），它没跟本仓库建立关联，
+   Actions 的 `GITHUB_TOKEN` 拿到的是 `denied: permission_denied: read_package`。改用新包名
+   `deepaicode2api-gw`（由 Actions 首次创建，owner 就是本仓库）后一次通过。
+
+### 100.3 线上脚本（`scripts/deploy-workstation.sh`）
+
+```sh
+DEEPAI2API_IMAGE=ghcr.io/2951461586/deepaicode2api-gw:v0.1.31 sh /opt/deepaicode2api/start.sh
+```
+
+脚本做四件事：`docker pull` → 打印 `RepoDigests`（tag 会漂，digest 不会）→ 换容器 →
+`curl /healthz`。回滚就是把 `DEEPAI2API_IMAGE` 指回上一版 tag（镜像都留在 GHCR）。
+旧的 bind-mount 脚本保留为 `/opt/deepaicode2api/start.sh.bak-bindmount-20261127`。
+
+### 100.4 ⚠️ 切换时踩到的坑：数据目录属主（掉线约 5 分钟）
+
+镜像按 `Dockerfile` 的 `USER 10001:10001` 运行，而 `/opt/deepaicode2api/data` 里的状态文件
+是 **root:root 0600**（之前用 bind mount 跑的那版容器实际是 root）。结果新容器进崩溃循环：
+
+```
+打开状态文件失败: open /data/deepaicode2api-data.json: permission denied
+```
+
+`docker ps` 显示 `Restarting (1)`，`/healthz` 502。修法一行：
+
+```sh
+chown -R 10001:10001 /opt/deepaicode2api/data
+```
+
+修完立刻恢复（`v0.1.31 / proof=random / ready 17`）。教训写在这里：**换发布形态时，先对齐
+运行身份与数据属主**，不要假设「镜像和以前跑的是同一个用户」——旧绑定式部署实际以 root 运行，
+镜像却是非 root。
+
+### 100.5 切换后校验
+
+| 项 | 结果 |
+| --- | --- |
+| 容器 | `ghcr.io/2951461586/deepaicode2api-gw:v0.1.31`，`Up`，`restart=unless-stopped`，`user=10001:10001` |
+| 挂载 | **只有** `/opt/deepaicode2api/data -> /data`（二进制 bind mount 已移除） |
+| `/healthz` | `v0.1.31`、`proof=random`、`lane 8`、`ready 17/17`、`models 28` |
+| 冒烟 | 临时 key → `/v1/chat/completions` **200 / TTFB 2.61 s**，key 用后即删 |
+
+### 100.6 往后的发布流程
+
+1. `git tag vX.Y.Z && git push origin vX.Y.Z`（Actions 自动出镜像）；
+2. 服务器上 `DEEPAI2API_IMAGE=ghcr.io/2951461586/deepaicode2api-gw:vX.Y.Z sh /opt/deepaicode2api/start.sh`；
+3. 校验 `/healthz` 的 `version` 与 `proof`。
+
+agent 现在只承担一条几 KB 的命令，失联时重试几次即可，不再需要「抢窗口传包」。
