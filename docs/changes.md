@@ -6656,6 +6656,23 @@ stdin 喂 JSON，不存在注入面。静态扫描对该 exec 的告警按「已
 
 回滚：把 `/opt/deepaicode2api/app.env` 里的 `DEEPAI_PROOF` 改回 `off` 并重启容器。
 
+**实际上线（2026-11-27 14:5x UTC+8）**：`v0.1.30` 以二进制 bind mount 方式上线
+（`/opt/deepaicode2api/bin/deepaicode2api-v0.1.30`，sha256 `1043a435…a1d7` 与本地产物一致），
+`app.env` 追加 `DEEPAI_PROOF=random`。校验：
+
+| 项 | 结果 |
+| --- | --- |
+| `/healthz` | `version=v0.1.30`、**`proof=random`**、`lane 8` = 编译 8、`drift 0`、`ready 17/17`、`models 28` |
+| `/admin/api/version` | `current=v0.1.30`、`latest=v0.1.30`、`update_available=false`（GitHub Release 已可见） |
+| 冒烟 | 临时 key 打 `/v1/chat/completions`：200 / TTFB 3.7 s / `finish=stop` / 正文 `pong`；key 用后即删（旧 key 复验 401） |
+| 日志字段 | `ua=deploy-smoke-v0.1.30`、`ip=104.194.8.36`、`affinity=aa1-…`、`prefix=pf-…`（同源摘要） |
+
+> 部署过程本身有一个反复出现的运维噪声：workstation `dev` 的 **guest agent 一天内三次失联**
+> （`The workstation host didn't answer`），而控制面（`ws list/get/restart`）一直正常。
+> 每次都要 `altr ws restart dev` 抢那几十秒的可用窗口：二进制复制必须**在窗口内完成**（3.5 MB
+> gzip 走 `ws cp` 约 4 分钟），最后用 `nohup sh start.sh &` 分离派发重启，避免 exec 被中途掐断。
+> 这件事与网关无关（业务链路全程可用），但会成为后续每次上线的固定成本。
+
 ### 98.6 单测
 
 `TestProofConfigFromEnvModes`（未知/缺路径归一）、`TestProofOffOmitsHeader`、
