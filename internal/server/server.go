@@ -266,6 +266,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"lane_compiled": deepai.LaneVersion,
 		"lane_upstream": s.UpstreamLane(),
 		"lane_drift":    s.LaneDrift(),
+		// Proof 自证头的生成方式（off/random/helper）：部署后一眼能看出这次
+		// 线上到底按哪一档跑，不用去翻进程环境。
+		"proof":         deepai.ProofConfigFromEnv().Mode,
 		"models":        len(models),
 		"default_model": s.Store.DefaultModel(),
 		"strict_model":  settings.StrictModel,

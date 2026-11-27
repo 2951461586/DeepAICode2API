@@ -34,6 +34,7 @@ const (
 	HeaderInstance          = model.HeaderInstance
 	HeaderCheckIn           = model.HeaderCheckIn
 	HeaderBeacon            = model.HeaderBeacon
+	HeaderProof             = model.HeaderProof
 	CodeSessionBusy         = model.CodeSessionBusy
 	CodeLaneUnsupported     = model.CodeLaneUnsupported
 	CodeSocialLogin         = model.CodeSocialLogin

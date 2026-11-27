@@ -593,7 +593,7 @@ issue #5 的「每轮发完整历史」契约仍成立。
 | --- | --- | --- |
 | `Api-Key` | 账号 API Key | **鉴权走这个头，不是 `Authorization`** |
 | `X-DeepAI-Code-Theos` | `8` | 计费车道版本（0.3.41–0.3.50 为 `7`，**0.3.52 抬到 `8`**）；门槛是服务端行为，2026-11-19 起 ≤7 全通过、8+ 426，**2026-11-25 变成窗口：7 / 8 通过、6 与 9 被拒**，见下方「车道版本门槛」 |
-| `X-DeepAI-Code-Proof` | 24–64 位 hex（`resource-monitor --attest` 产出） | **0.3.52 新增**：`/theos` 送签到证明（`{n:nonce,a:sha256(apiKey),m:machine,i:instance,v:version}`），模型调用送请求标签（`{n:上次签到 nonce,b:sha256(body)}`）；helper 不可用时省略。**网关不实现**，2026-11-25 实测上游不校验 |
+| `X-DeepAI-Code-Proof` | 24–64 位 hex（`resource-monitor --attest` 产出） | **0.3.52 新增**：`/theos` 送签到证明（`{n:nonce,a:sha256(apiKey),m:machine,i:instance,v:version}`），模型调用送请求标签（`{n:上次签到 nonce,b:sha256(body)}`）；helper 不可用时省略。网关 2026-11-27 起按 `DEEPAI_PROOF=off|random|helper` 三档可选实现（默认 off）；2026-11-25 实测上游不校验 |
 | `X-DeepAI-Code-Instance` | 16 字节随机数的 hex（每进程一次） | 进程实例标识，随所有 JSON 请求发出 |
 | `X-DeepAI-Code-Machine` | `sha256(小写原始机器 UUID)` | 按天发放免费额度；计量模型缺失时 `machine_required` |
 | `X-Session-Affinity` | 任意会话 id | 会话粘性（body 的 `prompt_cache_key` 同效） |

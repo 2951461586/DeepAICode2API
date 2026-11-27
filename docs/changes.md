@@ -44,6 +44,7 @@
 | v0.1.29（未发新版） | 95 | 上线 `v0.1.29-1693b20`（二进制 bind mount 覆盖镜像入口）；记录上线前后的 429 风暴与下游断流，时间线证明与本次部署无关 |
 | v0.1.29（未发新版） | 96 | 全量 28 模型指纹一轮（fpd，`-e low` + 流式）：6 个 flash 模型同指 `gemini-4-carbon`；付费组 185 Theos |
 | v0.1.29（未发新版） | 97 | 协议面复核：唯一缺头 `X-DeepAI-Code-Proof`（上游不校验）；固定挑战重测证明指纹漂移是采样噪声（同输入两次冠军不同，top1−top2 = 0.02） |
+| v0.1.30 | 98 | 补齐第 6 个协议头 `X-DeepAI-Code-Proof`：`DEEPAI_PROOF=off\|random\|helper` 三档（helper 走随包 `resource-monitor --attest`），`/healthz` 回显 `proof` |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6603,3 +6604,63 @@ ls -la /opt/deepaicode2api/data
 - 若要正面验证「替身分支」，需在**真实桌面客户端**上抓同挑战请求做对照，或在固定挑战下
   对 `preset_desktop_shape` 做 A/B（它会补 system 消息，必须固定挑战才可比）；
 - 签名/头清单已逐项落在本节，下次上游改协议只需 diff 这张表。
+
+---
+
+## 98. 2026-11-27 补齐 `X-DeepAI-Code-Proof`（v0.1.30）
+
+§97 的结论是「协议面唯一缺口是 Proof 头」。这一版把它补上，但**做成显式三档**，
+而不是偷偷伪造：网关没有客户端那种「构建密钥」，能不能产出自证取决于运维有没有把
+helper 放到这台机器上。
+
+### 98.1 三档模式（`DEEPAI_PROOF`）
+
+| 模式 | 行为 | 用途 |
+| --- | --- | --- |
+| `off`（默认） | 不发该头 | 与 v0.1.29 及更早一致；上游当前不校验，缺头照样 200 |
+| `random` | 发 32 位随机 hex（合法区间 24–64） | **只对齐协议面**，不声称任何自证；用于观察「带这个头」是否改变上游路由 |
+| `helper` | 调 `DEEPAI_PROOF_HELPER` 指向的 `resource-monitor --attest`，产出**真实**自证 | 运维已把桌面端 helper 放到机器上时 |
+
+helper 模式必须同时给 `DEEPAI_PROOF_HELPER`（绝对路径），否则归一成 `off` 并告警；
+未知模式同样归一成 `off` —— 宁可少发一个头，也不要发出一个看不懂的值。
+
+### 98.2 输入形态（与 `laneProof.ts` 对齐）
+
+| 请求 | 输入 JSON | 说明 |
+| --- | --- | --- |
+| `/theos` | `{"n": 即将回传的 nonce \| "", "a": sha256(apiKey), "m": 机器指纹, "i": 实例号, "v": 0.3.52}` | 签到证明 |
+| 模型调用 | `{"n": 上次**成功回传**的 nonce, "b": sha256(请求体)}` | 请求标签；用 ackedNonce，不是「刚拿到的 nonce」 |
+
+helper 的调用方式实测确认：`resource-monitor --attest`，**JSON 走 stdin**，stdout 回
+24–64 位 hex（本地 0.3.52 的 helper 实测输出 24 位）。
+
+### 98.3 失败语义（与桌面端一致）
+
+helper 缺失 / 5s 超时 / 输出不是 hex / 长度越界 → **省略该头**，推理请求照常发出。
+路径只接受绝对路径并 `filepath.Clean`；exec 的参数固定（只多一个 `--attest`），
+stdin 喂 JSON，不存在注入面。静态扫描对该 exec 的告警按「已审阅」处置（配置来源是运维，
+不是请求数据）。
+
+### 98.4 可观测
+
+- `/healthz` 新增 `proof` 字段（`off|random|helper`），部署后一眼看出线上跑哪一档；
+- 启动日志追加 `（proof=…）`。
+
+### 98.5 本轮线上取值与回滚
+
+线上先设 `DEEPAI_PROOF=random`（协议面对齐），因为：
+1. 上游 2026-11-25 实测不校验，发随机 hex 与不发都 200；
+2. 带这个头才有机会观察到「上游是否拿它做路由」，是 §97 里那个未决问题的下一步实验；
+3. 真正的 `helper` 需要把客户端二进制搬到服务器上，属于另一件事（且要在确认上游开始校验后
+   才有必要）。
+
+回滚：把 `/opt/deepaicode2api/app.env` 里的 `DEEPAI_PROOF` 改回 `off` 并重启容器。
+
+### 98.6 单测
+
+`TestProofConfigFromEnvModes`（未知/缺路径归一）、`TestProofOffOmitsHeader`、
+`TestProofRandomSendsHex`（合法 hex + 两次不同）、`TestProofHelperUsesOutput`
+（采用 helper 输出、输入是 `{n,b}` 且 b=sha256(body)）、`TestProofHelperFailuresOmitHeader`
+（缺文件 / 输出非 hex / 过短 / 相对路径 → 省略）、`TestProofOnCheckIn`（`/theos` 的
+签到证明含 `n/a/m/i/v` 且 a=sha256(apiKey)）。helper 相关用例在 Windows 跳过
+（脚本不可 exec），由 Linux CI 覆盖。

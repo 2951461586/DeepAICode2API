@@ -71,7 +71,7 @@ DeepAI Code 是 **Electron + 本地 t3code server** 架构（应用版本 **0.3.
 | 联网搜索 | `POST https://api.deepai.org/deepai_code/web_search` |
 | **鉴权** | 请求头 `Api-Key: <apiKey>`（不是 `Authorization`） |
 | 协议头 | `X-DeepAI-Code-Theos: 8`（计费车道版本；0.3.41–0.3.50 为 7，**0.3.52 抬到 8**）。**车道门槛是服务端行为**：2026-11-18（0.3.41 发布当天）只有 7 通过；2026-11-19 放宽为 ≤7 全通过、8+ 426；**2026-11-25 复核变成窗口形态：7 / 8 通过，6 与 9 被拒**（`docs/recon.md` §3） |
-| 自证头 | `X-DeepAI-Code-Proof`（0.3.52 新增，车道 8）：值由随包原生 helper `resource-monitor --attest` 用本构建密钥算出，`/theos` 与模型调用分别送「签到证明」与「请求标签」。**网关不实现**：2026-11-25 实测上游不校验 —— 缺失或随手编的 hex 全部 200 |
+| 自证头 | `X-DeepAI-Code-Proof`（0.3.52 新增，车道 8）：值由随包原生 helper `resource-monitor --attest` 用本构建密钥算出，`/theos` 送「签到证明」`{n,a,m,i,v}`、模型调用送「请求标签」`{n,b}`。网关按 `DEEPAI_PROOF` 三档实现：`off`（默认，不发）、`random`（32 位随机 hex，**只对齐协议面**）、`helper`（调用 `DEEPAI_PROOF_HELPER` 指向的真 helper，失败则省略该头）。2026-11-25 实测上游不校验（缺失 / 24 hex / 64 hex 全 200） |
 | 进程实例 | `X-DeepAI-Code-Instance: <32 位 hex>`（每个出口代理随机一次，随该代理的所有 JSON 请求发出；桌面端是每进程一次） |
 | 签到 | `/theos` 响应带 `check_in:{nonce, seconds}`；下次 `/theos` 回传 `X-DeepAI-Code-Check-In` 与 `X-DeepAI-Code-Beacon: v=…;up=…;pi=0\|1`（`focus` 只在焦点状态已知时才追加） |
 | **机器指纹** | `X-DeepAI-Code-Machine: sha256(原始机器 UUID)`，用于按天发放免费 Theos；计量模型缺失时回 `machine_required` |
@@ -443,6 +443,8 @@ print(client.chat.completions.create(
 | `DEEPAI_MACHINE_ID` | 覆盖机器指纹原始 UUID（容器部署必填） |
 | `DEEPAI2API_MASTER_KEY` | 状态文件加密主密钥（64 位 hex / base64，32 字节），留空则明文；写在 `.env` 即可，启动时自动加载 |
 | `DEEPAI_API_ORIGIN` | 覆盖上游地址（自建测试） |
+| `DEEPAI_PROOF` | `X-DeepAI-Code-Proof` 的生成方式：`off`（默认）/ `random`（协议面对齐，32 位随机 hex）/ `helper`（调真 helper 产出真实自证） |
+| `DEEPAI_PROOF_HELPER` | `helper` 模式的二进制绝对路径（桌面端自带 `resource-monitor`，缺失/超时/输出不合规时省略该头） |
 | `DEEPAI2API_ADMIN_PASSWORD` | 管理密码（控制台 / 管理接口） |
 | `PROXY_POOL` | 推理代理池（逗号或换行分隔完整 URL；入池时按账号轮询分配） |
 | `PROXY_POOL_FILE` | 代理池文件（每行一个） |

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"deepaicode2api/internal/credimport"
+	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/envfile"
 	"deepaicode2api/internal/logx"
 	"deepaicode2api/internal/machine"
@@ -191,7 +192,7 @@ func main() {
 		})
 		log.Printf("startup %s", summary)
 
-		log.Printf("DeepAICode2API %s 已启动: http://%s/", version, addr)
+		log.Printf("DeepAICode2API %s 已启动: http://%s/（proof=%s）", version, addr, deepai.ProofConfigFromEnv().Mode)
 		if st.HasKeys() {
 			log.Printf("已签发 API 密钥，调用需携带 Authorization: Bearer sk-...")
 		} else {

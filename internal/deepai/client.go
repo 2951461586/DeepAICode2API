@@ -155,6 +155,12 @@ type Client struct {
 	// 不参与协议决策：换车道仍走 DetectLane / 升级网关。
 	LaneHook func(int)
 
+	// Proof 决定是否 / 如何发送 X-DeepAI-Code-Proof（0.3.52 车道 8 的第 6 个头）。
+	//
+	// 默认 off：上游 2026-11-25 实测不校验，缺头照样 200。random 只对齐协议面，
+	// helper 才会产出真实自证（需要把随包 helper 放到这台机器上）。
+	Proof ProofConfig
+
 	// checkIns 缓存每个 API Key 的签到挑战与心跳时间。
 	checkIns *checkInStore
 }
@@ -213,6 +219,7 @@ func NewClientWithFingerprint(proxyRaw, userAgent string) *Client {
 		Proxy:              proxyRaw,
 		ProxyInvalid:       proxyErr,
 		Instance:           newInstanceID(),
+		Proof:              ProofConfigFromEnv(),
 		BrowserFingerprint: true,
 		checkIns:           newCheckInStore(),
 		HTTP: &http.Client{
@@ -265,6 +272,19 @@ var desktopInferenceHeaders = map[string]string{
 	"Sec-Fetch-Mode":  "cors",
 }
 
+// machineFingerprint 返回该账号该用的机器指纹。
+//
+// 优先取账号级：上游按它发放每日免费额度，共用会互相抵消。
+func (c *Client) machineFingerprint(acct *Account) string {
+	fp := c.Machine
+	if acct != nil && acct.MachineID != "" {
+		if derived := machine.Fingerprint(acct.MachineID); derived != "" {
+			fp = derived
+		}
+	}
+	return fp
+}
+
 // commonHeaders 写入所有上游 JSON 请求的公共头。
 //
 // Content-Type 无条件设置（含无 body 的 GET）：桌面端 requestDeepAIJson 的
@@ -275,14 +295,7 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 	if c.Instance != "" {
 		req.Header.Set(HeaderInstance, c.Instance)
 	}
-	// 机器指纹优先取账号级：上游按它发放每日免费额度，共用会互相抵消。
-	machineFP := c.Machine
-	if acct != nil && acct.MachineID != "" {
-		if derived := machine.Fingerprint(acct.MachineID); derived != "" {
-			machineFP = derived
-		}
-	}
-	if machineFP != "" {
+	if machineFP := c.machineFingerprint(acct); machineFP != "" {
 		req.Header.Set(HeaderMachine, machineFP)
 	}
 
@@ -533,6 +546,11 @@ func (c *Client) OpenModel(ctx context.Context, acct *Account, path string, body
 	if affinity != "" {
 		req.Header.Set(HeaderAffinity, affinity)
 	}
+	// 0.3.52 车道 8：模型调用带「请求标签」自证（helper 不可用 / 模式 off 时省略）。
+	// 放在 affinity 之后：两个头互不影响，位置只是为了和桌面端的组装顺序一致。
+	if proof := c.proofCallValue(acct, body); proof != "" {
+		req.Header.Set(HeaderProof, proof)
+	}
 	return c.do(req)
 }
 
@@ -548,6 +566,10 @@ func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 	c.commonHeaders(req, acct)
 	c.applyCheckInHeaders(req, acct)
 	sentNonce := req.Header.Get(HeaderCheckIn)
+	// 0.3.52 车道 8：/theos 带「签到证明」自证（输入里带即将回传的 nonce）。
+	if proof := c.proofCheckInValue(acct, sentNonce); proof != "" {
+		req.Header.Set(HeaderProof, proof)
+	}
 
 	resp, err := c.do(req)
 	if err != nil {
