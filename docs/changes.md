@@ -6478,7 +6478,36 @@ GW=https://deepai-gw.liziai.cloud ADMIN_PW=... LIMIT=500 node scripts/prefix-chu
 VM 的全局出口，等于把十几个账号的流量压到同一个 IP 上。重启后 `proxy_cooling=0`（17 个出口全部探测通过），
 这一条件暂时不存在。
 
-### 95.4 待办
+### 95.4 清理（2026-11-27）
+
+迁移后 hermes 上留下的旧部署痕迹已删：
+
+| 对象 | 大小 | 判定依据 |
+| --- | --- | --- |
+| `/etc/deepaicode2api.env` | 371 B | 旧本机部署的机密文件；`cron` / `systemd` / 容器 / 进程四处都查过，无引用；容器早已迁到 workstation，留着只是把口令摊在第二台机器上 |
+| `/root/DeepAICode2API` | 33 MB | 11-25 的旧代码副本（`.git` 停在 `2ca9d89`），工作区干净、仓库在 GitHub 与 workstation 都有，唯一独有内容是里面的 `.env`（同样 shred） |
+
+**保留**：`/root/deepaicode2api-altare-runbook.md`、`/root/altare-migration-runbook.md`（迁移手册，
+排查时要回头看）；workstation 上的 `start.sh.bak-20261127`（419 B，是目前唯一的秒级回滚路径，
+等新版本观察过一段时间再删）。
+
+workstation `dev` 侧的清理（旧镜像 / 旧二进制 / 数据备份）**本轮未执行**：Altare 控制面在限流
+（`heavy traffic` + `workstation host didn't answer`），`altr ws exec` 连不上；网关本身不受影响
+（`/healthz` 仍 `v0.1.29-1693b20`、17 号就绪）。恢复后按下述命令清理：
+
+```bash
+# 只保留在用的镜像
+KEEP=ghcr.io/2951461586/deepaicode2api:v0.1.29-altare
+docker images --format '{{.Repository}}:{{.Tag}}' | grep '^ghcr.io/2951461586/deepaicode2api:'   | grep -v "^$KEEP$" | xargs -r docker rmi
+docker image prune -f
+# 只保留当前二进制
+ls -1 /opt/deepaicode2api/bin/deepaicode2api-* | grep -v '1693b20$' | xargs -r rm -f
+rm -f /opt/deepaicode2api/bin/*.gz
+# 数据备份先看再删（不要动 data.json / -sticky.json / -stats.json / -logs.jsonl）
+ls -la /opt/deepaicode2api/data
+```
+
+### 95.5 待办
 
 - 观察 02:50 UTC 之后流量是否自然恢复（用户侧退避通常 10–30 分钟）；
 - 若 429 风暴复现，先看 `proxy_cooling` 与出口探测失败数：全局出口集中是已知放大器；
