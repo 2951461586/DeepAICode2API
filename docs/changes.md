@@ -6728,3 +6728,15 @@ release notes 只有「可靠性改进」四类：启动恢复、长会话滚动
 - 安装前先关掉正在运行的客户端（本次未在运行，无需处理）；
 - 升级后 `app.asar` 46.7 MB / `server.asar` 270.5 MB；旧包已备份到临时目录用于比对，
   比对完即可删（**不要**留在业务目录）。
+
+**上线（2026-11-27 15:4x UTC+8）**：`v0.1.31` 以二进制 bind mount 上线
+（`/opt/deepaicode2api/bin/deepaicode2api-v0.1.31`，sha256 `da68b161…d0c8` 与本地产物一致），
+`start.sh` 的 `BIN` 指向新文件，`DEEPAI_PROOF=random` 沿用。校验：
+
+| 项 | 结果 |
+| --- | --- |
+| `/healthz` | `version=v0.1.31`、`proof=random`、`lane 8` = 编译 8、`ready 17/17`、`models 28` |
+| `/admin/api/version` | `current=v0.1.31`、`latest=v0.1.31`、`update_available=false`（GitHub Release 已可见） |
+| 冒烟 | 临时 key 打 `/v1/chat/completions`：200 / TTFB 3.35 s；随后 `/admin/api/overview` 的
+签到指标 `attempts=10, blocked=0, timeouts=0` —— 说明上游**接受**心跳 `v=0.3.53`（beacon 只在 `/theos` 上发） |
+| 收尾 | 临时 key 已删，旧 key 复验 401 |
