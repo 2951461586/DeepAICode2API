@@ -42,6 +42,7 @@
 | v0.1.29（未发新版） | 93 | 缓存命中率口径拆成「读 / 写 / 全新」三段（`cache_creation_input_tokens`）+ 5xx 改为同号重试保前缀缓存 + 客户端前缀契约进 README |
 | v0.1.29（未发新版） | 94 | 请求日志补 `affinity` / `prefix` 指纹 + 控制台「会话」列 + `scripts/prefix-churn.mjs`：把「客户端改前缀」与「换号 / TTL 过期」分开量化 |
 | v0.1.29（未发新版） | 95 | 上线 `v0.1.29-1693b20`（二进制 bind mount 覆盖镜像入口）；记录上线前后的 429 风暴与下游断流，时间线证明与本次部署无关 |
+| v0.1.29（未发新版） | 96 | 全量 28 模型指纹一轮（fpd，`-e low` + 流式）：6 个 flash 模型同指 `gemini-4-carbon`；付费组 185 Theos |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6530,3 +6531,29 @@ ls -la /opt/deepaicode2api/data
 - 观察 02:50 UTC 之后流量是否自然恢复（用户侧退避通常 10–30 分钟）；
 - 若 429 风暴复现，先看 `proxy_cooling` 与出口探测失败数：全局出口集中是已知放大器；
 - sub2api 侧对 5xx/429 的退避与重试策略值得单独调（本轮 502×107 + 500×80 放大了用户感知）。
+
+---
+
+## 96. 2026-11-27 全量 28 模型指纹一轮（fpd）
+
+用 `npx lmfpd@latest` 对线上 28 个模型各做一轮数字指纹，明细见
+**`docs/model-fingerprint-2026-11-27.md`**（含完整表格、方法、局限）。
+
+三条技术结论值得留档：
+
+1. **必须流式 + `-e low`**：这些模型都是推理模型，上游把 completion 硬顶在
+   **8192**（`completion=8192 / reasoning=8192 / content=""`、`finish=length`）；
+   不降推理强度时 323 个整数的挑战必然被推理吃光预算，样本直接失败。
+   非流式还会撞 Cloudflare 的 100 s 上限（实测 `HTTP 524`）。
+2. **`gpt-6-astra` 只支持 `/responses`**：走 chat 会回
+   `400 Model 'gpt-6-astra' is not available on this endpoint`。
+3. **6 个 flash 族模型指向同一个候选 `gemini-4-carbon`**（置信度 0.47–0.86），
+   只有 3 个家族对齐（qwen / mimo / claude-opus）。但参考库版本已换
+   （`reference_sha256 7d775ce2…`），与 11-10 / 11-25 两轮**不可直接对比**——
+   那两轮 `glm-5.3-flash` 指向 grok 家族，本轮指向 `gemini-4-carbon`。
+
+花费：付费 16 个模型用 `--count 1`（每模型 1 次请求），合计 **185 Theos**；
+若用 `--count 3` 是 555，因此付费组只有排名、没有置信度。
+
+采集用临时 key，结束后已删（`/admin/api/keys` 只剩 `liziai-deepai`）；采集期间
+线上无 5xx，`fallback_total=0`。
