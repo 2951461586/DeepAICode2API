@@ -1,11 +1,14 @@
 package server
 
 import (
+	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"deepaicode2api/internal/deepai"
 	"deepaicode2api/internal/gateway"
+	"deepaicode2api/internal/guard"
 	"deepaicode2api/internal/logx"
 	"deepaicode2api/internal/respstate"
 	"deepaicode2api/internal/store"
@@ -34,6 +37,10 @@ type reqLog struct {
 	// 与 inMsgs 配合回答 issue #5 / #7 的三个问题：客户端没给历史、网关弄丢了
 	// 历史、请求体太长被上游静默砍头（实测 ~196 KB 起）。
 	outBytes int
+
+	// ua / ip 是调用方标识（见 withClient）。留着是为了能回答「谁在发」。
+	ua string
+	ip string
 
 	// state 是「是否已记录」的共享标记。reqLog 是值类型（各 handler 按值传递），
 	// 所以标记必须放在指针后面：done 可能被不同分支各调一次，只有第一次生效
@@ -69,6 +76,46 @@ func (l reqLog) withHistory(payload map[string]any) reqLog {
 func (l reqLog) withOutboundBytes(n int) reqLog {
 	l.outBytes = n
 	return l
+}
+
+// withClient 记录调用方标识（UA 与真实来源 IP）。
+//
+// 线上链路是 Cloudflare → nginx → 网关，RemoteAddr 永远是回环或边缘地址，只有
+// 转发头才认得出真正的调用方，所以优先取 CF-Connecting-IP / X-Forwarded-For 首段，
+// 都没有才退回 RemoteAddr。UA 截前 120 字符：它有客户端自己拼的超长串，也有整段
+// 被塞进 header 的异常情况，不能当作无限长的字段落盘。
+func (l reqLog) withClient(r *http.Request) reqLog {
+	if r == nil {
+		return l
+	}
+	l.ua = truncateRunes(strings.TrimSpace(r.Header.Get("User-Agent")), 120)
+	l.ip = clientAddr(r)
+	return l
+}
+
+// clientAddr 取真实客户端地址（按可信度从高到低回退）。
+func clientAddr(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
+		return truncateRunes(v, 64)
+	}
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		if first := strings.TrimSpace(strings.Split(v, ",")[0]); first != "" {
+			return truncateRunes(first, 64)
+		}
+	}
+	return truncateRunes(guard.ClientIP(r.RemoteAddr), 64)
+}
+
+// truncateRunes 按字符（而非字节）截断，避免把 UTF-8 串成乱码。
+func truncateRunes(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:n])
 }
 
 // done 落一条请求日志；err 为 nil 视为成功（HTTP 200），否则按错误取状态码。
@@ -110,6 +157,12 @@ func (l reqLog) doneStatus(status int, outLen int, usage gateway.Usage, err erro
 	}
 	if l.acct != nil {
 		e.Account = l.acct.ID
+	}
+	if l.ua != "" {
+		e.UA = l.ua
+	}
+	if l.ip != "" {
+		e.IP = l.ip
 	}
 	if l.outBytes > 0 {
 		e.BodyBytes = l.outBytes

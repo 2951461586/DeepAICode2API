@@ -65,7 +65,7 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := httpx.ContextWithTimeout(r, 60*time.Second)
 	text, err := s.clientFor(acct).Transcribe(ctx, acct, header.Filename, contentType, data)
 	cancel()
-	rl := s.newReqLog(key, acct, "whisper-1", "audio", false, start, len(data))
+	rl := s.newReqLog(key, acct, "whisper-1", "audio", false, start, len(data)).withClient(r)
 	if err != nil {
 		s.Pool.MarkFailure(acct.ID, err)
 		rl.done(0, gateway.Usage{}, err)
@@ -129,7 +129,7 @@ func (s *Server) proxyExtension(w http.ResponseWriter, r *http.Request, path str
 	default:
 		err = io.ErrUnexpectedEOF
 	}
-	rl := s.newReqLog(key, acct, "-", endpoint, false, start, len(body))
+	rl := s.newReqLog(key, acct, "-", endpoint, false, start, len(body)).withClient(r)
 	if err != nil {
 		s.Pool.MarkFailure(acct.ID, err)
 		rl.done(0, gateway.Usage{}, err)
@@ -162,7 +162,7 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	force := r.URL.Query().Get("force") == "1"
 	if !force && acct.Theos != nil && acct.Theos.CheckedAt > 0 &&
 		time.Since(time.Unix(acct.Theos.CheckedAt, 0)) < theosCacheTTL {
-		rl := s.newReqLog(key, acct, "-", "theos", false, start, 0)
+		rl := s.newReqLog(key, acct, "-", "theos", false, start, 0).withClient(r)
 		rl.done(0, gateway.Usage{}, nil)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"account":  acct.ID,
@@ -175,7 +175,7 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := httpx.ContextWithTimeout(r, 30*time.Second)
 	defer cancel()
 	al, err := s.clientFor(acct).Theos(ctx, acct)
-	rl := s.newReqLog(key, acct, "-", "theos", false, start, 0)
+	rl := s.newReqLog(key, acct, "-", "theos", false, start, 0).withClient(r)
 	if err != nil {
 		s.Pool.MarkFailure(acct.ID, err)
 		rl.done(0, gateway.Usage{}, err)
@@ -204,7 +204,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := httpx.ContextWithTimeout(r, 30*time.Second)
 	defer cancel()
 	usage, err := s.clientFor(acct).UsageSummary(ctx, acct)
-	rl := s.newReqLog(key, acct, "-", "usage", false, start, 0)
+	rl := s.newReqLog(key, acct, "-", "usage", false, start, 0).withClient(r)
 	if err != nil {
 		s.Pool.MarkFailure(acct.ID, err)
 		rl.done(0, gateway.Usage{}, err)

@@ -66,7 +66,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, acct, err := s.openModel(ctx, deepai.PathChat, body, affinity, group, key, stream, s.requireQuotaFor(model.ID))
 	rl := s.newReqLog(key, nil, model.ID, "chat", stream, start, promptLen).
-		withHistory(payload).withOutboundBytes(len(body))
+		withHistory(payload).withOutboundBytes(len(body)).withClient(r)
 	rl.acct = acct
 	if err != nil {
 		rl.done(0, gateway.Usage{}, err)

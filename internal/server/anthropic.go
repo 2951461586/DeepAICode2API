@@ -50,7 +50,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	key := extractKey(r)
 	promptLen := estimatePromptLen(payload)
 
-	rl := s.newReqLog(key, nil, model.ID, "messages", req.Stream, start, promptLen).withHistory(payload)
+	rl := s.newReqLog(key, nil, model.ID, "messages", req.Stream, start, promptLen).withHistory(payload).withClient(r)
 	if req.Stream {
 		s.streamAnthropic(w, r, payload, affinity, rl)
 		return

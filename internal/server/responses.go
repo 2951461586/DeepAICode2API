@@ -46,7 +46,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	key := extractKey(r)
 	promptLen := estimatePromptLen(payload)
 
-	rls := s.newReqLog(key, nil, model.ID, "responses", stream, start, promptLen).withHistory(payload)
+	rls := s.newReqLog(key, nil, model.ID, "responses", stream, start, promptLen).withHistory(payload).withClient(r)
 	// 先記下「本輪新增的 input」與續接父 id：重放會把 payload["input"] 換成完整
 	// 歷史，那之後就取不到增量了（暫存只存增量 + 檢查點，完整歷史由鏈還原）。
 	turn := &respstate.Turn{

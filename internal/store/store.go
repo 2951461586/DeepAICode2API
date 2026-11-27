@@ -130,8 +130,17 @@ type LogEntry struct {
 	// 與「上游截斷」。
 	BodyBytes int `json:"body_bytes,omitempty"`
 	// BodyNearCap 表示本次請求體已達安全上限的 90% 以上（僅提示，不阻斷）。
-	BodyNearCap bool   `json:"body_near_cap,omitempty"`
-	Err         string `json:"err,omitempty"`
+	BodyNearCap bool `json:"body_near_cap,omitempty"`
+	// UA / IP 是調用方標識，只留脫敏視圖（UA 截前 120 字符，IP 取真實客戶端地址）。
+	//
+	// 為什麼需要：BodyBytes + Messages 只說明「發了多大、帶了多少歷史」，說不清
+	// 「哪個客戶端在發」。2026-11-27 線上 /responses 約 10% 的 400 全部是上游
+	// 「conversation exceeds the context window」，網關側無法從體積反查調用方，
+	// 只能請下游挨個自查。有了這兩個字段，下一次同類問題直接在日誌裡歸因。
+	// 注意 UA 可偽造、也常被 SDK 固定成一個值：它是線索，不是身份。
+	UA  string `json:"ua,omitempty"`
+	IP  string `json:"ip,omitempty"`
+	Err string `json:"err,omitempty"`
 }
 
 // Stats 是累计统计。

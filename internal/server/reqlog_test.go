@@ -154,3 +154,81 @@ func TestReqLogRecordsOutboundBytes(t *testing.T) {
 		}
 	})
 }
+
+// TestReqLogRecordsClientIdentity 锁定「谁在发」的排障字段。
+//
+// 2026-11-27 线上 /responses 约 10% 的 400 全是上游「conversation exceeds the
+// context window」，但日志只有体积与消息数，网关侧无法归因到具体客户端；只能挨个
+// 让下游自查。UA / IP 落盘之后，同类问题下一次可以在日志里直接定位来源。
+func TestReqLogRecordsClientIdentity(t *testing.T) {
+	cases := []struct {
+		name   string
+		remote string
+		header map[string]string
+		wantIP string
+	}{
+		{"Cloudflare 优先", "10.0.0.5:443", map[string]string{
+			"CF-Connecting-IP": "203.0.113.7",
+			"X-Forwarded-For":  "198.51.100.9, 10.0.0.5",
+		}, "203.0.113.7"},
+		{"XFF 取首段", "10.0.0.5:443", map[string]string{
+			"X-Forwarded-For": "198.51.100.9, 10.0.0.5",
+		}, "198.51.100.9"},
+		{"直连回退 RemoteAddr", "127.0.0.1:51234", nil, "127.0.0.1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, _ := newTestServer(t, nil)
+			req, err := http.NewRequest(http.MethodPost, "/v1/responses", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.RemoteAddr = c.remote
+			for k, v := range c.header {
+				req.Header.Set(k, v)
+			}
+			req.Header.Set("User-Agent", "codex_cli_rs/0.61.0")
+
+			s.newReqLog("sk-test", nil, "glm-5.3-flash", "responses", true, time.Now(), 12).
+				withClient(req).done(0, gateway.Usage{}, nil)
+
+			logs := s.Store.Logs(1)
+			if len(logs) != 1 {
+				t.Fatalf("日志条数 = %d，期望 1", len(logs))
+			}
+			if logs[0].IP != c.wantIP {
+				t.Fatalf("IP = %q，期望 %q", logs[0].IP, c.wantIP)
+			}
+			if logs[0].UA != "codex_cli_rs/0.61.0" {
+				t.Fatalf("UA = %q", logs[0].UA)
+			}
+		})
+	}
+
+	t.Run("UA 截断到 120 字符", func(t *testing.T) {
+		s, _ := newTestServer(t, nil)
+		req, err := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.RemoteAddr = "127.0.0.1:1"
+		req.Header.Set("User-Agent", strings.Repeat("长", 400))
+
+		s.newReqLog("sk-test", nil, "glm-5.3-flash", "chat", false, time.Now(), 1).
+			withClient(req).done(0, gateway.Usage{}, nil)
+
+		got := []rune(s.Store.Logs(1)[0].UA)
+		if len(got) != 120 {
+			t.Fatalf("UA 字符数 = %d，期望 120", len(got))
+		}
+	})
+
+	t.Run("nil 请求不 panic", func(t *testing.T) {
+		s, _ := newTestServer(t, nil)
+		s.newReqLog("sk-test", nil, "glm-5.3-flash", "chat", false, time.Now(), 1).
+			withClient(nil).done(0, gateway.Usage{}, nil)
+		if got := s.Store.Logs(1)[0].UA; got != "" {
+			t.Fatalf("UA 应为空，得到 %q", got)
+		}
+	})
+}

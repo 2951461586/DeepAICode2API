@@ -38,6 +38,7 @@
 | v0.1.28 | 90 | 线上长尾整改：非流式预算 90 → 180 s（可调）、上游响应超时可调、issue #7 处置开关（warn/reject）、付费模型硬额度约束 |
 | v0.1.29 | 90 | 硬额度约束的补丁：负余额按 `refresh_at` 判定（快照陈旧不再放行） |
 | v0.1.29（未发新版） | 91 | 线上入口迁移：`deepai2api.liziai.cloud`（410）→ `deepai-gw.liziai.cloud`；文档可执行示例换新域名，无代码变更 |
+| v0.1.29（未发新版） | 92 | 线上 400 归因（两个调用族均撞上游上下文窗口）+ 请求日志补 UA/IP 排障字段 + `liziwww235` 429 降权 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6222,3 +6223,78 @@ README 之外的文档示例都会 410 而不是 401/426 —— 这类失败不�
 
 **验证**：新域名 TLS 证书是 `*.liziai.cloud` 通配符（有效期至 2027-01-25），Cloudflare 边缘正常
 返回 `X-Request-Id`；`/admin/api/keys` 只剩 `liziai-deepai`（303,212 次请求，最后使用 2026-11-27）。
+
+---
+
+## 92. 2026-11-27 线上 400 归因 + 请求日志补 UA/IP + `liziwww235` 降权
+
+### 92.1 现象
+
+迁移后第一轮体检（09:30–09:36 UTC+8）：`/admin/api/accounts` 全绿（17/17 ready，blocked 0，
+quota_fresh 17，lane 8 = 编译 8 = 上游 8），但请求日志里 4xx 占 **10.8%**，且**全部是上游 400**。
+
+| 调用族 | 窗口 | 400 / 总 | 特征 |
+| --- | --- | --- | --- |
+| `/v1/responses` | 46 min | **98 / 997（9.8%）** | `prompt_len` p50 **1.63M** 字符、`messages` 100+ 占 55/98、`body_bytes` 255 KB–2.14 MB |
+| `/v1/messages` | 约 90 min 前 | 3 条 | `messages` **714–723**、`prompt_len` 2.83–2.86M、`body_bytes` 2.87 MB |
+| `/v1/chat/completions` | 同窗口 | 0 / 2 | 正常（`messages` 1） |
+
+上游回的文案统一是 `This conversation exceeds the context window. Compact it to continue.`，
+进程内累计 `gateway_upstream_errors_total{code="context_length_exceeded",status="400"}` = **686**。
+
+**判定：网关没丢历史、也没砍请求**（`messages` 与 `body_bytes` 都是客户端真实发出的规模），
+是调用方把整段历史无压缩地重发，撞了模型窗口。两次是**同一段超长对话被反复重试**
+（98 条 400 只有 54 个不同 `prompt_len`），代价是每次白等上游 2–44 s。
+
+### 92.2 为什么当时说不清「是哪个客户端」
+
+`store.LogEntry` 只有体积、消息数、账号、模型——能证明「发了多大」，证不了「谁发的」。
+线上只有一把密钥（`liziai-deepai`），下游是一组共用它的客户端，网关侧无从区分。
+
+**改动**：`LogEntry` 新增两个脱敏字段，9 处 `newReqLog` 调用统一挂 `.withClient(r)`：
+
+| 字段 | 取值 | 说明 |
+| --- | --- | --- |
+| `ua` | `User-Agent` 前 120 字符 | SDK 常写死成一个值，是线索不是身份 |
+| `ip` | `CF-Connecting-IP` → `X-Forwarded-For` 首段 → `RemoteAddr` | 线上是 CF → nginx → 网关，`RemoteAddr` 只会是回环/边缘地址 |
+
+单测 `TestReqLogRecordsClientIdentity` 锁死三条回退路径、120 字符截断与 `nil` 请求。
+**这份代码需要重新部署才生效**（`sh scripts/deploy.sh <tag>`），部署后同类问题可直接在
+`/admin/api/logs` 里按 `ua` / `ip` 归因。
+
+### 92.3 429：`liziwww235` 降权（可回滚）
+
+429 在上游是**账号级**限流。46 分钟窗口内 5 条 429 的分布：`a0c967a1…`（= `liziwww235`）3 条、
+`b1a1df81…` 1 条、`ccab41c2…` 1 条；`liziwww235` 的 `last_err` 也正是这条文案，且它是池里唯一
+`last_verified=0` / `email` 为空 / `source=oauth` / `registered_at=0` 的账号（`failures=1`）。
+
+住宅出口无法在网关侧新开（`PROXY_POOL` 是部署面输入），所以选**降权**而不是换出口：
+
+```bash
+# 已执行：迁到不透量给 default 分组密钥的独立分组（立即生效）
+POST /admin/api/accounts {"action":"set-group","id":"a0c967a16714141b","group":"throttled"}
+# 回滚（观察 30–60 min 不再出现 429 后建议执行）
+POST /admin/api/accounts {"action":"set-group","id":"a0c967a16714141b","group":"default"}
+```
+
+结果：`{default: 16, throttled: 1}`；`/healthz` 仍是 `accounts=17, ready=17`（就绪数是分组无关的）。
+**代价**：这把 207 Theos 暂时不参与调度——是一次可观测性实验，不是长期结论。
+
+### 92.4 负余额三号：等 `refresh_at` 再复探
+
+| 账号 | 余额 | `refresh_at`（UTC） | 处置 |
+| --- | ---: | --- | --- |
+| `zupxzenogljb` | −15.81422 | 2026-11-27T05:39:07Z | 到时复探，仍负则按账号级异常处置 |
+| `pwvjkhiq1hwz` | −0.04773 | 2026-11-27T02:40:14Z | 同上 |
+| `yvbeghihag6wvjd@lmoir.com` | −13.89402 | 2026-11-27T09:57:13Z | 同上 |
+
+三个号的 `granted` 都是 `0.00000`（grant 未到）。`upstream.go` 在额度陈旧时会在请求路径上
+自动复探（`quota_due=true` 时触发），所以 **不必手工干预**；到时直接看 `/admin/api/accounts`
+的 `theos.balance` 即可。复探单号用 `POST /admin/api/checkin {"id":"<id>"}`（注意：该接口是
+**真实签到**，会消耗 nonce，不是只读）。
+
+### 92.5 未做的
+
+- `body_cap_mode` 仍是 `warn`：`reject` 会在选号前直接回 400，省掉上游那 2–44 s，但同一窗口里
+  也有 2.3 MB 的请求成功过（200），切之前需要先确认调用方来源（正好等 UA/IP 字段部署后的数据）。
+- 签到预算（615 次里 63 次超时、p95 = 5 s）保持 §90.6 的待办口径，本轮未动。
