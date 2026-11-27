@@ -41,6 +41,7 @@
 | v0.1.29（未发新版） | 92 | 线上 400 归因（两个调用族均撞上游上下文窗口）+ 请求日志补 UA/IP 排障字段 + `liziwww235` 429 降权 |
 | v0.1.29（未发新版） | 93 | 缓存命中率口径拆成「读 / 写 / 全新」三段（`cache_creation_input_tokens`）+ 5xx 改为同号重试保前缀缓存 + 客户端前缀契约进 README |
 | v0.1.29（未发新版） | 94 | 请求日志补 `affinity` / `prefix` 指纹 + 控制台「会话」列 + `scripts/prefix-churn.mjs`：把「客户端改前缀」与「换号 / TTL 过期」分开量化 |
+| v0.1.29（未发新版） | 95 | 上线 `v0.1.29-1693b20`（二进制 bind mount 覆盖镜像入口）；记录上线前后的 429 风暴与下游断流，时间线证明与本次部署无关 |
 | v0.1.1 | 51（发版）、52 | 全扫落地（竞态 / 日志完整性 / 落盘可观测 / 8 项优化）+ 项目级 pi-lens 配置 |
 | v0.1.0 | 49、50（发版）；45–48 是发版前的控制台修复 | P0/P1/P2 一轮落地 + 概览 KPI / 账号脱敏 / 版本检查；控制台 4 处裸 `refresh()`、行内菜单、登录页、侧边栏 |
 
@@ -6419,3 +6420,66 @@ GW=https://deepai-gw.liziai.cloud ADMIN_PW=... LIMIT=500 node scripts/prefix-chu
 
 - 老日志没有这两个字段：脚本会直接提示「部署后再来」，不会给出误导性的 0%；
 - 字段都是短哈希/截断串，不含正文；`affinity` 本身就是要发给上游的 `X-Session-Affinity`，不是新泄露面。
+
+---
+
+## 95. 2026-11-27 上线 `v0.1.29-1693b20`（二进制热替换）+ 上线前后的 429 风暴
+
+### 95.1 部署方式
+
+网关跑在 Altare workstation `dev`（不是 hermes 的 docker），镜像是私有 GHCR
+`ghcr.io/2951461586/deepaicode2api:v0.1.29-altare`。本机没有 docker，也没有 GHCR 推送凭据，
+所以这次不重建镜像，改为**只读 bind mount 覆盖镜像入口**：
+
+| 步骤 | 内容 |
+| --- | --- |
+| 构建 | `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v0.1.29-1693b20"` |
+| 传输 | `altr ws cp`（走 guest agent，base64，3.5 MB gzip 约 3 分钟；直接传 8.4 MB 会超时） |
+| 校验 | 两侧 `sha256` 一致（`cb0ac5ee…9293fa`），`-version` 输出 `v0.1.29-1693b20` |
+| 落地 | `/opt/deepaicode2api/bin/deepaicode2api-1693b20`（755），`start.sh` 备份为 `start.sh.bak-20261127` |
+| 起容器 | `start.sh` 在 `-x "$BIN"` 时追加 `-v "$BIN":/usr/local/bin/deepaicode2api:ro`，镜像与数据卷都不动 |
+
+回滚：把 `BIN` 指回上一版（或让文件不可执行），`sh /opt/deepaicode2api/start.sh` —— 立即回到镜像自带二进制。
+
+### 95.2 上线校验
+
+| 项 | 结果 |
+| --- | --- |
+| `/healthz` | `version=v0.1.29-1693b20`、`lane=8`/`lane_compiled=8`/`lane_drift=0`、`accounts=17`、`ready=17`、`models=28`、`machine_ready=true` |
+| `lane_upstream` | 重启后先是 `0`（探针未跑），首个请求后回到 `8` |
+| 冒烟 | 临时 key 打 `/v1/chat/completions`：200 / TTFB 2.63 s / `tokens_in=294`、`cached_tokens=132`；key 用后即删 |
+| 新字段 | 同一条日志里 `ua=pi-deploy-smoke/1.0`、`ip=104.194.8.36`（CF-Connecting-IP）、`affinity=aa1-bff7f721f2c1d534`、`prefix=pf-bff7f721f2c1d534`（同源摘要，符合预期） |
+| 进程指标 | 重启后 `2xx=22`、`4xx=0`、`5xx=0` |
+
+### 95.3 上线前的一段 429 风暴与下游断流（与本次部署无关）
+
+时间线（UTC）：
+
+| 时刻 | 事件 |
+| --- | --- |
+| 02:08–02:19 | 零散 429（每分钟 1–3 条） |
+| 02:20–02:32 | **429 风暴**：153 条，峰值 02:30 的 27 条/分钟；跨 6+ 个账号（`zhuhaoyi181` 31、`xiaoming` 26、`liziyy235` 16…），模型集中在 `deepseek-v4.1-flash` 86 / `glm-5.3-flash` 33 |
+| 02:38 | 网关最后一条真实请求（499，`minimax-m3.1-flash`，128 s 客户端取消） |
+| 02:44 | **本次部署**（此后只有一条冒烟请求） |
+
+也就是说**下游在部署前 6 分钟就已经没有流量**，部署不是断流的原因。旁证：
+
+- sub2api 侧 40 分钟状态分布：`200×1193`、`401×885`（扫描器噪声）、`429×392`（其中绝大多数是
+  `ingress_reject_reason=invalid_auth_rate_limited`，**sub2api 自己的无效密钥限流**，不是上游 429）、
+  `503×173`（池空）、`502×107`、`500×80`；
+- sub2api 的两个账号（3696 / 3697）在 DB 里 `status=active`、`schedulable=t`、
+  `temp_unschedulable_until` 为空、`rate_limit_reset_at` 已过期，`last_used_at` 分别停在
+  02:38:14 / 02:36:27 —— 不是被冷却掐掉的，是**没有请求可发**；
+- 两个账号的 `base_url` 仍指向 `https://deepai-gw.liziai.cloud(/v1)`，`header_override_enabled=true`。
+
+**对 429 风暴的推断**：上游的 429 文案是账号级「Requests are temporarily limited」，但同时命中
+6+ 个账号，更像是**出口 IP 集中**触发上游全局限流——重启前的日志里确有多条
+`出口代理探测失败（沿用全局出口）… 出口被上游拦截（HTTP 403，HTML 错误页）`，那些账号会退回
+VM 的全局出口，等于把十几个账号的流量压到同一个 IP 上。重启后 `proxy_cooling=0`（17 个出口全部探测通过），
+这一条件暂时不存在。
+
+### 95.4 待办
+
+- 观察 02:50 UTC 之后流量是否自然恢复（用户侧退避通常 10–30 分钟）；
+- 若 429 风暴复现，先看 `proxy_cooling` 与出口探测失败数：全局出口集中是已知放大器；
+- sub2api 侧对 5xx/429 的退避与重试策略值得单独调（本轮 502×107 + 500×80 放大了用户感知）。
