@@ -41,6 +41,7 @@ const ok = logs.filter((l) => l.status === 200 && (l.tokens_in || 0) > 0);
 
 const withAffinity = ok.filter((l) => l.affinity);
 const withPrefix = ok.filter((l) => l.prefix);
+const withAffinityOnly = withAffinity;
 if (withAffinity.length === 0) {
   console.log(`样本 ${ok.length} 条 200，但没有任何 affinity 字段。`);
   console.log('→ 说明线上跑的还是「未包含 §94 改动」的版本，先部署再来。');
@@ -48,8 +49,11 @@ if (withAffinity.length === 0) {
 }
 
 // 按 affinity 分组：请求数、前缀数、各前缀的请求数、读命中 token。
+//
+// 只统计**带 affinity 字段**的请求：部署前的老日志没有这两个字段，混进来会被
+// 当成一个巨大的「前缀稳定」会话，把结论带偏（实测会把 churn 直接压成 0）。
 const groups = new Map();
-for (const l of ok) {
+for (const l of withAffinityOnly) {
   const key = l.affinity || '(无)';
   let g = groups.get(key);
   if (!g) {
@@ -86,12 +90,15 @@ const stableCached = stable.reduce((a, r) => a + Math.round(r.hit * r.tokIn), 0)
 
 const totalTok = ok.reduce((a, l) => a + (l.tokens_in || 0), 0);
 const totalCached = ok.reduce((a, l) => a + (l.cached_tokens || 0), 0);
+const legacy = ok.length - withAffinity.length;
 
 console.log(`样本窗口: ${new Date(logs[0]?.time * 1000 || 0).toISOString()} ~ ${new Date(logs.at(-1)?.time * 1000 || 0).toISOString()}`);
 console.log(`200 且带 usage: ${ok.length} 条 · 带 affinity ${withAffinity.length} · 带 prefix ${withPrefix.length}`);
 console.log(`整体命中率: ${pct(totalCached, totalTok)}（${compact(totalCached)} / ${compact(totalTok)}）`);
+if (legacy > 0) console.log(`（其中 ${legacy} 条是部署前的旧日志，没有指纹字段，已从分组统计里剔除）`);
 console.log('');
 
+console.log(`参与分组的请求: ${withAffinityOnly.length} 条（${withAffinityOnly.reduce((a, l) => a + (l.tokens_in || 0), 0) > 0 ? compact(withAffinityOnly.reduce((a, l) => a + (l.tokens_in || 0), 0)) : 0} token）`);
 console.log(`前缀稳定的会话: ${stable.length} 个，${stable.reduce((a, r) => a + r.reqs, 0)} 条请求，命中 ${pct(stableCached, stableTok)}`);
 console.log(`前缀在变的会话: ${multi.length} 个，${multiReqs} 条请求（${pct(multiReqs, ok.length)}），命中 ${pct(multiCached, multiTok)}`);
 console.log('');
